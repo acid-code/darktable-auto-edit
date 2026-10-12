@@ -1,0 +1,27 @@
+{
+  "id": "fuji-velvia",
+  "title": "Fuji Velvia",
+  "scenes": [
+    "landscape"
+  ],
+  "vibes": [
+    "velvia",
+    "vivid",
+    "fuji",
+    "saturated"
+  ],
+  "description": "Fuji Velvia. Strong color and contrast for open land, with the reds kept warm.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": 0.22,
+    "temperature_shift": 0.1,
+    "tint": 0.0,
+    "saturation": 0.42,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "vibrance": 0.28,
+    "vignette_strength": 0.45
+  }
+}

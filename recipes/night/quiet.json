@@ -4,6 +4,8 @@
   "scenes": ["night"],
   "vibes": ["quiet", "night", "still", "dark"],
   "description": "A still night scene. Hold the shadows, cool the highlights, and keep the color low.",
+  "place": "frame",
+  "explains": "Use this on the whole frame of a still night when a cool quiet look was asked for. It holds the shadows and cools the highlights. On a portrait it would paint the face, so leave it off unless it was asked for.",
   "stages": {
     "exposure_ev": -0.15,
     "contrast": 0.12,

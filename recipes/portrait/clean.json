@@ -4,6 +4,8 @@
   "scenes": ["portrait"],
   "vibes": ["clean", "bright", "airy", "fresh"],
   "description": "A bright airy portrait. Open shadows, calm color, and only a hint of edge darkening.",
+  "place": "frame",
+  "explains": "Use this on the whole frame of a bright portrait when a clean airy look was asked for. It opens shadows and keeps the color calm.",
   "stages": {
     "exposure_ev": 0.18,
     "contrast": 0.08,

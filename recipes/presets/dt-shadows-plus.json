@@ -1,0 +1,27 @@
+{
+  "id": "dt-shadows-plus",
+  "title": "Shadows plus one",
+  "scenes": [
+    "general",
+    "portrait"
+  ],
+  "vibes": [
+    "shadows",
+    "lift",
+    "dr200"
+  ],
+  "description": "A one-stop shadow lift in the spirit of darktable's DR200 tone-equalizer preset.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": -0.04,
+    "temperature_shift": 0.0,
+    "tint": 0.0,
+    "saturation": 0.0,
+    "shadows": 0.35,
+    "highlights": 0.0,
+    "vibrance": 0.0,
+    "vignette_strength": 0.3
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "fuji-classic-chrome",
+  "title": "Fuji Classic Chrome",
+  "scenes": [
+    "general",
+    "architecture"
+  ],
+  "vibes": [
+    "chrome",
+    "classic",
+    "muted",
+    "fuji"
+  ],
+  "description": "Fuji Classic Chrome. Muted color and a documentary contrast, slightly cool only when asked for.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": 0.16,
+    "temperature_shift": -0.06,
+    "tint": 0.0,
+    "saturation": -0.22,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "vibrance": -0.08,
+    "vignette_strength": 0.55
+  }
+}

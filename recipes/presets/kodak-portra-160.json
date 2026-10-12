@@ -1,0 +1,26 @@
+{
+  "id": "kodak-portra-160",
+  "title": "Kodak Portra 160",
+  "scenes": [
+    "portrait"
+  ],
+  "vibes": [
+    "portra",
+    "kodak",
+    "soft"
+  ],
+  "description": "Kodak Portra 160. Soft contrast, open shadows, and a gentle warm skin tone.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": -0.1,
+    "temperature_shift": 0.14,
+    "tint": 0.0,
+    "saturation": -0.06,
+    "shadows": 0.2,
+    "highlights": 0.0,
+    "vibrance": 0.04,
+    "vignette_strength": 0.4
+  }
+}

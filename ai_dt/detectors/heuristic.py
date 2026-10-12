@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
+from ai_dt.guides.support import boxes_overlap, is_face_bar, reflected_subject
 from ai_dt.schema import Detection
 
 
@@ -132,18 +133,36 @@ class HeuristicDetector:
         skin = _skin_mask(rgb)
 
         faces = self._faces(skin, luma, width, height)
+        full = np.asarray(image.convert("RGB")).astype(np.float32) / 255.0
+        mirrored = reflected_subject(full)
+        # Pale flowers can pass a skin test. They are not the body standing
+        # over its reflection, so a face that misses that body is dropped.
+        if mirrored is not None:
+            body, _reflection = mirrored
+            faces = [face for face in faces if boxes_overlap(face.bbox, body)]
         eyes: list[Detection] = []
         for face in faces:
             eyes.extend(self._eyes(luma, face.bbox, width, height))
-        architecture = self._architecture(luma, skin, faces, width, height)
+        architecture = self._architecture(rgb, luma, skin, faces, width, height)
 
         found = faces + eyes + architecture
+        if mirrored is not None:
+            body, _reflection = mirrored
+            found.append(
+                Detection(
+                    label="animal",
+                    category="animal",
+                    confidence=0.74,
+                    bbox=body,
+                    source=self.name,
+                )
+            )
         if found:
             return found
         salient = self._salient(luma, width, height)
         return [salient] if salient is not None else []
 
-    def _faces(self, skin: np.ndarray, luma: np.ndarray, width: int, height: int) -> list[Detection]:
+    def _faces(self, skin: np.ndarray, _luma: np.ndarray, width: int, height: int) -> list[Detection]:
         box = _largest_bbox(skin, min_fraction=0.01)
         if box is None:
             return []
@@ -159,7 +178,10 @@ class HeuristicDetector:
         skin_fraction = float(skin[y : y + h, x : x + w].mean()) if w and h else 0.0
         if skin_fraction < 0.35 or area_fraction > 0.9:
             return []
-        region = luma[y : y + h, x : x + w]
+        bbox = _normalize((x, y, w, h), width, height)
+        # A warm horizon is a short band across the frame. It is not a head.
+        if is_face_bar(bbox):
+            return []
         confidence = 0.45 + 0.4 * min(1.0, skin_fraction)
         # A face-like region is taller than it is wide, but a close crop may not be.
         if h >= w * 0.75:
@@ -169,7 +191,7 @@ class HeuristicDetector:
                 label="face",
                 category="face",
                 confidence=confidence,
-                bbox=_normalize((x, y, w, h), width, height),
+                bbox=bbox,
                 source=self.name,
             )
         ]
@@ -227,6 +249,7 @@ class HeuristicDetector:
 
     def _architecture(
         self,
+        rgb: np.ndarray,
         luma: np.ndarray,
         skin: np.ndarray,
         faces: list[Detection],
@@ -274,6 +297,15 @@ class HeuristicDetector:
         area = box[2] * box[3]
         if area < 0.04 or area > 0.85:
             return []
+        region = rgb[y:y2, x:x2]
+        if region.size:
+            red = region[:, :, 0].astype(np.int16)
+            green = region[:, :, 1].astype(np.int16)
+            blue = region[:, :, 2].astype(np.int16)
+            leafy = (green > red + 8) & (green > blue + 8)
+            # Furrows in a field are edges, and they are green. A facade is not.
+            if float(leafy.mean()) > 0.45:
+                return []
         if any(_iou_norm(box, face.bbox) > 0.25 for face in faces):
             return []
         return [

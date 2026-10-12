@@ -4,6 +4,8 @@
   "scenes": ["portrait"],
   "vibes": ["moody", "dark", "somber", "low-key"],
   "description": "A dark low-key portrait. Crushed shadows, muted color, and a heavy vignette around the face.",
+  "place": "frame",
+  "explains": "Use this on the whole frame when a dark moody look was asked for. It crushes shadows and mutes color. It is not a mask, and a dark room alone is not a reason to use it.",
   "stages": {
     "exposure_ev": -0.4,
     "contrast": 0.34,

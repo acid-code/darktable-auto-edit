@@ -1,0 +1,26 @@
+{
+  "id": "ricoh-negative",
+  "title": "Ricoh Negative Film",
+  "scenes": [
+    "portrait"
+  ],
+  "vibes": [
+    "ricoh",
+    "negative",
+    "film"
+  ],
+  "description": "Ricoh negative film. Softer and a little warm, for a portrait.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": -0.06,
+    "temperature_shift": 0.12,
+    "tint": 0.0,
+    "saturation": -0.04,
+    "shadows": 0.14,
+    "highlights": 0.0,
+    "vibrance": 0.0,
+    "vignette_strength": 0.45
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "dt-colorfulness-vibrant",
+  "title": "Colorfulness vibrant",
+  "scenes": [
+    "landscape"
+  ],
+  "vibes": [
+    "colorfulness",
+    "vibrant",
+    "darktable"
+  ],
+  "description": "Darktable's vibrant colorfulness preset. Stronger saturation for a landscape that asked for it.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": 0.08,
+    "temperature_shift": 0.0,
+    "tint": 0.0,
+    "saturation": 0.32,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "vibrance": 0.16,
+    "vignette_strength": 0.3
+  }
+}

@@ -70,25 +70,46 @@ def grade_array(
 
     arr = np.array(pixels, dtype=np.float32, copy=True)
     arr *= np.float32(2.0 ** float(atmosphere.exposure_ev))
-    arr = (arr - 0.5) * np.float32(1.0 + float(atmosphere.contrast)) + 0.5
+    arr = contrast_about_luma(arr, float(atmosphere.contrast))
     luma = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
     shadow = np.clip((0.45 - luma) / 0.45, 0.0, 1.0)
     highlight = np.clip((luma - 0.55) / 0.45, 0.0, 1.0)
     arr = arr + np.float32(atmosphere.shadows) * 0.45 * shadow[..., None]
     arr = arr + np.float32(atmosphere.highlights) * 0.28 * highlight[..., None]
-    warmth = np.float32(atmosphere.temperature_shift)
-    arr[..., 0] *= np.float32(1.0) + 0.22 * warmth
-    arr[..., 2] *= np.float32(1.0) - 0.22 * warmth
-    tint = np.float32(atmosphere.tint)
-    arr[..., 0] *= np.float32(1.0) + 0.08 * tint
-    arr[..., 1] *= np.float32(1.0) - 0.10 * tint
-    arr[..., 2] *= np.float32(1.0) + 0.06 * tint
+    # A cast correction belongs on the grays. Saturated reds and greens keep
+    # their hue, so a warm field is not repainted blue-green.
+    span = np.max(arr, axis=2) - np.min(arr, axis=2)
+    neutral = np.clip((np.float32(0.12) - span) / np.float32(0.12), 0.0, 1.0)
+    warmth = np.float32(atmosphere.temperature_shift) * neutral
+    arr[..., 0] *= np.float32(1.0) + 0.16 * warmth
+    arr[..., 2] *= np.float32(1.0) - 0.16 * warmth
+    # Positive tint is toward magenta, so a green cast loses green.
+    tint = np.float32(atmosphere.tint) * neutral
+    arr[..., 0] *= np.float32(1.0) + 0.05 * tint
+    arr[..., 1] *= np.float32(1.0) - 0.12 * tint
+    arr[..., 2] *= np.float32(1.0) + 0.04 * tint
     luma = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
     saturation = np.float32(1.0 + float(atmosphere.saturation) + 0.5 * float(atmosphere.vibrance))
     arr = luma[..., None] + (arr - luma[..., None]) * saturation
     if vignette is not None:
         arr = _vignette(arr, vignette)
     return np.clip(arr, 0.0, 1.0)
+
+
+def contrast_about_luma(arr: np.ndarray, contrast: float) -> np.ndarray:
+    """Change brightness without changing the hue of each pixel.
+
+    Scaling red, green, and blue around gray makes a green field greener
+    and drains the red from brown leaves. Luminance contrast keeps those
+    ratios.
+    """
+
+    if abs(contrast) < 1e-6:
+        return arr
+    luma = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
+    new_luma = (luma - np.float32(0.5)) * np.float32(1.0 + contrast) + np.float32(0.5)
+    scale = new_luma / np.maximum(luma, np.float32(1e-4))
+    return arr * scale[..., None]
 
 
 def approximate(image: Image.Image, atmosphere: Atmosphere, vignette: dict | None = None) -> Image.Image:

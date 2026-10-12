@@ -48,10 +48,10 @@
     "eyes": {
       "build": "eyes",
       "skip": "Skip the eyes when no eye is found on the group.",
-      "exposure": 0.03,
-      "contrast": 0.0,
-      "saturation": 0.18,
-      "clarity": 0.55,
+      "exposure": 0.06,
+      "contrast": 0.06,
+      "saturation": 0.04,
+      "clarity": 0.38,
       "defocus": 0.0,
       "mute": 0.0
     },

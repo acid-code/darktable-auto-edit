@@ -1,0 +1,27 @@
+{
+  "id": "fuji-classic-neg",
+  "title": "Fuji Classic Neg",
+  "scenes": [
+    "portrait"
+  ],
+  "vibes": [
+    "classic",
+    "negative",
+    "fuji",
+    "faded"
+  ],
+  "description": "Fuji Classic Neg. Slightly faded, warm in the shadows, for a portrait that was asked to look like film.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": -0.04,
+    "temperature_shift": 0.16,
+    "tint": 0.04,
+    "saturation": -0.1,
+    "shadows": 0.2,
+    "highlights": 0.0,
+    "vibrance": 0.0,
+    "vignette_strength": 0.55
+  }
+}

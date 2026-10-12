@@ -19,9 +19,15 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ai_dt.guides.support import is_face_bar
 from ai_dt.schema import Atmosphere, Detection
 
 SCENES = ("portrait", "architecture", "landscape", "animal", "night", "general")
+
+# Where a recipe is allowed to land. ``frame`` is the global grade.
+# The other places are masks: a face, the eyes, a sunset line, the sky,
+# the lines of a building, or the background behind a subject.
+PLACES = ("frame", "subject", "eyes", "horizon", "sky", "lines", "background")
 
 STAGE_KEYS = (
     "exposure_ev",
@@ -95,6 +101,8 @@ class Recipe:
     stages: dict[str, float]
     path: str
     document: str
+    place: str = "frame"
+    explains: str = ""
 
     def to_public(self) -> dict:
         return {
@@ -103,6 +111,8 @@ class Recipe:
             "scenes": list(self.scenes),
             "vibes": list(self.vibes),
             "description": self.description,
+            "place": self.place,
+            "explains": self.explains,
             "stages": {key: round(float(value), 4) for key, value in self.stages.items()},
         }
 
@@ -167,7 +177,11 @@ def scene_from_detections(detections: list[Detection]) -> str:
     vibe sentence itself is close to a landscape or night recipe.
     """
 
-    categories = {item.category for item in detections}
+    categories = {
+        item.category
+        for item in detections
+        if not (item.category in {"face", "person"} and is_face_bar(item.bbox))
+    }
     if "face" in categories or "person" in categories:
         return "portrait"
     if "animal" in categories:
@@ -210,11 +224,18 @@ def cosine(left: dict[str, float], right: dict[str, float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def document_text(title: str, scenes: list[str], vibes: list[str], description: str) -> str:
+def document_text(
+    title: str,
+    scenes: list[str],
+    vibes: list[str],
+    description: str,
+    explains: str = "",
+) -> str:
     """Build the text that becomes the vector.
 
     Title, scenes, and vibe words are repeated so a short query is not
     drowned by the description. The directory name is intentionally absent.
+    The explanation is included once, so a recipe can say where it belongs.
     """
 
     scene_line = " ".join(scenes)
@@ -229,6 +250,7 @@ def document_text(title: str, scenes: list[str], vibes: list[str], description: 
             vibe_line,
             vibe_line,
             description,
+            explains,
         )
     )
 
@@ -242,7 +264,7 @@ def validate_recipe(data: object, source: str = "recipe") -> dict:
 
     if not isinstance(data, dict):
         raise ValueError(f"{source} must be a JSON object")
-    extra = sorted(set(data) - {"id", "title", "scenes", "vibes", "description", "stages"})
+    extra = sorted(set(data) - {"id", "title", "scenes", "vibes", "description", "stages", "place", "explains"})
     if extra:
         raise ValueError(f"{source} has unknown fields: {', '.join(extra)}")
     recipe_id = data.get("id")
@@ -270,6 +292,15 @@ def validate_recipe(data: object, source: str = "recipe") -> dict:
     description = data.get("description")
     if not isinstance(description, str) or len(description.strip()) < 20:
         raise ValueError(f"{source} description should say what the look does, in a sentence")
+    place = data.get("place", "frame")
+    if not isinstance(place, str) or place not in PLACES:
+        raise ValueError(f"{source} place must be one of: {', '.join(PLACES)}")
+    explains = data.get("explains", "")
+    if not isinstance(explains, str):
+        raise ValueError(f"{source} explains must be a sentence")
+    explains = " ".join(explains.split())
+    if explains and len(explains) < 20:
+        raise ValueError(f"{source} explains should say where the recipe belongs, in a sentence")
     stages = data.get("stages")
     if not isinstance(stages, dict):
         raise ValueError(f"{source} needs a stages object")
@@ -295,6 +326,8 @@ def validate_recipe(data: object, source: str = "recipe") -> dict:
         "scenes": list(scenes),
         "vibes": [" ".join(item.split()) for item in vibes],
         "description": " ".join(description.split()),
+        "place": place,
+        "explains": explains,
         "stages": clean_stages,
     }
 
@@ -313,7 +346,10 @@ def _recipe_from_payload(payload: dict, path: Path) -> Recipe:
             payload["scenes"],
             payload["vibes"],
             payload["description"],
+            payload.get("explains", ""),
         ),
+        place=payload.get("place", "frame"),
+        explains=payload.get("explains", ""),
     )
 
 

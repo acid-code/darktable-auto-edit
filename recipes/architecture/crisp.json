@@ -4,6 +4,8 @@
   "scenes": ["architecture"],
   "vibes": ["crisp", "sharp", "graphic", "clear"],
   "description": "A graphic building study. Punchy contrast, cool clarity, and clean edges on the facade.",
+  "place": "lines",
+  "explains": "Put this on the lines of a building, as a mask. Add contrast so the facade reads. Do not shift the temperature of the whole frame.",
   "stages": {
     "exposure_ev": 0.0,
     "contrast": 0.42,

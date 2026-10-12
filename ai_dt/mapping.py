@@ -153,9 +153,9 @@ def _warmth_to_color(atmosphere: Atmosphere) -> dict[str, float]:
         chroma = 0.0
     else:
         hue = 40.0 if shift >= 0 else 210.0
-        chroma = abs(shift) * 0.22
+        chroma = abs(shift) * 0.14
         hue = (hue + tint * 40.0) % 360.0
-        chroma = clamp(chroma + abs(tint) * 0.08, 0.0, 0.45)
+        chroma = clamp(chroma + abs(tint) * 0.08, 0.0, 0.16)
     return {
         "global_H": hue,
         "global_C": chroma,

@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--vibe",
         default="",
-        help="Open text for the look, matched to recipe documents. Empty keeps a faithful correction.",
+        help="Look to apply. Empty keeps a faithful correction. A Fuji sim name, or fuji / fujicam, selects one film simulation.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser

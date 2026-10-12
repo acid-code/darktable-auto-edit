@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image, ImageFilter
 
-from ai_dt.guides.support import creature_box, is_elongated
+from ai_dt.guides.support import boxes_overlap, creature_box, is_elongated, is_face_bar, reflected_subject
 from ai_dt.schema import Detection
 
 # A warm compact body has to be this solid before it beats a night reading.
@@ -296,7 +296,14 @@ def _face_is_skin(pixels: np.ndarray, box: tuple[float, float, float, float]) ->
     region = _crop(pixels, box)
     if region.size == 0:
         return False
-    return _skin_fraction(region) >= 0.34
+    if _skin_fraction(region) < 0.34:
+        return False
+    # Leaves packed between warm blossoms are not a cheek.
+    red = region[..., 0]
+    green = region[..., 1]
+    blue = region[..., 2]
+    leafy = (green > red + 0.02) & (green > blue + 0.02)
+    return float(leafy.mean()) < 0.18
 
 
 def _people(detections: list[Detection]) -> list[Detection]:
@@ -317,6 +324,20 @@ def _has(detections: list[Detection], category: str) -> bool:
 
 def _is_body(blob: Blob | None) -> bool:
     return blob is not None and blob.area >= _BODY_AREA and blob.fill >= _BODY_FILL
+
+
+def _open_land(pixels: np.ndarray, brightness: float, line_fraction: float) -> bool:
+    """A field or other broad green land. Crop rows are not a facade."""
+
+    if brightness < 0.28:
+        return False
+    if line_fraction >= _LINE_FRACTION * 0.45:
+        return False
+    red = pixels[..., 0]
+    green = pixels[..., 1]
+    blue = pixels[..., 2]
+    leafy = (green > red + np.float32(0.02)) & (green > blue + np.float32(0.02))
+    return float(leafy.mean()) >= 0.55
 
 
 def _is_night(brightness: float, warmth: float, specks: float) -> bool:
@@ -460,6 +481,9 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
         warm = None
     plain = plain_subject_box(view)
     skin_box = skin_subject_box(view)
+    # A warm horizon can fill a wide skin box. That strip is not a head.
+    if skin_box is not None and (is_face_bar(skin_box.box) or is_elongated(skin_box.box, view.shape)):
+        skin_box = None
     creature_blob: Blob | None | bool = None
 
     def _creature() -> Blob | None:
@@ -487,8 +511,14 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
         specks=specks,
     )
 
-    people = _people(found)
+    people = [item for item in _people(found) if not is_face_bar(item.bbox)]
     real_faces = [item for item in people if _face_is_skin(view, item.bbox)]
+    mirrored = reflected_subject(view)
+    if mirrored is not None:
+        # A flower cluster away from the body is not the person in this frame.
+        body_box, _reflection_box = mirrored
+        people = [item for item in people if boxes_overlap(item.bbox, body_box)]
+        real_faces = [item for item in real_faces if boxes_overlap(item.bbox, body_box)]
     # A warm body can fool the face detector. Trust the face only when the
     # box is actually skin; otherwise a bird shaped like a face stays an animal.
     if real_faces:
@@ -527,6 +557,19 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
             blob=Blob(people[0].bbox, fill=1.0, area=area),
             **facts,
         )
+
+    if mirrored is not None and not real_faces:
+        body_box, reflection_box = mirrored
+        # A house or a ridge echoed in water is not a creature. Only a compact
+        # body over its own narrow mirror takes this path.
+        narrow_mirror = reflection_box[2] <= 0.22 and body_box[2] <= 0.45
+        if narrow_mirror and not is_elongated(body_box, view.shape):
+            return _picture(
+                "animal",
+                "A compact subject stands in the water, and its reflection is below it, so this is an animal.",
+                blob=Blob(body_box, fill=1.0, area=_area(body_box)),
+                **facts,
+            )
 
     if skin_box is not None and _is_body(skin_box):
         return _picture(
@@ -626,7 +669,14 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
             blob=None,
             **facts,
         )
-    if _has(found, "architecture"):
+    if _open_land(view, brightness, line_fraction) and _creature() is None:
+        return _picture(
+            "landscape",
+            "Open land fills the frame, so this is a landscape.",
+            blob=None,
+            **facts,
+        )
+    if _has(found, "architecture") and line_fraction >= _LINE_FRACTION * 0.45:
         creature = _creature()
         if creature is not None:
             return _picture(

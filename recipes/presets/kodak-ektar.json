@@ -1,0 +1,26 @@
+{
+  "id": "kodak-ektar",
+  "title": "Kodak Ektar",
+  "scenes": [
+    "landscape"
+  ],
+  "vibes": [
+    "ektar",
+    "kodak",
+    "vivid"
+  ],
+  "description": "Kodak Ektar. Saturated daylight color for land, with the reds pushed warm rather than cool.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": 0.2,
+    "temperature_shift": 0.12,
+    "tint": 0.0,
+    "saturation": 0.38,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "vibrance": 0.26,
+    "vignette_strength": 0.4
+  }
+}

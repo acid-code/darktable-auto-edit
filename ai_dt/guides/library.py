@@ -39,6 +39,8 @@ STAGES = (
     "eyes",
     "skin",
     "sky",
+    "horizon",
+    "reflection",
     "background",
     "foreground",
     "highlights",
@@ -53,7 +55,7 @@ MASKS = (
     "foreground",
 )
 
-OPTIONAL_MASKS = ("highlights",)
+OPTIONAL_MASKS = ("highlights", "horizon", "reflection")
 
 BUILDS = (
     "never",
@@ -67,6 +69,8 @@ BUILDS = (
     "foreground",
     "structure",
     "highlights",
+    "horizon",
+    "reflection",
 )
 
 GRADE_KEYS = (
@@ -391,8 +395,9 @@ def validate_guide(data: object, source: str = "guide") -> dict:
     unknown_masks = [name for name in masks if name not in MASKS and name not in OPTIONAL_MASKS]
     if unknown_masks:
         raise ValueError(f"{source} has unknown masks: {', '.join(unknown_masks)}")
-    if "highlights" in stages and "highlights" not in masks:
-        raise ValueError(f"{source} stages include highlights but there is no highlights mask")
+    for name in OPTIONAL_MASKS:
+        if name in stages and name not in masks:
+            raise ValueError(f"{source} stages include {name} but there is no {name} mask")
     clean_masks: dict[str, dict] = {}
     for name, raw in masks.items():
         if not isinstance(raw, dict):

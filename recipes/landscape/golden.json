@@ -4,6 +4,8 @@
   "scenes": ["landscape"],
   "vibes": ["golden", "sunset", "hour", "warm"],
   "description": "Late sun on open land. Warm highlights, richer color, and a soft falloff at the edges.",
+  "place": "horizon",
+  "explains": "Put this on the warm sunset line only, as a mask. Warm that thin band and hold the green down. Do not paint the land or the sky with this grade.",
   "stages": {
     "exposure_ev": 0.06,
     "contrast": 0.14,

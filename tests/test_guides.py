@@ -16,6 +16,7 @@ from ai_dt.cli import main
 from ai_dt.guides.decide import Picture, decide_picture
 from ai_dt.guides.ingest import ingest_note
 from ai_dt.guides.library import load_guides, match_guide, validate_guide
+from ai_dt.guides.support import reflected_subject, water_reflection
 from ai_dt.pipeline import analyze, write_outputs
 from ai_dt.schema import Atmosphere, Detection
 from ai_dt.separate import render_finish
@@ -23,6 +24,30 @@ from ai_dt.simulate import sample_image
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDES = ROOT / "guides"
+
+
+def _luma_mean(pixels: np.ndarray) -> float:
+    values = pixels.astype(np.float32)
+    return float((0.2126 * values[..., 0] + 0.7152 * values[..., 1] + 0.0722 * values[..., 2]).mean())
+
+
+def _heron_on_water() -> np.ndarray:
+    """A grey bird over dark water, with pale flowers off to the right."""
+
+    height, width = 480, 720
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    image[:150] = (0.07, 0.12, 0.06)
+    image[150:310] = (0.14, 0.26, 0.11)
+    image[310:] = (0.045, 0.05, 0.05)
+    image[220:330, 240:430] = (0.40, 0.42, 0.45)
+    image[175:250, 340:450] = (0.52, 0.53, 0.56)
+    image[198:214, 400:418] = (0.06, 0.06, 0.07)
+    image[340:450, 300:370] = (0.16, 0.17, 0.18)
+    yy, xx = np.ogrid[0:height, 0:width]
+    for cx, cy in ((560, 200), (610, 220), (655, 195), (585, 245), (650, 240)):
+        blob = (xx - cx) ** 2 / 18**2 + (yy - cy) ** 2 / 14**2 <= 1.0
+        image[blob] = (0.90, 0.78, 0.47)
+    return image
 
 
 def _texture(pixels: np.ndarray) -> float:
@@ -91,6 +116,48 @@ def _landscape() -> np.ndarray:
     frame[220:] = (0.28, 0.38, 0.16)
     frame[220:] += rng.random((height - 220, width, 3), dtype=np.float32) * np.float32(0.08)
     return np.clip(frame, 0.0, 1.0)
+
+
+def _mountain_over_water() -> np.ndarray:
+    """A wide ridge over dark water, with the same ridges echoed below."""
+
+    height, width = 480, 720
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    image[:240] = (0.72, 0.82, 0.93)
+    image[240:] = (0.07, 0.09, 0.11)
+    image[90:240, 80:540] = (0.58, 0.56, 0.52)
+    image[245:390, 80:540] = (0.22, 0.23, 0.24)
+    for x in range(110, 520, 34):
+        image[110:235, x : x + 5] = (0.34, 0.33, 0.30)
+        image[255:375, x : x + 5] = (0.12, 0.13, 0.14)
+    return image
+
+
+def _house_over_water() -> np.ndarray:
+    """A windowed facade and the darker copy of it in the water below."""
+
+    height, width = 480, 720
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    image[:250] = (0.62, 0.74, 0.90)
+    image[250:] = (0.07, 0.09, 0.11)
+    image[40:250, 40:500] = (0.78, 0.74, 0.68)
+    for x in range(52, 490, 12):
+        image[52:242, x : x + 3] = (0.18, 0.20, 0.22)
+    for y in range(58, 236, 14):
+        image[y : y + 3, 48:494] = (0.18, 0.20, 0.22)
+    building = image[40:250, 40:500].copy()
+    image[252:462, 40:500] = np.clip(building[::-1] * np.float32(0.38), 0.0, 1.0)
+    image[250:, 540:] = (0.07, 0.09, 0.11)
+    return image
+
+
+def _sunset() -> np.ndarray:
+    height, width = 480, 720
+    frame = np.zeros((height, width, 3), dtype=np.float32)
+    frame[:180] = (0.62, 0.70, 0.88)
+    frame[180:230] = (0.86, 0.42, 0.18)
+    frame[230:] = (0.24, 0.30, 0.16)
+    return frame
 
 
 def _note(guide_id: str = "tide-pool", picture_type: str = "tide-pool") -> dict:
@@ -289,7 +356,7 @@ class PictureTypeTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(recipe["picture"]["type"], "portrait")
         self.assertEqual(recipe["guide"]["id"], "portrait")
-        self.assertEqual(recipe["guide"]["file"], "guides/portrait.json")
+        self.assertEqual(recipe["guide"]["file"].replace("\\", "/"), "guides/portrait.json")
         self.assertFalse(recipe["guide"]["fallback"])
         self.assertIn("face", recipe["guide"]["reason"].lower())
         ran = recipe["guide"]["stages_ran"]
@@ -359,7 +426,7 @@ class PictureTypeTests(unittest.TestCase):
             recipe = analyze(path, detector="heuristic", advisor="histogram", vibe="wildlife")
         self.assertEqual(recipe["picture"]["type"], "night")
         self.assertEqual(recipe["guide"]["id"], "night")
-        self.assertIn("guides/night.json", recipe["guide"]["file"])
+        self.assertIn("guides/night.json", recipe["guide"]["file"].replace("\\", "/"))
         self.assertFalse(recipe["separation"]["applied"])
         self.assertEqual(recipe["separation"]["subject_masks"], 0)
         self.assertEqual(recipe["separation"]["background"], "unchanged")
@@ -418,6 +485,107 @@ class PictureTypeTests(unittest.TestCase):
         self.assertIn("sky", recipe["guide"]["stages_ran"])
         self.assertEqual(recipe["features"], ["land", "sky"])
         self.assertNotIn("perch", recipe["features"])
+        self.assertNotIn("horizon", recipe["guide"]["stages_ran"])
+        self.assertNotIn("reflection", recipe["guide"]["stages_ran"])
+
+    def test_a_green_field_with_a_warm_horizon_is_not_a_face(self) -> None:
+        image = Image.new("RGB", (640, 420), (78, 148, 46))
+        draw = ImageDraw.Draw(image)
+        for y in range(90, 400, 16):
+            draw.line((0, y, 640, y), fill=(52, 112, 32), width=3)
+        draw.rectangle((0, 28, 639, 108), fill=(186, 154, 96))
+        draw.ellipse((36, 52, 78, 78), fill=(36, 24, 16))
+        draw.ellipse((548, 58, 590, 84), fill=(28, 20, 14))
+        draw.ellipse((300, 160, 348, 214), fill=(24, 78, 28))
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "fields.png"
+            image.save(path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram")
+        categories = {item["category"] for item in recipe["analysis"]["subjects"]}
+        self.assertEqual(recipe["picture"]["type"], "landscape")
+        self.assertEqual(recipe["guide"]["id"], "landscape")
+        self.assertNotIn("face", categories)
+        self.assertNotIn("eye", categories)
+        self.assertFalse(recipe["separation"]["applied"])
+        self.assertEqual(recipe["separation"]["background"], "unchanged")
+        self.assertNotIn("subject", recipe["guide"]["stages_ran"])
+        self.assertNotIn("eyes", recipe["guide"]["stages_ran"])
+        self.assertNotIn("reflection", recipe["guide"]["stages_ran"])
+
+    def test_a_bird_in_water_is_lifted_with_its_eye_and_reflection(self) -> None:
+        pixels = _heron_on_water()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heron.png"
+            _save_array(pixels, path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram")
+            rendered = np.array(recipe["_rendered"])
+        categories = {item["category"] for item in recipe["analysis"]["subjects"]}
+        self.assertEqual(recipe["picture"]["type"], "animal")
+        self.assertNotIn("face", categories)
+        self.assertIn("animal", categories)
+        self.assertIn("subject", recipe["guide"]["stages_ran"])
+        self.assertIn("eyes", recipe["guide"]["stages_ran"])
+        self.assertIn("reflection", recipe["guide"]["stages_ran"])
+        vignette = next(item for item in recipe["modules"] if item["operation"] == "vignette")
+        self.assertEqual(vignette["multi_name"], "AI animal")
+        self.assertLess(vignette["params"]["center_x"], 0.15)
+        bird = _luma_mean(rendered[200:330, 240:430]) - _luma_mean(pixels[200:330, 240:430])
+        flowers = _luma_mean(rendered[180:260, 530:690]) - _luma_mean(pixels[180:260, 530:690])
+        mirror = _luma_mean(rendered[360:430, 310:360]) - _luma_mean(pixels[360:430, 310:360])
+        beside = _luma_mean(rendered[360:430, 180:230]) - _luma_mean(pixels[360:430, 180:230])
+        self.assertGreater(bird, flowers + 0.02)
+        self.assertGreater(mirror, beside + 0.01)
+        self.assertIn("Lifted together", recipe["reasoning"]["description"])
+
+    def test_a_mountain_or_house_reflection_is_sharpened_without_becoming_an_animal(self) -> None:
+        mountain = _mountain_over_water()
+        house = _house_over_water()
+        self.assertIsNone(reflected_subject(mountain))
+        self.assertIsNone(reflected_subject(house))
+        self.assertIsNotNone(water_reflection(mountain))
+        self.assertIsNotNone(water_reflection(house))
+        for pixels, kind, picture_type in (
+            (mountain, "mountain", "landscape"),
+            (house, "house", "architecture"),
+        ):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / f"{kind}.png"
+                    _save_array(pixels, path)
+                    recipe = analyze(path, detector="heuristic", advisor="histogram")
+                    rendered = np.array(recipe["_rendered"])
+                self.assertEqual(recipe["picture"]["type"], picture_type)
+                self.assertNotEqual(recipe["picture"]["type"], "animal")
+                self.assertFalse(recipe["separation"]["applied"])
+                self.assertEqual(recipe["separation"]["background"], "unchanged")
+                self.assertNotIn("background", recipe["guide"]["stages_ran"])
+                self.assertNotIn("subject", recipe["guide"]["stages_ran"])
+                self.assertIn("reflection", recipe["guide"]["stages_ran"])
+                mirror = rendered[260:340, 180:420]
+                beside = rendered[260:340, 580:700]
+                source_mirror = pixels[260:340, 180:420]
+                source_beside = pixels[260:340, 580:700]
+                mirror_gain = _texture(mirror) - _texture(source_mirror)
+                beside_gain = _texture(beside) - _texture(source_beside)
+                self.assertGreater(mirror_gain, beside_gain + 0.008)
+                land = rendered[140:210, 180:420]
+                self.assertGreater(_texture(land), _texture(pixels[140:210, 180:420]) * 0.75)
+
+    def test_a_sunset_line_is_warmed_without_recoloring_the_land(self) -> None:
+        source = _sunset()
+        picture = decide_picture(source, [])
+        self.assertEqual(picture.type, "landscape")
+        rendered, info = render_finish(source, Atmosphere(), [], picture=picture)
+        self.assertIn("horizon", info["stages_ran"])
+        line = rendered[185:220].mean(axis=(0, 1))
+        land = rendered[360:430].mean(axis=(0, 1))
+        source_line = source[185:220].mean(axis=(0, 1))
+        source_land = source[360:430].mean(axis=(0, 1))
+        line_warmth = float((line[0] - line[2]) - (source_line[0] - source_line[2]))
+        land_warmth = float((land[0] - land[2]) - (source_land[0] - source_land[2]))
+        self.assertGreater(line_warmth, 0.03)
+        self.assertLess(land_warmth, line_warmth * 0.45)
 
     def test_two_faces_are_a_group(self) -> None:
         pixels = np.full((120, 160, 3), 0.42, dtype=np.float32)

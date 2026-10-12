@@ -4,6 +4,8 @@
   "scenes": ["general"],
   "vibes": ["faithful", "neutral", "correction", "natural"],
   "description": "A restrained correction. Exposure and color stay with the measurement, with no creative grade.",
+  "place": "frame",
+  "explains": "Use this on the whole frame when no look was asked for. It keeps the measured exposure and color and does not invent a mask.",
   "stages": {
     "exposure_ev": 0.0,
     "contrast": 0.0,

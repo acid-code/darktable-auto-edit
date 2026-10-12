@@ -15,8 +15,8 @@
     "lines",
     "windows"
   ],
-  "description": "A building or another line-filled structure. The building stays sharp. Sky beside it can be treated differently, and it is not a reason to blur the facade or to invent a subject.",
-  "reason": "The building is the subject and it fills the frame, so the structure stays sharp and no background is invented.",
+  "description": "A building or another line-filled structure. The building stays sharp. Sky beside it can be treated differently, and it is not a reason to blur the facade or to invent a subject. When water holds a reflection of the building, that mirror is sharpened and lifted a little.",
+  "reason": "The building is the subject and it fills the frame, so the structure stays sharp and no background is invented. A reflection in the water is made bolder than the water around it.",
   "keep": [
     "building"
   ],
@@ -29,7 +29,8 @@
   },
   "stages": [
     "grade",
-    "foreground"
+    "foreground",
+    "reflection"
   ],
   "masks": {
     "subject": {
@@ -89,6 +90,16 @@
       "contrast": 0.04,
       "saturation": 0.0,
       "clarity": 0.12,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "reflection": {
+      "build": "reflection",
+      "skip": "Skip the reflection when no mirror of the building sits in the water below it.",
+      "exposure": 0.1,
+      "contrast": 0.14,
+      "saturation": 0.0,
+      "clarity": 0.48,
       "defocus": 0.0,
       "mute": 0.0
     }

@@ -1,0 +1,20 @@
+{
+  "id": "eye-detail",
+  "title": "Eye detail",
+  "scenes": ["portrait", "animal"],
+  "vibes": ["eyes", "detail", "catchlight", "sharp"],
+  "description": "Detail on the eyes only. A little exposure and contrast so the eyes read, with almost no color.",
+  "place": "eyes",
+  "explains": "Put this on the eyes of a person or an animal, as a mask. It adds a little exposure and contrast so the eyes read. It does not recolor the face, the night, or the background.",
+  "stages": {
+    "exposure_ev": 0.16,
+    "contrast": 0.22,
+    "temperature_shift": 0.0,
+    "tint": 0.0,
+    "saturation": 0.04,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "vibrance": 0.0,
+    "vignette_strength": 0.0
+  }
+}

@@ -4,6 +4,8 @@
   "scenes": ["architecture"],
   "vibes": ["faithful", "neutral", "correction", "natural"],
   "description": "A straight architectural correction. Exposure and color stay with the measurement.",
+  "place": "frame",
+  "explains": "Use this on the whole frame of a building when no look was asked for. Exposure and color stay with the measurement.",
   "stages": {
     "exposure_ev": 0.0,
     "contrast": 0.0,

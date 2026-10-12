@@ -4,6 +4,8 @@
   "scenes": ["portrait"],
   "vibes": ["faithful", "neutral", "correction", "natural"],
   "description": "A restrained portrait correction. Exposure and skin color stay with the measurement, with no grade.",
+  "place": "frame",
+  "explains": "Use this on the whole frame when no look was asked for. It keeps the measured exposure and color and does not add a mask.",
   "stages": {
     "exposure_ev": 0.0,
     "contrast": 0.0,

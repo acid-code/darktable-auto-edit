@@ -4,6 +4,8 @@
   "scenes": ["animal"],
   "vibes": ["gentle", "soft", "kind", "quiet"],
   "description": "Soft light on an animal. Warm midtones, a little shadow lift, and a light vignette.",
+  "place": "frame",
+  "explains": "Use this on the whole frame of an animal when a soft warm look was asked for. It lifts the shadows a little. It is not an eye mask.",
   "stages": {
     "exposure_ev": 0.05,
     "contrast": -0.1,

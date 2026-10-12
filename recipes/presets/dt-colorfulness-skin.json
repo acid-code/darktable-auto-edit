@@ -1,0 +1,26 @@
+{
+  "id": "dt-colorfulness-skin",
+  "title": "Colorfulness natural skin",
+  "scenes": [
+    "portrait"
+  ],
+  "vibes": [
+    "colorfulness",
+    "skin",
+    "darktable"
+  ],
+  "description": "Darktable's natural-skin colorfulness preset. A modest saturation lift that leaves skin warm.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": 0.0,
+    "temperature_shift": 0.06,
+    "tint": 0.0,
+    "saturation": 0.12,
+    "shadows": 0.08,
+    "highlights": 0.0,
+    "vibrance": 0.06,
+    "vignette_strength": 0.35
+  }
+}

@@ -4,6 +4,8 @@
   "scenes": ["portrait"],
   "vibes": ["film", "analog", "warm", "grain"],
   "description": "A warm analog portrait. Lifted shadows, softer contrast, and a gentle amber cast.",
+  "place": "frame",
+  "explains": "Use this on the whole frame when a warm film look was asked for. The amber cast is global, so it is not a mask on the eyes.",
   "stages": {
     "exposure_ev": 0.08,
     "contrast": -0.16,

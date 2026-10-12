@@ -12,13 +12,14 @@
     "correction",
     "plain"
   ],
-  "description": "A frame with no clear subject, or a type no guide knows. Keep the measured global grade and do not cut anything out.",
-  "reason": "Nothing in the frame should be cut out, so the edit stays the global grade.",
+  "description": "A frame with no clear subject, or a type no guide knows. Keep the measured global grade and do not cut anything out. When water holds a reflection of a shape above it, sharpen that mirror and lift it a little.",
+  "reason": "Nothing in the frame should be cut out, so the edit stays the global grade. A water reflection, when one is there, is sharpened on its own.",
   "keep": [],
   "quiet": [],
   "features": {},
   "stages": [
-    "grade"
+    "grade",
+    "reflection"
   ],
   "masks": {
     "subject": {
@@ -78,6 +79,16 @@
       "contrast": 0.0,
       "saturation": 0.0,
       "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "reflection": {
+      "build": "reflection",
+      "skip": "Skip the reflection when the frame has no water mirror of a shape above it.",
+      "exposure": 0.1,
+      "contrast": 0.14,
+      "saturation": 0.0,
+      "clarity": 0.48,
       "defocus": 0.0,
       "mute": 0.0
     }

@@ -19,6 +19,20 @@ ELONGATED_ASPECT = 2.8
 _MAX_SIDE = 360
 
 
+def is_face_bar(box: tuple[float, float, float, float]) -> bool:
+    """True when a skin box is a strip across the frame, not a head.
+
+    Warm ground along a horizon can pass a loose skin test. A head is not
+    several times wider than it is tall.
+    """
+
+    bw = float(box[2])
+    bh = float(box[3])
+    if bw <= 1e-6 or bh <= 1e-6:
+        return True
+    return bw / bh >= 3.2
+
+
 def is_elongated(
     box: tuple[float, float, float, float],
     shape: tuple[int, ...] | None = None,
@@ -47,6 +61,445 @@ def is_elongated(
     if bh >= 0.9 and bw <= 0.5:
         return True
     return False
+
+
+def reflected_subject(
+    pixels: np.ndarray,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]] | None:
+    """A compact body standing in dark water, and the narrow mirror under it.
+
+    Lily pads and pale flowers are brighter than the bird and can look like
+    a face. The reflection is a thin bright streak in the dark water, and
+    the body is the neutral mass directly above that streak. Open water that
+    is green, or a bright tail against foliage, is not a mirror. A wide echo
+    of a house or a mountain is a water reflection, not this body.
+    """
+
+    small = _small(pixels)
+    height, width = small.shape[:2]
+    if min(height, width) < 48:
+        return None
+    luma = 0.2126 * small[..., 0] + 0.7152 * small[..., 1] + 0.0722 * small[..., 2]
+    row = luma.mean(axis=1)
+    band_top = int(0.78 * height)
+    band_bottom = int(0.94 * height)
+    if band_bottom <= band_top + 4:
+        return None
+    bottom = small[band_top:band_bottom]
+    bottom_luma = float(row[band_top:band_bottom].mean())
+    middle_luma = float(row[int(0.42 * height) : int(0.68 * height)].mean())
+    if bottom_luma > 0.30 or bottom_luma > middle_luma - 0.05:
+        return None
+    if float(_green(bottom).mean()) > 0.28:
+        return None
+    chroma = np.max(np.abs(bottom - luma[band_top:band_bottom, :, None]), axis=2)
+    if float(chroma.mean()) > 0.08:
+        return None
+
+    streak_top = int(0.72 * height)
+    streak_bottom = int(0.93 * height)
+    column = luma[streak_top:streak_bottom].mean(axis=0)
+    smooth = np.convolve(column, np.ones(9, dtype=np.float32) / 9.0, mode="same")
+    offset = max(6, width // 16)
+    score = smooth - 0.5 * (np.roll(smooth, offset) + np.roll(smooth, -offset))
+    score[:offset] = 0.0
+    score[-offset:] = 0.0
+    center = int(np.argmax(score))
+    peak = float(score[center])
+    if peak < 0.028:
+        return None
+    half_score = peak * 0.55
+    left_edge = center
+    while left_edge > 0 and float(score[left_edge]) > half_score:
+        left_edge -= 1
+    right_edge = center
+    while right_edge < width - 1 and float(score[right_edge]) > half_score:
+        right_edge += 1
+    if (right_edge - left_edge) / float(width) > 0.16:
+        return None
+
+    water_level = float(np.median(luma[streak_top:streak_bottom]))
+    # The edge of a wide mirror also makes a narrow peak. A bird's streak is
+    # the bright part of the water, not a sliver of a house or a ridge.
+    if float(np.mean(column > water_level + 0.03)) > 0.2:
+        return None
+    half_w = max(3, int(round(0.04 * width)))
+    x0 = max(0, center - half_w)
+    x1 = min(width, center + half_w)
+    mirror = luma[streak_top:streak_bottom, x0:x1] > np.float32(water_level + 0.03)
+    if int(mirror.sum()) < 24 or float(mirror.mean()) < 0.12:
+        return None
+    mirror_rows = np.nonzero(mirror.any(axis=1))[0]
+    if mirror_rows.size < int(0.06 * height):
+        return None
+    reflection = (
+        x0 / width,
+        (streak_top + int(mirror_rows.min())) / height,
+        (x1 - x0) / width,
+        (int(mirror_rows.max()) - int(mirror_rows.min()) + 1) / height,
+    )
+
+    body_bottom = streak_top
+    body_top = max(0, body_bottom - int(0.30 * height))
+    body_x0 = max(0, center - int(0.16 * width))
+    body_x1 = min(width, center + int(0.11 * width))
+    red = small[..., 0]
+    blue = small[..., 2]
+    leafy = _green(small)
+    warm = red > blue + np.float32(0.05)
+    local_luma = luma[body_top:body_bottom, body_x0:body_x1]
+    body_pixels = (
+        (local_luma > np.float32(0.20))
+        & (local_luma < np.float32(0.78))
+        & ~leafy[body_top:body_bottom, body_x0:body_x1]
+        & ~warm[body_top:body_bottom, body_x0:body_x1]
+    )
+    if float(body_pixels.mean()) < 0.22 or int(body_pixels.sum()) < 40:
+        return None
+    if float(local_luma[body_pixels].mean()) < bottom_luma + 0.08:
+        return None
+    ys, xs = np.nonzero(body_pixels)
+    box_w = (int(xs.max()) - int(xs.min()) + 1) / float(width)
+    box_h = (int(ys.max()) - int(ys.min()) + 1) / float(height)
+    if box_w < 0.07 or box_h < 0.06 or box_w > 0.42:
+        return None
+    body = (
+        (body_x0 + int(xs.min())) / width,
+        (body_top + int(ys.min())) / height,
+        box_w,
+        box_h,
+    )
+    return body, reflection
+
+
+def water_reflection(
+    pixels: np.ndarray,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]] | None:
+    """A shape above a waterline, and the mirror of it in the water below.
+
+    The mirror may be a thin streak or a wide echo of a ridge, a tree, or a
+    house. Water is the darker, smoother, lower-chroma band. The mirror is
+    the part of that band that is brighter or more structured than the water
+    beside it and lines up with a shape above. A warm horizon, green land,
+    window lights, and a plain dark foreground are not mirrors.
+    """
+
+    small = _small(pixels)
+    height, width = small.shape[:2]
+    if min(height, width) < 48:
+        return None
+    luma = 0.2126 * small[..., 0] + 0.7152 * small[..., 1] + 0.0722 * small[..., 2]
+    chroma = np.max(np.abs(small - luma[..., None]), axis=2)
+    green = _green(small)
+    warmth = small[..., 0] - small[..., 2]
+    best: tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]] | None = None
+    for y in range(int(0.38 * height), int(0.78 * height)):
+        measured = _mirror_at(luma, chroma, green, warmth, y)
+        if measured is None:
+            continue
+        score, source, reflection = measured
+        if best is None or score > best[0]:
+            best = (score, source, reflection)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _mirror_at(
+    luma: np.ndarray,
+    chroma: np.ndarray,
+    green: np.ndarray,
+    warmth: np.ndarray,
+    y: int,
+) -> tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]] | None:
+    """One candidate waterline. None when this row is not a shore."""
+
+    height, width = luma.shape
+    if y < int(0.08 * height) or height - y < int(0.14 * height):
+        return None
+    span = max(3, height // 48)
+    if y < span or y + span >= height:
+        return None
+    if float(luma[y - span : y].mean()) < float(luma[y : y + span].mean()) + 0.035:
+        return None
+
+    lower = luma[y:]
+    dark = lower <= np.float32(np.percentile(lower, 45))
+    if int(dark.sum()) < 20:
+        return None
+    if float(chroma[y:][dark].mean()) > 0.09:
+        return None
+    if float(green[y:][dark].mean()) > 0.2:
+        return None
+    if float(warmth[y:][dark].mean()) > 0.045:
+        return None
+    if float(np.percentile(lower, 25)) > 0.2 or float(lower.mean()) > 0.34:
+        return None
+    # The shore itself has to be water. A drop from sky onto a ridge is not
+    # a waterline just because the lake is somewhere further down.
+    shore_h = max(4, int(0.05 * height))
+    shore = slice(y, min(height, y + shore_h))
+    if float(np.median(luma[shore])) > 0.30:
+        return None
+    if float(chroma[shore].mean()) > 0.09 or float(green[shore].mean()) > 0.22:
+        return None
+    if float(warmth[shore].mean()) > 0.05:
+        return None
+
+    above_top = max(0, y - int(0.36 * height))
+    if y - above_top < int(0.08 * height):
+        return None
+    if float(lower.mean()) > float(luma[above_top:y].mean()) - 0.04:
+        return None
+
+    band_h = max(6, int(0.24 * height))
+    below = luma[y : min(height, y + band_h)]
+    above = luma[max(0, y - band_h) : y]
+    if above.shape[0] < 6 or below.shape[0] < 6:
+        return None
+    if float(below.mean()) > 0.3 or float(np.percentile(below, 30)) > 0.22:
+        return None
+
+    above_col = above.mean(axis=0)
+    below_col = below.mean(axis=0)
+    floor = float(np.percentile(below_col, 20))
+    brighter = below_col > np.float32(floor + 0.028)
+    # Vertical ridges show up across columns. A flat echo shows up as brightness.
+    vert = np.abs(np.diff(below, axis=0, prepend=below[:1])).mean(axis=0)
+    horiz = np.zeros(width, dtype=np.float32)
+    if width > 1:
+        gx = np.abs(below[:, 1:] - below[:, :-1]).mean(axis=0)
+        horiz[:-1] += gx
+        horiz[1:] += gx
+        horiz *= np.float32(0.5)
+    detail = np.maximum(vert, horiz)
+    busier = detail > np.float32(float(np.percentile(detail, 45)) + 0.01)
+    mirror_cols = brighter | busier
+    mirror_cols[:2] = False
+    mirror_cols[-2:] = False
+    if int(mirror_cols.sum()) < max(4, int(0.045 * width)):
+        return None
+
+    chosen = _best_mirror_run(mirror_cols, above_col, below_col, detail, width)
+    if chosen is None:
+        return None
+    x0, x1, lift, structure = chosen
+    outside = np.ones(width, dtype=bool)
+    outside[x0:x1] = False
+    outside[:2] = False
+    outside[-2:] = False
+    if int(outside.sum()) < max(4, int(0.06 * width)):
+        return None
+    inside_above = float(above_col[x0:x1].mean())
+    outside_above = float(above_col[outside].mean())
+    inside_std = float(above[:, x0:x1].std())
+    outside_std = float(above[:, outside].std())
+    if abs(inside_above - outside_above) < 0.03 and inside_std < outside_std + 0.008:
+        return None
+    # A facade can match the sky in brightness and still echo through its
+    # windows. A ridge is darker than the sky and brighter than the lake.
+    # Either sign is a horizontal lineup.
+    pad = max(2, int(0.06 * width))
+    left = max(0, x0 - pad)
+    right = min(width, x1 + pad)
+    agreement = _agreement(above_col[left:right], below_col[left:right])
+    same_place = abs(inside_above - outside_above) >= 0.04 or inside_std >= outside_std + 0.01
+    if abs(agreement) < 0.2 and not same_place:
+        return None
+
+    side_level = float(np.median(luma[y:, outside]))
+    row_mean = luma[y:, x0:x1].mean(axis=1)
+    row_edge = np.abs(np.diff(luma[y:, x0:x1], axis=1, prepend=luma[y:, x0 : x0 + 1])).mean(axis=1)
+    side_edge = float(np.abs(np.diff(luma[y:, outside], axis=1, prepend=luma[y:, outside][:, :1])).mean())
+    # The subject itself can cross the shore. The mirror is the dimmer echo.
+    above_level = float(np.percentile(above[:, x0:x1], 55))
+    echo = ((row_mean > side_level + 0.018) | (row_edge > side_edge + 0.008)) & (
+        row_mean < above_level - 0.04
+    )
+    span_rows = _top_run(echo, int(0.12 * height), gap=max(3, int(0.05 * height)))
+    if span_rows is None:
+        return None
+    y0_rel, y1_rel = span_rows
+    if y1_rel - y0_rel < int(0.045 * height):
+        return None
+
+    block = luma[y + y0_rel : y + y1_rel, x0:x1]
+    if block.size == 0:
+        return None
+    # Scattered window lights are warm pinpoints. A mirror fills its box.
+    if float(block.mean()) > 0.72 and (x1 - x0) / float(width) < 0.2:
+        return None
+    if float((warmth[y + y0_rel : y + y1_rel, x0:x1]).mean()) > 0.07 and (x1 - x0) / float(width) < 0.16:
+        return None
+    solid = float(np.mean(block > side_level + 0.015))
+    if solid < 0.28 and structure < 0.012:
+        return None
+
+    source_top = _source_top(luma, y, x0, x1, outside)
+    if y - source_top < int(0.04 * height):
+        return None
+    source = (
+        x0 / width,
+        source_top / height,
+        (x1 - x0) / width,
+        (y - source_top) / height,
+    )
+    reflection = (
+        x0 / width,
+        (y + y0_rel) / height,
+        (x1 - x0) / width,
+        (y1_rel - y0_rel) / height,
+    )
+    score = lift + structure * 2.0 + (x1 - x0) / float(width)
+    return score, source, reflection
+
+
+def _best_mirror_run(
+    mirror_cols: np.ndarray,
+    above_col: np.ndarray,
+    below_col: np.ndarray,
+    vert: np.ndarray,
+    width: int,
+) -> tuple[int, int, float, float] | None:
+    """The widest coherent echo, when it stands out from the water beside it."""
+
+    runs = _merge_runs(_column_runs(mirror_cols), max(2, width // 48))
+    best: tuple[int, int, float, float] | None = None
+    best_score = 0.0
+    for x0, x1 in runs:
+        frac = (x1 - x0) / float(width)
+        if frac < 0.05 or frac > 0.9:
+            continue
+        if float(mirror_cols[x0:x1].mean()) < 0.62:
+            continue
+        outside = np.ones(width, dtype=bool)
+        outside[x0:x1] = False
+        if int(outside.sum()) < max(4, int(0.06 * width)):
+            continue
+        lift = float(below_col[x0:x1].mean() - below_col[outside].mean())
+        structure = float(vert[x0:x1].mean() - vert[outside].mean())
+        if lift < 0.025 and structure < 0.008:
+            continue
+        # The columns have to agree with a shape above, not only a bright pool.
+        if float(np.std(above_col[x0:x1])) + abs(float(above_col[x0:x1].mean() - above_col[outside].mean())) < 0.02:
+            continue
+        score = max(lift, 0.0) + max(structure, 0.0) * 2.0
+        if score > best_score:
+            best_score = score
+            best = (x0, x1, lift, structure)
+    return best
+
+
+def _source_top(
+    luma: np.ndarray,
+    y: int,
+    x0: int,
+    x1: int,
+    outside: np.ndarray,
+) -> int:
+    """Walk up from the shore while those columns still hold the shape.
+
+    A wall can match the sky in brightness for a few rows. Windows and
+    ridges still differ, so a short run of similar rows does not end it.
+    """
+
+    height = luma.shape[0]
+    limit = max(0, y - int(0.46 * height))
+    max_gap = max(3, int(0.04 * height))
+    gap = 0
+    top = y
+    while top > limit:
+        row_in = luma[top - 1, x0:x1]
+        row_side = luma[top - 1, outside]
+        color_gap = abs(float(row_in.mean()) - float(row_side.mean()))
+        detail_gap = abs(float(row_in.std()) - float(row_side.std()))
+        if color_gap < 0.02 and detail_gap < 0.012:
+            gap += 1
+            if gap > max_gap:
+                return min(y, top + gap - 1)
+        else:
+            gap = 0
+        top -= 1
+    return min(y, top + gap)
+
+
+def _column_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, flag in enumerate(mask.tolist()):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, int(mask.size)))
+    return runs
+
+
+def _merge_runs(runs: list[tuple[int, int]], gap: int) -> list[tuple[int, int]]:
+    if not runs:
+        return []
+    merged: list[list[int]] = [[runs[0][0], runs[0][1]]]
+    for x0, x1 in runs[1:]:
+        if x0 - merged[-1][1] <= gap:
+            merged[-1][1] = x1
+        else:
+            merged.append([x0, x1])
+    return [(item[0], item[1]) for item in merged]
+
+
+def _agreement(left: np.ndarray, right: np.ndarray) -> float:
+    """How similarly two column profiles rise and fall. Zero when either is flat."""
+
+    if left.size < 4 or right.size < 4 or left.shape != right.shape:
+        return 0.0
+    if float(np.std(left)) < 1e-4 or float(np.std(right)) < 1e-4:
+        return 0.0
+    return float(np.corrcoef(left.astype(np.float64), right.astype(np.float64))[0, 1])
+
+
+def _top_run(flags: np.ndarray, limit: int, gap: int = 0) -> tuple[int, int] | None:
+    """The run that begins near the shore, skipping a few dark rows inside it.
+
+    A window band in the echo is darker than the water for a moment. That
+    gap is still the mirror. A glint that only starts far below the shore
+    is not.
+    """
+
+    start: int | None = None
+    end: int | None = None
+    missed = 0
+    for index, flag in enumerate(flags.tolist()):
+        if flag:
+            if start is None:
+                if index > limit:
+                    return None
+                start = index
+            missed = 0
+            end = index + 1
+            continue
+        if start is None:
+            continue
+        missed += 1
+        if missed > gap:
+            return start, end
+    if start is None or end is None:
+        return None
+    return start, end
+
+
+def boxes_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> bool:
+    """True when two normalized boxes share any area."""
+
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    width = min(ax + aw, bx + bw) - max(ax, bx)
+    height = min(ay + ah, by + bh) - max(ay, by)
+    return width > 0.0 and height > 0.0
 
 
 def creature_box(
@@ -307,6 +760,10 @@ def _compact_region(
     if fill < 0.28:
         return None
     norm = (x0 / width, y0 / height, box_w / width, box_h / height)
+    # A band of pads or shore can be one connected mass. A creature fills
+    # its box. A wide, half-empty band does not.
+    if norm[2] >= 0.8 and fill < 0.5:
+        return None
     if is_elongated(norm, component.shape):
         return None
     pad_x = int(box_w * 0.12)

@@ -679,6 +679,14 @@ function Get-DarktableVersion {
     return $null
 }
 
+function Get-NoteProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $null }
+    return $prop.Value
+}
+
 function Find-DarktableExe {
     param([string]$Requested)
     if ($Requested) {
@@ -696,16 +704,20 @@ function Find-DarktableExe {
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
     foreach ($root in $roots) {
+        # Some uninstall keys have no DisplayName. Strict mode throws on a missing note property.
         $apps = @(Get-ItemProperty $root -ErrorAction SilentlyContinue | Where-Object {
-                $_.DisplayName -and $_.DisplayName -match 'darktable'
+                $name = Get-NoteProperty $_ 'DisplayName'
+                $name -and ([string]$name -match 'darktable')
             })
         foreach ($app in $apps) {
-            if ($app.InstallLocation) {
-                $candidates.Add((Join-Path $app.InstallLocation 'bin\darktable.exe'))
-                $candidates.Add((Join-Path $app.InstallLocation 'darktable.exe'))
+            $location = Get-NoteProperty $app 'InstallLocation'
+            if ($location) {
+                $candidates.Add((Join-Path $location 'bin\darktable.exe'))
+                $candidates.Add((Join-Path $location 'darktable.exe'))
             }
-            if ($app.DisplayIcon) {
-                $icon = ([string]$app.DisplayIcon) -replace ',.*$', ''
+            $displayIcon = Get-NoteProperty $app 'DisplayIcon'
+            if ($displayIcon) {
+                $icon = ([string]$displayIcon) -replace ',.*$', ''
                 $icon = $icon.Trim('"')
                 if ($icon) { $candidates.Add($icon) }
             }

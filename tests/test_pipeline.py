@@ -15,6 +15,8 @@ import zlib
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -138,13 +140,49 @@ class AnalysisTests(unittest.TestCase):
         self.assertLess(recipe["modules"][0]["params"]["exposure"], -0.4)
         self.assertLess(recipe["analysis"]["atmosphere"]["highlights"], 0)
 
-    def test_blue_preview_is_warmed(self) -> None:
+    def test_a_flat_blue_field_is_not_repainted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             path = _save(Image.new("RGB", (240, 160), (70, 110, 190)), directory, "blue.png")
             recipe = self._run(path, directory)
-        self.assertGreater(recipe["analysis"]["atmosphere"]["temperature_shift"], 0.2)
+        # A saturated blue field is the picture, not a white-balance error.
+        self.assertLess(abs(recipe["analysis"]["atmosphere"]["temperature_shift"]), 0.08)
+        self.assertLess(abs(recipe["analysis"]["atmosphere"]["tint"]), 0.08)
+
+    def test_a_mild_blue_cast_on_gray_is_warmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = _save(Image.new("RGB", (240, 160), (150, 156, 188)), directory, "cast.png")
+            recipe = self._run(path, directory)
+        self.assertGreater(recipe["analysis"]["atmosphere"]["temperature_shift"], 0.08)
+        self.assertLess(recipe["analysis"]["atmosphere"]["temperature_shift"], 0.28)
         self.assertGreater(recipe["modules"][1]["params"]["global_C"], 0)
+
+    def test_brown_red_leaves_keep_their_red(self) -> None:
+        image = Image.new("RGB", (240, 160), (72, 132, 48))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((40, 50, 200, 120), fill=(168, 96, 52))
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = _save(image, directory, "earth.png")
+            recipe = analyze(path, detector="heuristic", advisor="histogram", output_dir=directory)
+        rendered = np.asarray(recipe["_rendered"])
+        before = np.asarray(image.crop((40, 50, 200, 120))).astype(np.float32)
+        after = rendered[50:120, 40:200] * 255.0
+        before_red = float((before[..., 0] - before[..., 1]).mean())
+        after_red = float((after[..., 0] - after[..., 1]).mean())
+        self.assertGreater(after_red, before_red * 0.85)
+        self.assertGreaterEqual(recipe["analysis"]["atmosphere"]["temperature_shift"], -0.02)
+
+    def test_a_dark_green_picture_keeps_its_color(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = _save(Image.new("RGB", (240, 160), (18, 42, 16)), directory, "moss.png")
+            recipe = analyze(path, detector="heuristic", advisor="histogram", output_dir=directory)
+        atmosphere = recipe["analysis"]["atmosphere"]
+        self.assertGreaterEqual(atmosphere["tint"], -0.02)
+        self.assertLess(abs(atmosphere["temperature_shift"]), 0.08)
+        self.assertLessEqual(atmosphere["exposure_ev"], 0.5)
 
     def test_portrait_finds_a_face_and_writes_a_vignette(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

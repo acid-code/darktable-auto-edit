@@ -28,7 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True, help="Where the finished files go")
     parser.add_argument("--detector", choices=DETECTORS, default="auto")
     parser.add_argument("--advisor", choices=ADVISORS, default="histogram")
-    parser.add_argument("--vibe", default="", help="Open text for the look. Empty stays a faithful correction.")
+    parser.add_argument(
+        "--vibe",
+        default="",
+        help="Look to apply. Empty stays a faithful correction. A Fuji sim name, or fuji / fujicam, selects one film simulation.",
+    )
     parser.add_argument("--full-res", action="store_true", help="Decode each RAW at full resolution")
     parser.add_argument("--limit", type=int, default=0, help="Stop after this many files. 0 means the whole folder.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

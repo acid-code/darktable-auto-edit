@@ -21,6 +21,7 @@ from ai_dt.mapping import build_modules, render_style
 from ai_dt.guides.decide import decide_picture
 from ai_dt.guides.library import match_guide
 from ai_dt.recipes.library import blend_look, match_vibe, scene_from_detections
+from ai_dt.recipes.reason import reason_about
 from ai_dt.schema import Atmosphere
 from ai_dt.separate import render_finish
 from ai_dt.simulate import vignette_from_modules
@@ -35,6 +36,26 @@ def _guide_record(guide_match, separation: dict) -> dict:
     record["stages_ran"] = list(separation.get("stages_ran") or [])
     record["skipped"] = list(separation.get("skipped") or [])
     return record
+
+
+def _cap_fuji_color(atmosphere: Atmosphere, picture) -> Atmosphere:
+    """Pull a Fuji grade back inside the measured color window.
+
+    The histogram advisor will not push temperature past ±0.28 or tint
+    past ±0.2, and it will not cool a warm face or add green to it.
+    A film simulation is added on top of that measurement, so the sum is
+    held inside the same bounds. Exposure is the measurement: the shipped
+    Fuji recipes store no exposure offset.
+    """
+
+    temperature = min(max(float(atmosphere.temperature_shift), -0.28), 0.28)
+    tint = min(max(float(atmosphere.tint), -0.2), 0.2)
+    if picture.warmth > 0.05 and picture.type in {"portrait", "group", "street"}:
+        temperature = max(temperature, 0.0)
+        tint = max(tint, 0.0)
+    atmosphere.temperature_shift = temperature
+    atmosphere.tint = tint
+    return atmosphere
 
 
 def _style_name(explicit: str | None) -> str:
@@ -125,21 +146,33 @@ def analyze(
     )
     measured = refine_for_subjects(image, measured, detections)
     atmosphere = combine_atmospheres(measured, suggestion)
-    # The picture type picks the guide (stages and masks). The vibe only
-    # moves the global grade, and it cannot change which guide runs.
+    # The picture type picks the guide. A written description then joins the
+    # recipes whose explanations belong: one grade on the frame, and the
+    # others as masks on a subject or a line.
     picture = decide_picture(loaded.pixels, detections)
     guide_match = match_guide(picture.type, directory=guides_dir)
     scene = scene_from_detections(detections)
     match = match_vibe(scene, vibe, directory=library_dir)
+    reasoning = reason_about(
+        picture,
+        detections,
+        vibe,
+        guide_match.guide,
+        match,
+        directory=library_dir,
+    )
     vignette_strength = 1.0
-    if match.applied and match.recipe is not None:
-        atmosphere = blend_look(atmosphere, match.recipe.stages)
+    if reasoning.frame_stages is not None and match.recipe is not None:
+        atmosphere = blend_look(atmosphere, reasoning.frame_stages)
+        if match.recipe.id.startswith("fuji-"):
+            atmosphere = _cap_fuji_color(atmosphere, picture)
         vignette_strength = float(match.recipe.stages.get("vignette_strength", 1.0))
         atmosphere.source = f"{atmosphere.source}+recipe:{match.recipe.id}"
-        atmosphere.rationale = (
-            f"{atmosphere.rationale} Look \"{match.recipe.title}\" is the nearest "
-            f"recipe ({match.reason})."
-        ).strip()
+    elif reasoning.nudges:
+        names = ",".join(reasoning.nudges)
+        atmosphere.source = f"{atmosphere.source}+masks:{names}"
+    if reasoning.decision:
+        atmosphere.rationale = f"{atmosphere.rationale} {reasoning.decision}".strip()
     adjusted, modules, local_edits, plugins = build_modules(
         image, atmosphere, detections, vignette_strength=vignette_strength
     )
@@ -151,7 +184,22 @@ def analyze(
         guide=guide_match.guide,
         picture=picture,
         guide_match=guide_match,
+        nudges=reasoning.nudges,
     )
+    stacked = [
+        stage
+        for stage in separation.get("stages_ran", [])
+        if stage in {"subject", "eyes", "reflection"}
+    ]
+    if len(stacked) >= 2:
+        names = {"subject": "the subject", "eyes": "the eyes", "reflection": "the reflection"}
+        together = ", ".join(names[stage] for stage in stacked)
+        reasoning.description = (
+            reasoning.description
+            + f" Lifted together: {together}. "
+            + "The history vignette only darkens around the subject. "
+            + "The brightness of these layers is stacked in edited.tif."
+        )
 
     name = _style_name(style_name)
     subject_labels = ", ".join(item.label for item in detections[:6]) or "none"
@@ -200,6 +248,7 @@ def analyze(
         "guide": _guide_record(guide_match, separation),
         "features": list(separation.get("features") or []),
         "recipe_match": match.to_dict(),
+        "reasoning": reasoning.to_dict(),
         "analysis": {
             "mood": adjusted.mood,
             "rationale": adjusted.rationale,

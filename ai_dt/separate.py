@@ -6,10 +6,14 @@ and how hard they push, comes from the guide for the picture type. The
 sharp mask is the union of the features the guide keeps: an animal and the
 perch it stands on, a person and the chair or the object in their hands.
 A facade is not given a bird's background blur, and a night window is not
-promoted into a subject.
+promoted into a subject. A mirror in the water is sharpened on its own:
+a bird's streak, or a wide echo of a house or a mountain. That does not
+cut the building or the land out of the picture.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -23,9 +27,18 @@ from ai_dt.guides.decide import (
     warm_subject_box,
 )
 from ai_dt.guides.library import Guide, GuideMatch, MaskPlan, clamp_grades, match_guide
-from ai_dt.guides.support import creature_box, extend_animal, held_mask, is_elongated, perch_mask, seat_mask
+from ai_dt.guides.support import (
+    creature_box,
+    extend_animal,
+    held_mask,
+    is_elongated,
+    perch_mask,
+    reflected_subject,
+    seat_mask,
+    water_reflection,
+)
 from ai_dt.schema import Atmosphere, Detection
-from ai_dt.simulate import grade_array
+from ai_dt.simulate import contrast_about_luma, grade_array
 
 
 def render_finish(
@@ -37,6 +50,7 @@ def render_finish(
     guide: Guide | None = None,
     picture: Picture | None = None,
     guide_match: GuideMatch | None = None,
+    nudges: dict | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Return float RGB and a description of the type, guide, and masks used."""
 
@@ -64,7 +78,17 @@ def render_finish(
         )
 
     subject, subject_count = _maybe_subject(pixels, detections, picture, guide)
+    # Portraits, groups, night windows, and food do not grow a reflection layer.
+    if picture.type in {"animal", "landscape", "architecture", "general"}:
+        reflection = _reflection_mask(pixels, subject)
+    else:
+        reflection = None
     sharp, kept_now = _sharp_union(pixels, subject, guide)
+    if reflection is not None and sharp is not None:
+        # The mirror is part of the subject. A soft edge would let the
+        # background blur pull the reflection back down into the water.
+        covered = np.clip(reflection / np.float32(0.45), 0.0, 1.0)
+        sharp = np.maximum(sharp, covered)
     isolate = subject is not None
     graded = grade_array(pixels, atmosphere, None if isolate else vignette)
     current = graded
@@ -83,10 +107,15 @@ def render_finish(
             skipped.append(stage)
             continue
         plan = clamp_grades(plan)
+        nudge = None if not nudges else nudges.get(stage)
+        if nudge is not None:
+            plan = _with_nudge(plan, nudge)
         if stage == "subject":
             if subject is None:
                 skipped.append(stage)
                 continue
+            if picture.brightness < 0.32 and picture.type in {"portrait", "group", "street"}:
+                plan = replace(plan, exposure=_low_key_face_exposure(pixels, subject, plan.exposure))
             current = _grade_region(current, subject, plan)
             subject_ev = plan.exposure
             saw_subject = True
@@ -104,6 +133,13 @@ def render_finish(
             current = _grade_region(current, eye_mask, plan)
             ran.append(stage)
             continue
+        if stage == "reflection":
+            if reflection is None:
+                skipped.append(stage)
+                continue
+            current = _grade_reflection(current, reflection, plan)
+            ran.append(stage)
+            continue
         if stage == "skin":
             if subject is None:
                 skipped.append(stage)
@@ -119,6 +155,15 @@ def render_finish(
             if subject is None or (plan.defocus <= 0.0 and plan.mute <= 0.0 and abs(plan.exposure) < 0.01):
                 skipped.append(stage)
                 continue
+            if picture.brightness < 0.32 and picture.type in {"portrait", "group", "street"}:
+                # A night behind a person is part of the picture. Heavy blur
+                # and a mute turn the lights into a flat color.
+                plan = replace(
+                    plan,
+                    defocus=min(plan.defocus, 0.28),
+                    mute=min(plan.mute, 0.1),
+                    saturation=max(plan.saturation, -0.02),
+                )
             current = _grade_background(current, graded, sharp if sharp is not None else subject, plan)
             if plan.defocus > 0.05:
                 background = "defocus"
@@ -130,6 +175,15 @@ def render_finish(
                 skipped.append(stage)
                 continue
             current = _grade_region(current, sky, plan)
+            ran.append(stage)
+            continue
+        if stage == "horizon":
+            horizon = _horizon_mask(pixels)
+            if horizon is None:
+                skipped.append(stage)
+                continue
+            warmth = 0.0 if nudge is None else float(getattr(nudge, "warmth", 0.0))
+            current = _grade_horizon(current, horizon, plan, warmth)
             ran.append(stage)
             continue
         if stage == "foreground":
@@ -362,7 +416,11 @@ def _build_eyes(
     subject: np.ndarray,
 ) -> tuple[np.ndarray | None, int]:
     height, width = pixels.shape[:2]
-    eye_boxes = _boxes(detections, {"eye"})
+    eye_boxes = [
+        box
+        for box in _boxes(detections, {"eye"})
+        if _center_on_subject(box, subject)
+    ]
     eyes = np.zeros((height, width), dtype=np.float32)
     if eye_boxes:
         for box in eye_boxes[:4]:
@@ -423,6 +481,85 @@ def _sky_mask(pixels: np.ndarray) -> np.ndarray | None:
     return mask
 
 
+def _horizon_mask(pixels: np.ndarray) -> np.ndarray | None:
+    """A thin warm line where a sunset meets the land, not the whole sky."""
+
+    height, width = pixels.shape[:2]
+    if height < 32 or width < 32:
+        return None
+    red = pixels[..., 0]
+    green = pixels[..., 1]
+    blue = pixels[..., 2]
+    warm = (red > green + np.float32(0.03)) & (red > blue + np.float32(0.05)) & (red > np.float32(0.25))
+    row = warm.mean(axis=1)
+    y0 = int(height * 0.12)
+    y1 = int(height * 0.78)
+    band = row[y0:y1]
+    if band.size < 8 or float(band.max()) < 0.45:
+        return None
+    peak = int(np.argmax(band)) + y0
+    above = row[max(0, peak - max(4, height // 10)) : peak]
+    if above.size and float(row[peak]) < float(above.mean()) + 0.2:
+        return None
+    yy = np.arange(height, dtype=np.float32)
+    sigma = max(2.0, height * 0.028)
+    stripe = np.exp(np.float32(-0.5) * ((yy - np.float32(peak)) / np.float32(sigma)) ** 2)
+    mask = stripe[:, None] * warm.astype(np.float32)
+    mask = _blur(mask, 1.4)
+    if float(mask.mean()) < 0.008 or float(mask.max()) < 0.35:
+        return None
+    return mask
+
+
+def _with_nudge(plan: MaskPlan, nudge: object) -> MaskPlan:
+    """Add one joined recipe onto a mask, then clamp it again."""
+
+    clarity = plan.clarity
+    extra = getattr(nudge, "clarity", None)
+    if extra is not None:
+        clarity = plan.clarity + float(extra)
+    return clamp_grades(
+        replace(
+            plan,
+            exposure=plan.exposure + float(getattr(nudge, "exposure", 0.0)),
+            contrast=plan.contrast + float(getattr(nudge, "contrast", 0.0)),
+            saturation=plan.saturation + float(getattr(nudge, "saturation", 0.0)),
+            clarity=clarity,
+        )
+    )
+
+
+def _grade_horizon(
+    pixels: np.ndarray,
+    mask: np.ndarray,
+    plan: MaskPlan,
+    warmth: float = 0.0,
+) -> np.ndarray:
+    """Warm the sunset line. Green is held back so the band cannot turn lime."""
+
+    adjusted = _tone(pixels, plan)
+    adjusted = adjusted.copy()
+    boost = np.float32(1.08 + max(0.0, min(0.05, float(warmth))))
+    adjusted[..., 0] = np.clip(adjusted[..., 0] * boost + np.float32(0.015), 0.0, 1.0)
+    adjusted[..., 1] = np.clip(adjusted[..., 1] * np.float32(0.96), 0.0, 1.0)
+    adjusted[..., 2] = np.clip(adjusted[..., 2] * np.float32(0.9), 0.0, 1.0)
+    weight = mask[..., None]
+    return np.clip(adjusted * weight + pixels * (1.0 - weight), 0.0, 1.0)
+
+
+def _low_key_face_exposure(pixels: np.ndarray, subject: np.ndarray, base: float) -> float:
+    luma = _luma(pixels)
+    chosen = subject > np.float32(0.45)
+    if float(chosen.mean()) < 0.005:
+        return base
+    median = float(np.median(luma[chosen]))
+    if median >= 0.4:
+        return base
+    extra = float(np.log2((0.38 + 1e-4) / (median + 1e-4)))
+    extra = max(0.0, min(0.28, extra * 0.45))
+    return max(-0.35, min(0.35, base + extra))
+
+
 def _foreground_mask(
     pixels: np.ndarray,
     plan: MaskPlan,
@@ -454,6 +591,44 @@ def _grade_highlights(pixels: np.ndarray, plan: MaskPlan) -> tuple[np.ndarray, b
     return np.clip(mixed, 0.0, 1.0), True
 
 
+def _grade_reflection(pixels: np.ndarray, mask: np.ndarray, plan: MaskPlan) -> np.ndarray:
+    """Sharpen the mirror and lift it a little, without painting a new color.
+
+    Contrast pivots on the echo itself, so a dark streak is not pulled toward
+    gray and a bright ridge is not shoved into white. Clarity does most of
+    the separating. Exposure stays modest and backs off when the echo is
+    already bright.
+    """
+
+    exposure = float(plan.exposure)
+    chosen = mask > np.float32(0.5)
+    luma0 = _luma(pixels)
+    if int(chosen.sum()) > 30:
+        origin = float(np.median(luma0[chosen]))
+        if origin > 0.62:
+            exposure = min(exposure, 0.04)
+        elif origin > 0.48:
+            exposure = min(exposure, 0.08)
+    out = pixels * np.float32(2.0 ** exposure)
+    luma = _luma(out)
+    pivot = float(np.median(luma[chosen])) if int(chosen.sum()) > 30 else 0.5
+    pivot = min(0.8, max(0.05, pivot))
+    contrast = float(plan.contrast)
+    new_luma = (luma - np.float32(pivot)) * np.float32(1.0 + contrast) + np.float32(pivot)
+    head = np.clip((luma - np.float32(0.78)) / np.float32(0.16), 0.0, 1.0)
+    new_luma = new_luma * (1.0 - head) + luma * head
+    new_luma = np.clip(new_luma, 0.0, 1.0)
+    out = out * (new_luma / np.maximum(luma, np.float32(1e-4)))[..., None]
+    if abs(plan.clarity) >= 0.01:
+        soft = _blur_rgb(np.clip(out, 0.0, 1.0), 1.3)
+        detail = (out - soft) * np.float32(plan.clarity * 2.0)
+        room = np.clip((np.float32(0.98) - np.max(out, axis=2)) / np.float32(0.18), 0.0, 1.0)
+        out = out + detail * room[..., None]
+    out = np.clip(out, 0.0, 1.0)
+    weight = mask[..., None]
+    return np.clip(out * weight + pixels * (1.0 - weight), 0.0, 1.0)
+
+
 def _grade_region(pixels: np.ndarray, mask: np.ndarray, plan: MaskPlan) -> np.ndarray:
     adjusted = _tone(pixels, plan)
     weight = mask[..., None]
@@ -479,7 +654,7 @@ def _grade_background(
 
 def _tone(pixels: np.ndarray, plan: MaskPlan, mute: float = 0.0) -> np.ndarray:
     out = pixels * np.float32(2.0 ** plan.exposure)
-    out = (out - 0.5) * np.float32(1.0 + plan.contrast) + 0.5
+    out = contrast_about_luma(out, float(plan.contrast))
     luma = _luma(out)
     chroma = np.float32((1.0 - mute) * (1.0 + plan.saturation))
     out = luma[..., None] + (out - luma[..., None]) * chroma
@@ -514,6 +689,85 @@ def _ellipse(
     return (1.0 - edge).astype(np.float32)
 
 
+def _center_on_subject(
+    box: tuple[float, float, float, float],
+    subject: np.ndarray,
+) -> bool:
+    height, width = subject.shape
+    cx = min(width - 1, max(0, int((box[0] + box[2] * 0.5) * width)))
+    cy = min(height - 1, max(0, int((box[1] + box[3] * 0.5) * height)))
+    return float(subject[cy, cx]) > 0.2
+
+
+def _reflection_mask(pixels: np.ndarray, subject: np.ndarray | None) -> np.ndarray | None:
+    """The mirror in the water: a bird's streak, or a wider echo below a shore.
+
+    A compact animal keeps the tight ellipse under its body. A house or a
+    mountain has no subject mask; only the echo is graded, and the shape
+    above is left alone.
+    """
+
+    height, width = int(pixels.shape[0]), int(pixels.shape[1])
+    compact = reflected_subject(pixels)
+    if compact is not None and subject is not None and float(np.max(subject)) > 0.0:
+        _body, reflection = compact
+        if _reflection_under_subject(reflection, subject):
+            return _ellipse(height, width, reflection, expand=1.2, inner=0.5, feather=0.85)
+    found = water_reflection(pixels)
+    if found is None:
+        return None
+    _source, reflection = found
+    if subject is not None and float(np.max(subject)) > 0.0:
+        if not _reflection_under_subject(reflection, subject):
+            return None
+    return _soft_rect(height, width, reflection)
+
+
+def _reflection_under_subject(
+    reflection: tuple[float, float, float, float],
+    subject: np.ndarray,
+) -> bool:
+    """True when the mirror sits below the subject and shares its columns."""
+
+    height, width = subject.shape
+    ys, xs = np.nonzero(subject > np.float32(0.45))
+    if ys.size == 0:
+        return False
+    subject_left = float(xs.min()) / width
+    subject_right = float(xs.max() + 1) / width
+    subject_top = float(ys.min()) / height
+    center_x = reflection[0] + reflection[2] * 0.5
+    if center_x < subject_left - 0.06 or center_x > subject_right + 0.06:
+        return False
+    return reflection[1] >= subject_top
+
+
+def _soft_rect(
+    height: int,
+    width: int,
+    bbox: tuple[float, float, float, float],
+) -> np.ndarray | None:
+    """A soft box that stays on the mirror and off the water beside it.
+
+    An ellipse around a wide ridge swallows the water on either side. The
+    feather here is only a few pixels, so the sides stay the water they are.
+    """
+
+    x, y, bw, bh = bbox
+    pad_x = 0.008
+    pad_y = 0.01
+    x0 = max(0, int((x - pad_x) * width))
+    y0 = max(0, int((y - pad_y) * height))
+    x1 = min(width, int(round((x + bw + pad_x) * width)))
+    y1 = min(height, int(round((y + bh + pad_y) * height)))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((height, width), dtype=np.float32)
+    mask[y0:y1, x0:x1] = 1.0
+    radius = max(1.0, 0.012 * min(height, width))
+    return _blur(mask, radius)
+
+
 def _synthetic_eyes(pixels: np.ndarray, subject: np.ndarray) -> tuple[np.ndarray | None, int]:
     """A small dark spot inside the subject, used when no eye detector fired."""
 
@@ -523,10 +777,17 @@ def _synthetic_eyes(pixels: np.ndarray, subject: np.ndarray) -> tuple[np.ndarray
     coarse = _blur(luma, max(4.0, 0.03 * min(height, width)))
     blob = coarse - fine
     core = (blob > np.float32(0.05)) & (subject > np.float32(0.45)) & (luma < np.float32(0.62))
+    rows = np.nonzero(subject > np.float32(0.45))[0]
+    if rows.size:
+        top = int(rows.min())
+        bottom = int(rows.max())
+        # Eyes sit in the upper part of a face. A dark collar is not an eye.
+        cut = top + int((bottom - top) * 0.52)
+        core[cut:, :] = False
     if int(core.sum()) < 6:
         return None, 0
     strength = np.where(core, blob, np.float32(0.0))
-    radius = max(4, int(round(0.018 * min(height, width))))
+    radius = max(3, int(round(0.012 * min(height, width))))
     mask = np.zeros((height, width), dtype=np.float32)
     found = 0
     for _ in range(2):

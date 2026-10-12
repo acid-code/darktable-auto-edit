@@ -1,0 +1,28 @@
+{
+  "id": "fuji-eterna",
+  "title": "Fuji Eterna",
+  "scenes": [
+    "general",
+    "night"
+  ],
+  "vibes": [
+    "eterna",
+    "cinema",
+    "flat",
+    "fuji"
+  ],
+  "description": "Fuji Eterna. A flat cinema look with lifted shadows and low color.",
+  "place": "frame",
+  "explains": "Use this on the whole frame only when this look was asked for. It does not replace the measured color on its own, and it does not cool earth reds into blue-green.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": -0.18,
+    "temperature_shift": 0.0,
+    "tint": 0.0,
+    "saturation": -0.16,
+    "shadows": 0.22,
+    "highlights": -0.06,
+    "vibrance": 0.0,
+    "vignette_strength": 0.5
+  }
+}
