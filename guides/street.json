@@ -1,0 +1,97 @@
+{
+  "id": "street",
+  "title": "Street",
+  "types": [
+    "street",
+    "urban",
+    "candid"
+  ],
+  "words": [
+    "street",
+    "urban",
+    "candid",
+    "pavement",
+    "person",
+    "place"
+  ],
+  "description": "A person small in a street or another built place. The person stays sharp enough to read. The street is only slightly softened so the place remains.",
+  "reason": "A person in a street stays recognizable, and the street around them is only slightly softened so the place remains.",
+  "keep": [
+    "person"
+  ],
+  "quiet": [
+    "street"
+  ],
+  "features": {
+    "person": "The person stays sharp enough to read.",
+    "street": "The street is only slightly softened, so the place remains."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "eyes",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "face",
+      "skip": "Skip the person when nobody is clearly separate from the street.",
+      "exposure": 0.1,
+      "contrast": 0.04,
+      "saturation": 0.06,
+      "clarity": 0.08,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "eyes",
+      "skip": "Skip the eyes when the person is too small for an eye to matter.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.12,
+      "clarity": 0.4,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the street blur when the person could not be isolated.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.35,
+      "mute": 0.15
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

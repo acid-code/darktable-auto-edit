@@ -1,0 +1,18 @@
+{
+  "id": "landscape-golden",
+  "title": "Golden landscape",
+  "scenes": ["landscape"],
+  "vibes": ["golden", "sunset", "hour", "warm"],
+  "description": "Late sun on open land. Warm highlights, richer color, and a soft falloff at the edges.",
+  "stages": {
+    "exposure_ev": 0.06,
+    "contrast": 0.14,
+    "temperature_shift": 0.72,
+    "tint": 0.06,
+    "saturation": 0.22,
+    "shadows": 0.12,
+    "highlights": 0.08,
+    "vibrance": 0.28,
+    "vignette_strength": 0.6
+  }
+}

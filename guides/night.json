@@ -1,0 +1,102 @@
+{
+  "id": "night",
+  "title": "Night",
+  "types": [
+    "night",
+    "dark",
+    "city"
+  ],
+  "words": [
+    "night",
+    "dark",
+    "city",
+    "lights",
+    "evening",
+    "blue"
+  ],
+  "description": "A dark, cool frame. Highlights are quieted so lamps and windows stay lights. Do not cut a subject out of them.",
+  "reason": "The frame is dark, so highlights are held back and small lights are not turned into a subject.",
+  "keep": [],
+  "quiet": [
+    "highlights"
+  ],
+  "features": {
+    "highlights": "Lamps and windows are held back so they stay lights, not a cut-out subject."
+  },
+  "stages": [
+    "grade",
+    "highlights"
+  ],
+  "masks": {
+    "subject": {
+      "build": "never",
+      "skip": "Skip the subject. This picture has no separate body to cut out.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "never",
+      "skip": "Skip the eyes. There is no eye that should be clarified.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "never",
+      "skip": "Skip the background. Nothing here should be blurred behind a subject.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "highlights": {
+      "build": "highlights",
+      "skip": "Skip highlight protection when nothing in the frame is actually bright.",
+      "exposure": -0.22,
+      "contrast": 0.0,
+      "saturation": -0.08,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.12
+    }
+  }
+}

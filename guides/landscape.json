@@ -1,0 +1,96 @@
+{
+  "id": "landscape",
+  "title": "Landscape",
+  "types": [
+    "landscape",
+    "sky",
+    "land",
+    "horizon"
+  ],
+  "words": [
+    "landscape",
+    "sky",
+    "land",
+    "horizon",
+    "scenery",
+    "open"
+  ],
+  "description": "Sky over a wider scene. The landform stays sharp, and there is usually no defocus. The sky stays in the picture and can be graded on its own.",
+  "reason": "The land and the sky are the picture, so neither is treated as a subject and nothing is blurred away.",
+  "keep": [
+    "land",
+    "sky"
+  ],
+  "quiet": [],
+  "features": {
+    "land": "The landform stays sharp. A landscape usually has no defocus.",
+    "sky": "The sky stays in the picture and can be graded on its own."
+  },
+  "stages": [
+    "grade",
+    "sky",
+    "foreground"
+  ],
+  "masks": {
+    "subject": {
+      "build": "never",
+      "skip": "Skip the subject. This picture has no separate body to cut out.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "never",
+      "skip": "Skip the eyes. There is no eye that should be clarified.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "sky",
+      "skip": "Skip the sky when the upper frame is not actually sky.",
+      "exposure": -0.06,
+      "contrast": 0.0,
+      "saturation": 0.08,
+      "clarity": 0.06,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "never",
+      "skip": "Skip the background. Nothing here should be blurred behind a subject.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "foreground": {
+      "build": "foreground",
+      "skip": "Skip the land when there is no sky above it to separate from.",
+      "exposure": 0.02,
+      "contrast": 0.04,
+      "saturation": 0.0,
+      "clarity": 0.1,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

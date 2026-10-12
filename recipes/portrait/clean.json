@@ -1,0 +1,18 @@
+{
+  "id": "portrait-clean",
+  "title": "Clean portrait",
+  "scenes": ["portrait"],
+  "vibes": ["clean", "bright", "airy", "fresh"],
+  "description": "A bright airy portrait. Open shadows, calm color, and only a hint of edge darkening.",
+  "stages": {
+    "exposure_ev": 0.18,
+    "contrast": 0.08,
+    "temperature_shift": 0.06,
+    "tint": -0.02,
+    "saturation": -0.12,
+    "shadows": 0.28,
+    "highlights": -0.12,
+    "vibrance": 0.08,
+    "vignette_strength": 0.3
+  }
+}

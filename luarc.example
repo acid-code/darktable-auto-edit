@@ -1,0 +1,4 @@
+-- Load the AI editor at Darktable startup.
+-- The ai_editor folder must sit in the Lua search path, normally:
+--   <darktable config>/lua/ai_editor/
+require "ai_editor/ai_editor"

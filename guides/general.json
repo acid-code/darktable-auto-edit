@@ -1,0 +1,85 @@
+{
+  "id": "general",
+  "title": "Faithful general",
+  "types": [
+    "general",
+    "faithful"
+  ],
+  "words": [
+    "general",
+    "faithful",
+    "neutral",
+    "correction",
+    "plain"
+  ],
+  "description": "A frame with no clear subject, or a type no guide knows. Keep the measured global grade and do not cut anything out.",
+  "reason": "Nothing in the frame should be cut out, so the edit stays the global grade.",
+  "keep": [],
+  "quiet": [],
+  "features": {},
+  "stages": [
+    "grade"
+  ],
+  "masks": {
+    "subject": {
+      "build": "never",
+      "skip": "Skip the subject. This picture has no separate body to cut out.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "never",
+      "skip": "Skip the eyes. There is no eye that should be clarified.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "never",
+      "skip": "Skip the background. Nothing here should be blurred behind a subject.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

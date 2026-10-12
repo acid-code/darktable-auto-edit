@@ -1,0 +1,99 @@
+{
+  "id": "group",
+  "title": "Group",
+  "types": [
+    "group",
+    "people",
+    "several"
+  ],
+  "words": [
+    "group",
+    "people",
+    "several",
+    "faces",
+    "gathering"
+  ],
+  "description": "More than one person shares the frame. Each person stays sharp, and a chair someone is clearly sitting on can stay too. Each face is lifted slightly and the place behind them falls softer without disappearing.",
+  "reason": "Several people share the frame, so each face is lifted slightly and the background stays softer without disappearing.",
+  "keep": [
+    "person",
+    "seat"
+  ],
+  "quiet": [
+    "background"
+  ],
+  "features": {
+    "person": "Each person stays sharp, with the face lifted a little.",
+    "seat": "A chair someone is clearly sitting on stays sharp with them.",
+    "background": "The place behind the group falls softer without disappearing."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "skin",
+    "eyes",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "face",
+      "skip": "Skip the faces when fewer than two people are clearly present.",
+      "exposure": 0.1,
+      "contrast": 0.04,
+      "saturation": 0.08,
+      "clarity": 0.03,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "eyes",
+      "skip": "Skip the eyes when no eye is found on the group.",
+      "exposure": 0.03,
+      "contrast": 0.0,
+      "saturation": 0.18,
+      "clarity": 0.55,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "skin",
+      "skip": "Skip skin when the faces have no skin tones to smooth.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": -0.06,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the background when the faces could not be isolated.",
+      "exposure": -0.04,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.6,
+      "mute": 0.22
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

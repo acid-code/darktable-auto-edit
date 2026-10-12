@@ -1,0 +1,96 @@
+{
+  "id": "architecture",
+  "title": "Architecture",
+  "types": [
+    "architecture",
+    "building",
+    "facade",
+    "structure"
+  ],
+  "words": [
+    "architecture",
+    "building",
+    "facade",
+    "structure",
+    "lines",
+    "windows"
+  ],
+  "description": "A building or another line-filled structure. The building stays sharp. Sky beside it can be treated differently, and it is not a reason to blur the facade or to invent a subject.",
+  "reason": "The building is the subject and it fills the frame, so the structure stays sharp and no background is invented.",
+  "keep": [
+    "building"
+  ],
+  "quiet": [
+    "sky"
+  ],
+  "features": {
+    "building": "The building stays sharp. The facade is not cut out and is not blurred.",
+    "sky": "Sky beside the building can be treated differently, and it is not turned into a subject."
+  },
+  "stages": [
+    "grade",
+    "foreground"
+  ],
+  "masks": {
+    "subject": {
+      "build": "never",
+      "skip": "Skip the subject. This picture has no separate body to cut out.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "never",
+      "skip": "Skip the eyes. There is no eye that should be clarified.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "never",
+      "skip": "Skip the background. Nothing here should be blurred behind a subject.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "foreground": {
+      "build": "structure",
+      "skip": "Skip the structure grade when the frame has no lines to protect.",
+      "exposure": 0.0,
+      "contrast": 0.04,
+      "saturation": 0.0,
+      "clarity": 0.12,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

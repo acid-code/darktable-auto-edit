@@ -1,0 +1,97 @@
+{
+  "id": "macro",
+  "title": "Macro",
+  "types": [
+    "macro",
+    "close",
+    "detail"
+  ],
+  "words": [
+    "macro",
+    "close",
+    "detail",
+    "petal",
+    "texture",
+    "near"
+  ],
+  "description": "A close subject fills the middle of the frame. The subject stays sharp and is clarified. The corners fall soft.",
+  "reason": "A close subject fills the middle of the frame, so it is clarified and the corners fall soft.",
+  "keep": [
+    "object"
+  ],
+  "quiet": [
+    "background"
+  ],
+  "features": {
+    "object": "The close subject stays sharp and is clarified.",
+    "background": "The corners fall soft."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "eyes",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "subject",
+      "skip": "Skip the close subject when nothing fills the middle of the frame.",
+      "exposure": 0.06,
+      "contrast": 0.0,
+      "saturation": 0.1,
+      "clarity": 0.35,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "eyes",
+      "skip": "Skip the eye when this close subject has none.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.16,
+      "clarity": 0.5,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the corners when the close subject could not be isolated.",
+      "exposure": -0.05,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.75,
+      "mute": 0.28
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

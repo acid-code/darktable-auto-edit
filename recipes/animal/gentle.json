@@ -1,0 +1,18 @@
+{
+  "id": "animal-gentle",
+  "title": "Gentle animal",
+  "scenes": ["animal"],
+  "vibes": ["gentle", "soft", "kind", "quiet"],
+  "description": "Soft light on an animal. Warm midtones, a little shadow lift, and a light vignette.",
+  "stages": {
+    "exposure_ev": 0.05,
+    "contrast": -0.1,
+    "temperature_shift": 0.28,
+    "tint": 0.02,
+    "saturation": 0.06,
+    "shadows": 0.22,
+    "highlights": 0.0,
+    "vibrance": 0.14,
+    "vignette_strength": 0.6
+  }
+}

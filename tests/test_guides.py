@@ -1,0 +1,594 @@
+"""Picture type decides the guide. A vibe cannot turn a portrait into wildlife."""
+
+from __future__ import annotations
+
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+
+from ai_dt.cli import main
+from ai_dt.guides.decide import Picture, decide_picture
+from ai_dt.guides.ingest import ingest_note
+from ai_dt.guides.library import load_guides, match_guide, validate_guide
+from ai_dt.pipeline import analyze, write_outputs
+from ai_dt.schema import Atmosphere, Detection
+from ai_dt.separate import render_finish
+from ai_dt.simulate import sample_image
+
+ROOT = Path(__file__).resolve().parents[1]
+GUIDES = ROOT / "guides"
+
+
+def _texture(pixels: np.ndarray) -> float:
+    values = pixels.astype(np.float32)
+    return float(np.mean(np.abs(values[:, 1:] - values[:, :-1])))
+
+
+def _bird() -> np.ndarray:
+    rng = np.random.default_rng(4)
+    height, width = 480, 720
+    noise = rng.random((height, width, 3), dtype=np.float32)
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    image[..., 0] = 0.12 + 0.18 * noise[..., 0]
+    image[..., 1] = 0.32 + 0.40 * noise[..., 1]
+    image[..., 2] = 0.10 + 0.12 * noise[..., 2]
+    image[:, ::17, :] *= 0.3
+    image[::13, :, :] *= 0.4
+    image[180:420, 300:480] = (0.10, 0.10, 0.11)
+    image[150:250, 330:470] = (0.78, 0.12, 0.08)
+    image[260:360, 340:460] = (0.86, 0.70, 0.10)
+    image[188:206, 400:418] = (0.04, 0.03, 0.03)
+    image[193:198, 406:411] = (0.92, 0.92, 0.90)
+    return np.clip(image, 0.0, 1.0)
+
+
+def _save_array(pixels: np.ndarray, path: Path) -> None:
+    image = Image.fromarray(np.rint(np.clip(pixels, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB")
+    image.save(path)
+
+
+def _line_grid() -> Image.Image:
+    image = Image.new("RGB", (640, 480), (186, 184, 176))
+    draw = ImageDraw.Draw(image)
+    for x in range(16, 300, 14):
+        draw.line((x, 24, x, 450), fill=(18, 18, 18), width=4)
+    for y in range(24, 450, 14):
+        draw.line((16, y, 300, y), fill=(18, 18, 18), width=4)
+    return image
+
+
+def _night() -> np.ndarray:
+    rng = np.random.default_rng(1)
+    frame = np.zeros((480, 720, 3), dtype=np.float32)
+    frame[..., 0] = 0.04
+    frame[..., 1] = 0.07
+    frame[..., 2] = 0.16
+    frame += rng.random(frame.shape, dtype=np.float32) * np.float32(0.02)
+    for x, y in ((80, 100), (200, 140), (400, 90), (560, 160)):
+        frame[y : y + 18, x : x + 14] = (0.85, 0.62, 0.22)
+    return np.clip(frame, 0.0, 1.0)
+
+
+def _blue_subject() -> np.ndarray:
+    """A compact subject that is not red or yellow."""
+
+    frame = np.full((480, 720, 3), (0.45, 0.48, 0.42), dtype=np.float32)
+    frame[160:340, 260:460] = (0.15, 0.35, 0.75)
+    return frame
+
+
+def _landscape() -> np.ndarray:
+    rng = np.random.default_rng(2)
+    height, width = 480, 720
+    frame = np.zeros((height, width, 3), dtype=np.float32)
+    frame[:220] = (0.45, 0.62, 0.86)
+    frame[220:] = (0.28, 0.38, 0.16)
+    frame[220:] += rng.random((height - 220, width, 3), dtype=np.float32) * np.float32(0.08)
+    return np.clip(frame, 0.0, 1.0)
+
+
+def _note(guide_id: str = "tide-pool", picture_type: str = "tide-pool") -> dict:
+    skip = "Skip this mask. A tide pool keeps the global grade."
+    empty = {
+        "build": "never",
+        "skip": skip,
+        "exposure": 0.0,
+        "contrast": 0.0,
+        "saturation": 0.0,
+        "clarity": 0.0,
+        "defocus": 0.0,
+        "mute": 0.0,
+    }
+    return {
+        "id": guide_id,
+        "title": "Tide pool",
+        "types": [picture_type, "tide"],
+        "words": ["tide", "pool", "water", "rocks"],
+        "description": "A small tide pool. Keep the rocks sharp and do not invent a creature from the reflections.",
+        "reason": "Water and rock stay as they are, so this picture keeps the global grade.",
+        "stages": ["grade"],
+        "masks": {
+            name: dict(empty)
+            for name in ("subject", "eyes", "skin", "sky", "background", "foreground")
+        },
+    }
+
+
+class GuideLibraryTests(unittest.TestCase):
+    def test_shipped_guides_load_without_warnings(self) -> None:
+        guides, warnings = load_guides()
+        self.assertEqual(warnings, [])
+        ids = {item.id for item in guides}
+        for guide_id in (
+            "portrait",
+            "group",
+            "animal",
+            "landscape",
+            "architecture",
+            "night",
+            "food",
+            "still-life",
+            "street",
+            "macro",
+            "general",
+        ):
+            self.assertIn(guide_id, ids)
+        self.assertGreaterEqual(len(guides), 11)
+
+    def test_each_picture_type_finds_its_own_guide(self) -> None:
+        expected = {
+            "portrait": "portrait",
+            "group": "group",
+            "animal": "animal",
+            "wildlife": "animal",
+            "landscape": "landscape",
+            "architecture": "architecture",
+            "building": "architecture",
+            "night": "night",
+            "food": "food",
+            "still-life": "still-life",
+            "street": "street",
+            "macro": "macro",
+            "general": "general",
+        }
+        for picture_type, guide_id in expected.items():
+            match = match_guide(picture_type)
+            self.assertEqual(match.guide.id, guide_id, picture_type)
+            self.assertFalse(match.fallback, picture_type)
+            self.assertEqual(match.vectorizer, "term-frequency")
+            self.assertEqual(match.method, "nearest-neighbor")
+
+    def test_a_nonsense_type_uses_the_faithful_general_guide(self) -> None:
+        match = match_guide("zzzz qqqq")
+        self.assertTrue(match.fallback)
+        self.assertEqual(match.guide.id, "general")
+        self.assertIn("faithful general guide", match.reason)
+        self.assertIn("grade", match.guide.stages)
+        self.assertNotIn("subject", match.guide.stages)
+
+    def test_a_guide_cannot_ask_for_a_blowout(self) -> None:
+        note = _note()
+        note["masks"]["subject"]["exposure"] = 4.0
+        note["masks"]["subject"]["build"] = "subject"
+        with self.assertRaises(ValueError):
+            validate_guide(note)
+
+    def test_only_the_background_may_defocus(self) -> None:
+        note = _note()
+        note["masks"]["foreground"]["defocus"] = 0.8
+        note["masks"]["foreground"]["build"] = "foreground"
+        with self.assertRaises(ValueError):
+            validate_guide(note)
+
+    def test_folder_name_is_not_required_for_a_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            library = Path(tmp)
+            odd = library / "not-a-type"
+            odd.mkdir()
+            (odd / "note.json").write_text(json.dumps(_note()), encoding="utf-8")
+            match = match_guide("tide-pool", directory=library)
+        self.assertEqual(match.guide.id, "tide-pool")
+        self.assertFalse(match.fallback)
+
+
+class GuideIngestTests(unittest.TestCase):
+    def test_a_json_note_is_filed_under_its_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            note = root / "note.json"
+            library = root / "guides"
+            note.write_text(json.dumps(_note()), encoding="utf-8")
+            destination = ingest_note(note, library)
+            self.assertEqual(destination, library / "tide-pool" / "tide-pool.json")
+            guides, warnings = load_guides(library)
+        self.assertEqual(warnings, [])
+        self.assertEqual(guides[0].id, "tide-pool")
+
+    def test_a_text_note_is_filed_too(self) -> None:
+        text = """
+id: tide-pool
+title: Tide pool
+types: tide-pool, tide
+words: tide, pool, water, rocks
+description: A small tide pool. Keep the rocks sharp and do not invent a creature from the reflections.
+reason: Water and rock stay as they are, so this picture keeps the global grade.
+stages: grade
+
+mask subject
+build: never
+skip: Skip this mask. A tide pool keeps the global grade.
+exposure: 0
+
+mask eyes
+build: never
+skip: Skip this mask. A tide pool keeps the global grade.
+
+mask skin
+build: never
+skip: Skip this mask. A tide pool keeps the global grade.
+
+mask sky
+build: never
+skip: Skip this mask. A tide pool keeps the global grade.
+
+mask background
+build: never
+skip: Skip this mask. A tide pool keeps the global grade.
+
+mask foreground
+build: never
+skip: Skip this mask. A tide pool keeps the global grade.
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            note = root / "note.txt"
+            library = root / "guides"
+            note.write_text(text, encoding="utf-8")
+            destination = ingest_note(note, library)
+            self.assertTrue(destination.is_file())
+            match = match_guide("tide", directory=library)
+        self.assertEqual(match.guide.id, "tide-pool")
+
+    def test_a_broken_note_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            note = root / "note.json"
+            note.write_text('{"id": "nope", "title": ""}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                ingest_note(note, root / "guides")
+
+    def test_an_existing_id_is_not_replaced_quietly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            note = root / "note.json"
+            library = root / "guides"
+            note.write_text(json.dumps(_note()), encoding="utf-8")
+            ingest_note(note, library)
+            with self.assertRaises(ValueError):
+                ingest_note(note, library)
+
+
+class PictureTypeTests(unittest.TestCase):
+    def test_a_face_portrait_uses_the_portrait_guide_and_keeps_the_eyes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "face.png"
+            sample_image("portrait").save(path)
+            before = {item.relative_to(GUIDES) for item in GUIDES.rglob("*") if item.is_file()}
+            recipe = analyze(path, detector="heuristic", advisor="histogram", vibe="wildlife")
+            after = {item.relative_to(GUIDES) for item in GUIDES.rglob("*") if item.is_file()}
+            rendered = np.array(recipe["_rendered"])
+            write_outputs(recipe, directory)
+            payload = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+        self.assertEqual(before, after)
+        self.assertEqual(recipe["picture"]["type"], "portrait")
+        self.assertEqual(recipe["guide"]["id"], "portrait")
+        self.assertEqual(recipe["guide"]["file"], "guides/portrait.json")
+        self.assertFalse(recipe["guide"]["fallback"])
+        self.assertIn("face", recipe["guide"]["reason"].lower())
+        ran = recipe["guide"]["stages_ran"]
+        self.assertLess(ran.index("subject"), ran.index("eyes"))
+        self.assertLess(ran.index("eyes"), ran.index("background"))
+        self.assertTrue(recipe["separation"]["applied"])
+        self.assertGreaterEqual(recipe["separation"]["eyes"], 1)
+        self.assertEqual(recipe["separation"]["background"], "defocus")
+        self.assertEqual(payload["picture"]["type"], "portrait")
+        self.assertEqual(payload["guide"]["id"], "portrait")
+        self.assertEqual(payload["features"], ["person"])
+        self.assertNotIn("seat", payload["features"])
+        self.assertNotIn("perch", payload["features"])
+        # The background is softer than the original dark field, and the face is still there.
+        self.assertGreater(float(rendered[80:200, 80:180].std()), 0.0)
+        self.assertNotEqual(recipe["guide"]["id"], "animal")
+
+    def test_a_wildlife_vibe_does_not_change_a_portrait(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "face.png"
+            sample_image("portrait").save(path)
+            recipe = analyze(
+                path,
+                detector="heuristic",
+                advisor="histogram",
+                vibe="wildlife",
+            )
+        self.assertEqual(recipe["picture"]["type"], "portrait")
+        self.assertEqual(recipe["guide"]["id"], "portrait")
+        self.assertNotIn("animal", recipe["guide"]["stages"])
+
+    def test_a_line_grid_facade_is_architecture_and_is_not_defocused(self) -> None:
+        image = _line_grid()
+        original = np.asarray(image).astype(np.float32) / 255.0
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "facade.png"
+            image.save(path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram", vibe="wildlife")
+            rendered = np.array(recipe["_rendered"])
+        self.assertEqual(recipe["picture"]["type"], "architecture")
+        self.assertEqual(recipe["guide"]["id"], "architecture")
+        self.assertFalse(recipe["separation"]["applied"])
+        self.assertEqual(recipe["separation"]["background"], "unchanged")
+        self.assertEqual(recipe["separation"]["subject_masks"], 0)
+        self.assertNotIn("background", recipe["guide"]["stages_ran"])
+        self.assertNotIn("subject", recipe["guide"]["stages_ran"])
+        self.assertEqual(recipe["features"], ["building"])
+        self.assertNotIn("perch", recipe["features"])
+        crop = (slice(40, 420), slice(24, 280))
+        edited = _texture(rendered[crop])
+        blurred = (
+            np.asarray(image.crop((24, 40, 280, 420)).filter(ImageFilter.GaussianBlur(radius=8))).astype(
+                np.float32
+            )
+            / 255.0
+        )
+        self.assertGreater(edited, _texture(blurred) * 2.0)
+        self.assertGreater(edited, _texture(original[crop]) * 0.7)
+
+    def test_a_dark_blue_night_does_not_invent_a_subject(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "night.png"
+            _save_array(_night(), path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram", vibe="wildlife")
+        self.assertEqual(recipe["picture"]["type"], "night")
+        self.assertEqual(recipe["guide"]["id"], "night")
+        self.assertIn("guides/night.json", recipe["guide"]["file"])
+        self.assertFalse(recipe["separation"]["applied"])
+        self.assertEqual(recipe["separation"]["subject_masks"], 0)
+        self.assertEqual(recipe["separation"]["background"], "unchanged")
+        self.assertNotIn("subject", recipe["guide"]["stages_ran"])
+        self.assertNotIn("background", recipe["guide"]["stages_ran"])
+        self.assertIn("grade", recipe["guide"]["stages_ran"])
+        self.assertEqual(recipe["features"], [])
+
+    def test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses(self) -> None:
+        pixels = _bird()
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "bird.png"
+            _save_array(pixels, path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram", vibe="crisp building")
+            rendered = np.array(recipe["_rendered"])
+        self.assertEqual(recipe["picture"]["type"], "animal")
+        self.assertEqual(recipe["guide"]["id"], "animal")
+        self.assertEqual(recipe["guide"]["title"], "Wildlife")
+        self.assertIn("wildlife", recipe["guide"]["types"])
+        self.assertTrue(recipe["separation"]["applied"])
+        self.assertGreaterEqual(recipe["separation"]["eyes"], 1)
+        self.assertEqual(recipe["separation"]["background"], "defocus")
+        self.assertIn("subject", recipe["guide"]["stages_ran"])
+        self.assertIn("background", recipe["guide"]["stages_ran"])
+        before = _texture(pixels[16:90, 16:120])
+        after = _texture(rendered[16:90, 16:120])
+        head = rendered[170:220, 360:430]
+        self.assertLess(after, before * 0.45)
+        self.assertGreater(float(head[..., 0].mean()), float(head[..., 1].mean()) + 0.15)
+        self.assertIn("animal", recipe["features"])
+        self.assertNotIn("perch", recipe["features"])
+
+    def test_a_subject_that_is_not_red_or_yellow_is_still_an_animal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "blue.png"
+            _save_array(_blue_subject(), path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram")
+        self.assertEqual(recipe["picture"]["type"], "animal")
+        self.assertEqual(recipe["guide"]["id"], "animal")
+        self.assertTrue(recipe["separation"]["applied"])
+        self.assertEqual(recipe["separation"]["background"], "defocus")
+
+    def test_a_landscape_is_not_blurred_like_a_subject(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "land.png"
+            _save_array(_landscape(), path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram")
+        self.assertEqual(recipe["picture"]["type"], "landscape")
+        self.assertEqual(recipe["guide"]["id"], "landscape")
+        self.assertFalse(recipe["separation"]["applied"])
+        self.assertEqual(recipe["separation"]["background"], "unchanged")
+        self.assertNotIn("background", recipe["guide"]["stages_ran"])
+        self.assertIn("sky", recipe["guide"]["stages_ran"])
+        self.assertEqual(recipe["features"], ["land", "sky"])
+        self.assertNotIn("perch", recipe["features"])
+
+    def test_two_faces_are_a_group(self) -> None:
+        pixels = np.full((120, 160, 3), 0.42, dtype=np.float32)
+        detections = [
+            Detection("face", "face", 0.8, (0.08, 0.12, 0.34, 0.6), "test"),
+            Detection("face", "face", 0.8, (0.55, 0.14, 0.32, 0.58), "test"),
+        ]
+        picture = decide_picture(pixels, detections)
+        self.assertEqual(picture.type, "group")
+        match = match_guide(picture.type)
+        self.assertEqual(match.guide.id, "group")
+
+    def test_the_command_line_names_the_type_and_the_guide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "face.png"
+            sample_image("portrait").save(path)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = main(
+                    [
+                        str(path),
+                        "--output-dir",
+                        str(directory),
+                        "--detector",
+                        "heuristic",
+                        "--advisor",
+                        "histogram",
+                    ]
+                )
+        self.assertEqual(code, 0)
+        first = buffer.getvalue().splitlines()[0]
+        self.assertEqual(first, "portrait — Portrait guide, kept person")
+
+
+def _bird_on_branch() -> np.ndarray:
+    """A colored bird on a thick brown branch, against fine green needles.
+
+    This is a synthetic stand-in. The user's photograph is not stored here.
+    """
+
+    rng = np.random.default_rng(9)
+    height, width = 480, 720
+    noise = rng.random((height, width, 3), dtype=np.float32)
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    image[..., 0] = 0.08 + 0.14 * noise[..., 0]
+    image[..., 1] = 0.34 + 0.42 * noise[..., 1]
+    image[..., 2] = 0.06 + 0.10 * noise[..., 2]
+    image[:, ::3, 1] *= 0.55
+    image[::2, :, 1] *= 0.72
+    grain = rng.random((80, width), dtype=np.float32)
+    branch = np.zeros((80, width, 3), dtype=np.float32)
+    branch[..., 0] = 0.40 + 0.10 * grain
+    branch[..., 1] = 0.26 + 0.06 * grain
+    branch[..., 2] = 0.13 + 0.04 * grain
+    branch[:, ::11, :] *= 0.72
+    image[250:330] = branch
+    # A thin twig, disconnected from the perch, should fall soft with the needles.
+    image[36:40, 80:420] = (0.36, 0.22, 0.12)
+    image[36:40, 80:420:6] *= 0.7
+    image[168:272, 300:460] = (0.66, 0.72, 0.80)
+    image[150:196, 330:440] = (0.06, 0.06, 0.08)
+    image[248:470, 404:438] = (0.42, 0.60, 0.86)
+    tail = image[340:460, 406:436]
+    image[340:460, 406:436] = np.clip(tail + (rng.random(tail.shape, dtype=np.float32) - 0.5) * 0.08, 0.0, 1.0)
+    body = image[200:250, 320:430]
+    image[200:250, 320:430] = np.clip(body + (rng.random(body.shape, dtype=np.float32) - 0.5) * 0.05, 0.0, 1.0)
+    return np.clip(image, 0.0, 1.0)
+
+
+def _person_on_chair() -> tuple[np.ndarray, tuple[float, float, float, float]]:
+    rng = np.random.default_rng(3)
+    height, width = 480, 720
+    noise = rng.random((height, width, 3), dtype=np.float32)
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    image[..., 0] = 0.10 + 0.12 * noise[..., 0]
+    image[..., 1] = 0.36 + 0.36 * noise[..., 1]
+    image[..., 2] = 0.08 + 0.08 * noise[..., 2]
+    image[:, ::4, 1] *= 0.6
+    grain = rng.random((180, 340), dtype=np.float32)
+    chair = np.zeros((180, 340, 3), dtype=np.float32)
+    chair[..., 0] = 0.42 + 0.08 * grain
+    chair[..., 1] = 0.26 + 0.05 * grain
+    chair[..., 2] = 0.14 + 0.03 * grain
+    chair[:, ::9, :] *= 0.75
+    image[220:400, 190:530] = chair
+    image[60:250, 280:460] = (0.80, 0.58, 0.46)
+    image[100:132, 320:360] = (0.08, 0.06, 0.05)
+    image[100:132, 390:430] = (0.08, 0.06, 0.05)
+    return image, (280 / width, 60 / height, 180 / width, 190 / height)
+
+
+class KeptFeatureTests(unittest.TestCase):
+    def test_the_animal_guide_names_the_perch_in_plain_language(self) -> None:
+        match = match_guide("animal")
+        guide = match.guide
+        self.assertEqual(list(guide.keep), ["animal", "perch"])
+        self.assertEqual(list(guide.quiet), ["background"])
+        self.assertIn("branch", guide.features["perch"].lower())
+        self.assertIn("soft", guide.features["background"].lower())
+        portrait = match_guide("portrait").guide
+        self.assertEqual(list(portrait.keep), ["person", "held", "seat"])
+        self.assertIn("chair", portrait.features["seat"].lower())
+        architecture = match_guide("architecture").guide
+        self.assertEqual(list(architecture.keep), ["building"])
+        self.assertEqual(list(architecture.quiet), ["sky"])
+        landscape = match_guide("landscape").guide
+        self.assertEqual(list(landscape.keep), ["land", "sky"])
+        self.assertEqual(list(landscape.quiet), [])
+
+    def test_a_bird_and_its_branch_stay_sharp_and_the_needles_do_not(self) -> None:
+        pixels = _bird_on_branch()
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "perch.png"
+            _save_array(pixels, path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram", vibe="crisp building")
+            rendered = np.array(recipe["_rendered"])
+            write_outputs(recipe, directory)
+            payload = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+        self.assertEqual(recipe["picture"]["type"], "animal")
+        self.assertEqual(recipe["guide"]["id"], "animal")
+        self.assertEqual(recipe["features"], ["animal", "perch"])
+        self.assertEqual(payload["features"], ["animal", "perch"])
+        self.assertEqual(recipe["separation"]["background"], "defocus")
+        branch = rendered[258:322, 30:180]
+        needles = rendered[48:110, 30:180]
+        bird = rendered[205:245, 330:420]
+        tail = rendered[360:440, 408:434]
+        twig = rendered[30:48, 100:300]
+        self.assertGreater(_texture(branch), _texture(needles) * 1.8)
+        self.assertGreater(_texture(branch), _texture(pixels[258:322, 30:180]) * 0.45)
+        self.assertLess(_texture(needles), _texture(pixels[48:110, 30:180]) * 0.5)
+        self.assertGreater(_texture(bird), _texture(needles))
+        self.assertGreater(float(bird[..., 2].mean()), float(bird[..., 0].mean()))
+        self.assertGreater(float(bird[..., 2].mean()), 0.55)
+        self.assertGreater(float(tail[..., 2].mean()), float(tail[..., 1].mean()))
+        self.assertGreater(_texture(tail), _texture(needles))
+        self.assertLess(_texture(twig), _texture(branch) * 0.55)
+
+    def test_a_chair_under_a_person_stays_sharp(self) -> None:
+        pixels, face = _person_on_chair()
+        picture = Picture(
+            type="portrait",
+            reason="A face is the clear subject, so this is a portrait.",
+            brightness=0.4,
+            warmth=0.05,
+            saturation=0.2,
+            edges=0.1,
+            line_fraction=0.02,
+            sky=0.0,
+            skin=0.2,
+            highlight_specks=0.0,
+            compact_area=0.12,
+            compact_fill=0.7,
+            subject_box=face,
+        )
+        finished, info = render_finish(
+            pixels,
+            Atmosphere(),
+            [Detection("face", "face", 0.9, face, "test")],
+            guide=match_guide("portrait").guide,
+            picture=picture,
+        )
+        self.assertEqual(info["features"], ["person", "seat"])
+        self.assertNotIn("perch", info["features"])
+        chair = finished[300:380, 210:500]
+        needles = finished[20:80, 20:160]
+        self.assertGreater(_texture(chair), _texture(needles) * 1.6)
+        self.assertGreater(float(finished[120:200, 340:420, 0].mean()), 0.45)
+
+
+if __name__ == "__main__":
+    unittest.main()

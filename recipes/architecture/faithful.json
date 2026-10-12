@@ -1,0 +1,18 @@
+{
+  "id": "architecture-faithful",
+  "title": "Faithful architecture",
+  "scenes": ["architecture"],
+  "vibes": ["faithful", "neutral", "correction", "natural"],
+  "description": "A straight architectural correction. Exposure and color stay with the measurement.",
+  "stages": {
+    "exposure_ev": 0.0,
+    "contrast": 0.0,
+    "temperature_shift": 0.0,
+    "tint": 0.0,
+    "saturation": 0.0,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "vibrance": 0.0,
+    "vignette_strength": 0.35
+  }
+}

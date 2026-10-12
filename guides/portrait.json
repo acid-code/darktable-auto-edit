@@ -1,0 +1,102 @@
+{
+  "id": "portrait",
+  "title": "Portrait",
+  "types": [
+    "portrait",
+    "headshot",
+    "face"
+  ],
+  "words": [
+    "portrait",
+    "headshot",
+    "face",
+    "person",
+    "skin",
+    "eyes"
+  ],
+  "description": "One person is close enough that the face is the picture. Keep the person sharp, and also a held object or the chair they are clearly sitting on. Lift the face, clarify the eyes, and soften whatever is behind them.",
+  "reason": "The face is the subject, so it is lifted a little, the eyes are clarified, and the background is softened. A held object or the chair they are on can stay sharp with them.",
+  "keep": [
+    "person",
+    "held",
+    "seat"
+  ],
+  "quiet": [
+    "background"
+  ],
+  "features": {
+    "person": "The person stays sharp, with the face lifted and the eyes clarified.",
+    "held": "An object the person is clearly holding stays sharp with them.",
+    "seat": "The chair they are clearly sitting on stays sharp with them.",
+    "background": "Whatever is behind the person falls soft."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "skin",
+    "eyes",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "face",
+      "skip": "Skip the face when no face or person is in the frame.",
+      "exposure": 0.15,
+      "contrast": 0.06,
+      "saturation": 0.12,
+      "clarity": 0.04,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "eyes",
+      "skip": "Skip the eyes when no eye is found in the face.",
+      "exposure": 0.04,
+      "contrast": 0.02,
+      "saturation": 0.28,
+      "clarity": 0.75,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "skin",
+      "skip": "Skip skin when the face has no skin tones to smooth.",
+      "exposure": 0.0,
+      "contrast": -0.03,
+      "saturation": 0.02,
+      "clarity": -0.1,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the background when the face could not be isolated.",
+      "exposure": -0.08,
+      "contrast": 0.0,
+      "saturation": -0.06,
+      "clarity": 0.0,
+      "defocus": 0.85,
+      "mute": 0.32
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

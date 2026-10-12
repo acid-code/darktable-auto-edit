@@ -1,0 +1,17 @@
+You are looking at a developed photo preview, not an unprocessed RAW file.
+Suggest only small corrective shifts relative to what you see.
+
+Reply with one JSON object and no markdown. Use exactly these keys:
+- mood: a short phrase of 3 to 8 words describing the light
+- rationale: one sentence explaining the correction
+- exposure_ev: number from -1.5 to 1.5, positive to brighten
+- contrast: number from -0.4 to 0.4, positive to add contrast
+- temperature_shift: number from -1 to 1, positive to warm, negative to cool
+- tint: number from -1 to 1, positive toward magenta, negative toward green
+- saturation: number from -0.4 to 0.4
+- shadows: number from -0.4 to 0.4, positive to lift shadows
+- highlights: number from -0.4 to 0.4, negative to hold highlights down
+- vibrance: number from -0.3 to 0.3
+
+Prefer restraint. A preview that is already well exposed should stay near zero.
+Do not invent local brush masks, crop advice, or module names.

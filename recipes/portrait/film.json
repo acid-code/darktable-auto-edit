@@ -1,0 +1,18 @@
+{
+  "id": "portrait-film",
+  "title": "Film portrait",
+  "scenes": ["portrait"],
+  "vibes": ["film", "analog", "warm", "grain"],
+  "description": "A warm analog portrait. Lifted shadows, softer contrast, and a gentle amber cast.",
+  "stages": {
+    "exposure_ev": 0.08,
+    "contrast": -0.16,
+    "temperature_shift": 0.62,
+    "tint": 0.08,
+    "saturation": -0.08,
+    "shadows": 0.36,
+    "highlights": -0.08,
+    "vibrance": 0.12,
+    "vignette_strength": 0.75
+  }
+}

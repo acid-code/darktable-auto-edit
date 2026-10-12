@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Optional. The analyzer runs without these and will say so in output.json.
+ultralytics>=8.2
+mediapipe>=0.10
+ollama>=0.4

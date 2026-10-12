@@ -1,0 +1,96 @@
+{
+  "id": "still-life",
+  "title": "Still life",
+  "types": [
+    "still-life",
+    "still life",
+    "object"
+  ],
+  "words": [
+    "still",
+    "life",
+    "object",
+    "tabletop",
+    "quiet",
+    "arranged"
+  ],
+  "description": "One object set against a quiet background. The object stays sharp and is clarified. The surround falls gently soft.",
+  "reason": "One object is set apart from a quiet background, so the object is clarified and the surround is gently softened.",
+  "keep": [
+    "object"
+  ],
+  "quiet": [
+    "background"
+  ],
+  "features": {
+    "object": "The object stays sharp and is clarified.",
+    "background": "The surround falls gently soft."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "subject",
+      "skip": "Skip the object when nothing compact sits apart from the background.",
+      "exposure": 0.08,
+      "contrast": 0.05,
+      "saturation": 0.0,
+      "clarity": 0.16,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "never",
+      "skip": "Skip the eyes. There is no eye that should be clarified.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the surround when the object could not be isolated.",
+      "exposure": -0.04,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.4,
+      "mute": 0.18
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "id": "animal",
+  "title": "Wildlife",
+  "types": [
+    "animal",
+    "wildlife",
+    "bird",
+    "mammal",
+    "pet"
+  ],
+  "words": [
+    "animal",
+    "wildlife",
+    "bird",
+    "mammal",
+    "pet",
+    "creature",
+    "eye",
+    "perch",
+    "branch"
+  ],
+  "description": "An animal and the surface it is standing on are the subject. That surface may be a branch, a rock, a hand, or a post. Lift the animal a little, clarify the eye, and let the foliage behind them fall soft. The perch stays sharp with the animal.",
+  "reason": "The animal and the perch it stands on stay sharp. The animal is lifted a little, the eye is clarified, and the background falls soft.",
+  "keep": [
+    "animal",
+    "perch"
+  ],
+  "quiet": [
+    "background"
+  ],
+  "features": {
+    "animal": "The animal stays sharp, lifted a little, with the eye clarified.",
+    "perch": "The branch, rock, hand, or post it is standing on stays sharp with it.",
+    "background": "Foliage and the rest of the place fall soft."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "eyes",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "animal",
+      "skip": "Skip the animal when no compact creature stands apart from the scene.",
+      "exposure": 0.15,
+      "contrast": 0.06,
+      "saturation": 0.18,
+      "clarity": 0.05,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "eyes",
+      "skip": "Skip the eye when no eye, or no small dark spot standing in for one, is inside the animal.",
+      "exposure": 0.05,
+      "contrast": 0.0,
+      "saturation": 0.3,
+      "clarity": 0.8,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the background when the animal could not be isolated.",
+      "exposure": -0.12,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 1.0,
+      "mute": 0.38
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}

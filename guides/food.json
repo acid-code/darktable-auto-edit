@@ -1,0 +1,96 @@
+{
+  "id": "food",
+  "title": "Food",
+  "types": [
+    "food",
+    "meal",
+    "dish"
+  ],
+  "words": [
+    "food",
+    "meal",
+    "dish",
+    "plate",
+    "table",
+    "cuisine"
+  ],
+  "description": "A dish on a table. The dish stays sharp and is lifted a little. The table is quieted, with less blur than a wildlife background.",
+  "reason": "The dish is the subject, so it is lifted a little and the table around it is softened without hiding the plate.",
+  "keep": [
+    "dish"
+  ],
+  "quiet": [
+    "table"
+  ],
+  "features": {
+    "dish": "The dish stays sharp and is lifted a little.",
+    "table": "The table around the plate is quieted, with less blur than a wildlife background."
+  },
+  "stages": [
+    "grade",
+    "subject",
+    "background"
+  ],
+  "masks": {
+    "subject": {
+      "build": "subject",
+      "skip": "Skip the dish when no compact plate of food sits in the frame.",
+      "exposure": 0.1,
+      "contrast": 0.04,
+      "saturation": 0.12,
+      "clarity": 0.08,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "eyes": {
+      "build": "never",
+      "skip": "Skip the eyes. There is no eye that should be clarified.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "skin": {
+      "build": "never",
+      "skip": "Skip skin. Skin smoothing does not belong on this picture.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "sky": {
+      "build": "never",
+      "skip": "Skip the sky. The sky is not a separate grade here.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    },
+    "background": {
+      "build": "background",
+      "skip": "Skip the table when the dish could not be isolated.",
+      "exposure": -0.04,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.45,
+      "mute": 0.2
+    },
+    "foreground": {
+      "build": "never",
+      "skip": "Skip the foreground. The frame is handled by the global grade.",
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.0,
+      "defocus": 0.0,
+      "mute": 0.0
+    }
+  }
+}
