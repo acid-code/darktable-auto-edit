@@ -230,6 +230,8 @@ def _vignette_for(
     detection: Detection,
     image: Image.Image,
     strength: float = 1.0,
+    *,
+    opened: bool = False,
 ) -> dict[str, float] | None:
     if detection.category == "eye":
         return None
@@ -247,7 +249,8 @@ def _vignette_for(
     else:
         whratio = clamp(1.0 + (1.0 / aspect), 1.0, 2.0)
     base = -0.22 if detection.category in {"face", "person", "animal"} else -0.12
-    brightness = clamp(base * strength, -0.55, 0.0)
+    floor = -0.95 if opened else -0.55
+    brightness = clamp(base * strength, floor, 0.0)
     return {
         "scale": round(scale, 3),
         "falloff_scale": round(clamp(scale * 0.85, 12.0, 90.0), 3),
@@ -263,16 +266,79 @@ def _vignette_for(
     }
 
 
-def _choose_vignette_target(detections: list[Detection]) -> Detection | None:
-    ranked = sorted(
-        detections,
-        key=lambda item: (_VIGNETTE_PRIORITY.get(item.category, 8), -item.confidence),
-    )
-    for detection in ranked:
-        if detection.category == "eye":
-            continue
-        return detection
-    return None
+def _near_box(
+    box: tuple[float, float, float, float],
+    other: tuple[float, float, float, float],
+) -> bool:
+    cx = box[0] + box[2] * 0.5
+    cy = box[1] + box[3] * 0.5
+    ox = other[0] + other[2] * 0.5
+    oy = other[1] + other[3] * 0.5
+    return abs(cx - ox) <= max(box[2], other[2]) and abs(cy - oy) <= max(box[3], other[3])
+
+
+def _choose_vignette_target(
+    detections: list[Detection],
+    picture: object | None = None,
+) -> Detection | None:
+    """The vignette sits on the subject the picture type kept.
+
+    Landscape, night, architecture, and a general frame with no compact
+    body get none. A rejected face is gone before the priority sort, so
+    it cannot outrank a bird.
+    """
+
+    items = [item for item in detections if item.category != "eye"]
+    if picture is not None:
+        picture_type = str(getattr(picture, "type", "") or "")
+        subject_box = getattr(picture, "subject_box", None)
+        if picture_type in {"landscape", "night", "architecture"}:
+            return None
+        if picture_type == "general" and subject_box is None:
+            return None
+        if picture_type not in {"portrait", "group", "street"}:
+            items = [item for item in items if item.category != "face"]
+        elif subject_box is not None:
+            items = [
+                item
+                for item in items
+                if item.category != "face" or _near_box(item.bbox, subject_box)
+            ]
+        if picture_type == "animal":
+            animals = [item for item in items if item.category == "animal"]
+            if subject_box is not None and animals:
+                near = [item for item in animals if _near_box(item.bbox, subject_box)]
+                if near:
+                    animals = near
+            if animals:
+                return max(animals, key=lambda item: item.confidence)
+            if subject_box is not None:
+                return Detection(
+                    label="animal",
+                    category="animal",
+                    confidence=0.7,
+                    bbox=subject_box,
+                    source="picture",
+                )
+            return None
+        if picture_type in {"portrait", "group", "street"} and subject_box is not None:
+            people = [item for item in items if item.category in {"face", "person"}]
+            near = [item for item in people if _near_box(item.bbox, subject_box)] if people else []
+            pool = near or people
+            if pool:
+                pool.sort(key=lambda item: (_VIGNETTE_PRIORITY.get(item.category, 8), -item.confidence))
+                return pool[0]
+            return Detection(
+                label="face",
+                category="face",
+                confidence=0.7,
+                bbox=subject_box,
+                source="picture",
+            )
+    if not items:
+        return None
+    items.sort(key=lambda item: (_VIGNETTE_PRIORITY.get(item.category, 8), -item.confidence))
+    return items[0]
 
 
 def _plugin(
@@ -299,6 +365,10 @@ def build_modules(
     atmosphere: Atmosphere,
     detections: list[Detection],
     vignette_strength: float = 1.0,
+    picture: object | None = None,
+    *,
+    include_vignette: bool = True,
+    opened: bool = False,
 ) -> tuple[Atmosphere, list[dict], list[dict], list[dict]]:
     """Return the adjusted atmosphere, module records, local edits, and raw blobs.
 
@@ -350,9 +420,9 @@ def build_modules(
         _plugin(1, "colorbalancergb", COLORBALANCE_VERSION, color_blob, "AI color"),
     ]
 
-    target = _choose_vignette_target(detections)
+    target = _choose_vignette_target(detections, picture) if include_vignette else None
     vignette = (
-        _vignette_for(target, image, vignette_strength) if target is not None else None
+        _vignette_for(target, image, vignette_strength, opened=opened) if target is not None else None
     )
     if target is not None and vignette is not None:
         modules.append(

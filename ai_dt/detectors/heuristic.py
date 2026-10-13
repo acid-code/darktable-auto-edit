@@ -10,7 +10,8 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from ai_dt.guides.support import boxes_overlap, is_face_bar, reflected_subject
+from ai_dt.guides.decide import Blob, _face_is_skin, _interior_edge
+from ai_dt.guides.support import boxes_overlap, creature_box, is_face_bar
 from ai_dt.schema import Detection
 
 
@@ -40,9 +41,10 @@ def _skin_mask(rgb: np.ndarray) -> np.ndarray:
         (red > 95)
         & (green > 40)
         & (blue > 20)
-        & (red > green)
+        &         (red > green)
         & (red > blue)
-        & (spread > 15)
+        # A near-neutral wall (spread of about 16) is not a cheek.
+        & (spread > 20)
     )
 
 
@@ -105,6 +107,162 @@ def _box_blur(values: np.ndarray) -> np.ndarray:
     return total / 9.0
 
 
+def _component_spots(mask: np.ndarray) -> list[tuple[float, float, int, int, int]]:
+    """Connected dark cores as center x, center y, area, width, height."""
+
+    height, width = mask.shape
+    if height == 0 or width == 0 or not mask.any():
+        return []
+    visited = np.zeros(mask.shape, dtype=bool)
+    spots: list[tuple[float, float, int, int, int]] = []
+    for seed_y, seed_x in np.argwhere(mask):
+        if visited[seed_y, seed_x]:
+            continue
+        stack = [(int(seed_y), int(seed_x))]
+        visited[seed_y, seed_x] = True
+        count = 0
+        sum_x = 0
+        sum_y = 0
+        min_x = max_x = int(seed_x)
+        min_y = max_y = int(seed_y)
+        while stack:
+            y, x = stack.pop()
+            count += 1
+            sum_x += x
+            sum_y += y
+            min_x = min(min_x, x)
+            max_x = max(max_x, x)
+            min_y = min(min_y, y)
+            max_y = max(max_y, y)
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if ny < 0 or nx < 0 or ny >= height or nx >= width:
+                    continue
+                if visited[ny, nx] or not mask[ny, nx]:
+                    continue
+                visited[ny, nx] = True
+                stack.append((ny, nx))
+        spots.append((sum_x / count, sum_y / count, count, max_x - min_x + 1, max_y - min_y + 1))
+    return spots
+
+
+def _separated_eyes(
+    luma: np.ndarray,
+    face: tuple[float, float, float, float],
+    width: int,
+    height: int,
+) -> list[tuple[float, float, float, float]]:
+    """Two dark spots in the upper half, far enough apart to be eyes.
+
+    One dark pixel, or the darkest pixel of a flat half, is not an eye.
+    More than a handful of spots is texture, not a pair of eyes.
+    """
+
+    fx, fy, fw, fh = face
+    x0 = int(fx * width)
+    y0 = int(fy * height)
+    x1 = int((fx + fw) * width)
+    upper = y0 + max(1, int(fh * height * 0.55))
+    if x1 - x0 < 8 or upper - y0 < 6:
+        return []
+    region = _box_blur(luma[y0:upper, x0:x1])
+    if region.size < 16:
+        return []
+    level = float(np.median(region))
+    dark = region < level - 0.10
+    spots = _component_spots(dark)
+    span = max(1, region.shape[1])
+    limit = max(4, int(0.004 * region.size))
+    kept: list[tuple[float, float]] = []
+    for cx, cy, area, spot_w, _spot_h in spots:
+        if area < limit or area > int(0.18 * region.size):
+            continue
+        if spot_w > 0.42 * span:
+            continue
+        kept.append((cx, cy))
+    if len(kept) < 2 or len(kept) > 6:
+        return []
+    pair: tuple[tuple[float, float], tuple[float, float]] | None = None
+    best = -1.0
+    for index, left in enumerate(kept):
+        for right in kept[index + 1 :]:
+            sep = abs(left[0] - right[0]) / float(span)
+            dy = abs(left[1] - right[1]) / float(max(1, region.shape[0]))
+            if sep < 0.18 or sep > 0.75 or dy > 0.45:
+                continue
+            score = sep
+            if score > best:
+                best = score
+                pair = (left, right)
+    if pair is None:
+        return []
+    boxes: list[tuple[float, float, float, float]] = []
+    eye_w = max(2, int(fw * width * 0.16))
+    eye_h = max(2, int(fh * height * 0.10))
+    for cx, cy in pair:
+        ex = int(x0 + cx) - eye_w // 2
+        ey = int(y0 + cy) - eye_h // 2
+        ex = min(max(0, ex), max(0, width - eye_w))
+        ey = min(max(0, ey), max(0, height - eye_h))
+        boxes.append(_normalize((ex, ey, eye_w, eye_h), width, height))
+    return boxes
+
+
+def heuristic_face_ok(pixels: np.ndarray, bbox: tuple[float, float, float, float]) -> bool:
+    """A heuristic face has to be skin, quiet inside, and have two eyes.
+
+    A busy interior is full of edges. A cheek is not.
+    MediaPipe faces are not passed through here.
+    """
+
+    view = pixels.astype(np.float32, copy=False)
+    if view.size and float(view.max()) > 1.5:
+        view = view / np.float32(255.0)
+    if not _face_is_skin(view, bbox):
+        return False
+    if _interior_edge(view, Blob(box=bbox, fill=1.0, area=float(bbox[2] * bbox[3]))) > 0.1:
+        return False
+    luma = 0.2126 * view[..., 0] + 0.7152 * view[..., 1] + 0.0722 * view[..., 2]
+    height, width = int(luma.shape[0]), int(luma.shape[1])
+    return len(_separated_eyes(luma, bbox, width, height)) >= 2
+
+
+def _center_inside(box: tuple[float, float, float, float], face: tuple[float, float, float, float]) -> bool:
+    cx = box[0] + box[2] * 0.5
+    cy = box[1] + box[3] * 0.5
+    return face[0] <= cx <= face[0] + face[2] and face[1] <= cy <= face[1] + face[3]
+
+
+def gate_faces(pixels: np.ndarray, detections: list[Detection]) -> list[Detection]:
+    """Drop heuristic faces that fail the skin, quiet-interior, and eye checks.
+
+    A person box stays a person. A skin-colored blob beside it is not
+    promoted into a face, and a MediaPipe face is left alone.
+    """
+
+    rejected: list[tuple[float, float, float, float]] = []
+    kept: list[Detection] = []
+    for item in detections:
+        if item.category == "person":
+            kept.append(item)
+            continue
+        if item.category == "face" and item.source == "heuristic":
+            if not heuristic_face_ok(pixels, item.bbox):
+                rejected.append(item.bbox)
+                continue
+        kept.append(item)
+    if not rejected:
+        return kept
+    return [
+        item
+        for item in kept
+        if not (
+            item.category == "eye"
+            and item.source == "heuristic"
+            and any(_center_inside(item.bbox, face) for face in rejected)
+        )
+    ]
+
+
 def _iou_norm(
     a: tuple[float, float, float, float],
     b: tuple[float, float, float, float],
@@ -133,27 +291,37 @@ class HeuristicDetector:
         skin = _skin_mask(rgb)
 
         faces = self._faces(skin, luma, width, height)
+        small_pixels = rgb.astype(np.float32) / np.float32(255.0)
+        faces = [face for face in faces if heuristic_face_ok(small_pixels, face.bbox)]
         full = np.asarray(image.convert("RGB")).astype(np.float32) / 255.0
-        mirrored = reflected_subject(full)
-        # Pale flowers can pass a skin test. They are not the body standing
-        # over its reflection, so a face that misses that body is dropped.
-        if mirrored is not None:
-            body, _reflection = mirrored
+        creature = creature_box(full)
+        # A face that misses the compact body is dropped. A textured cluster
+        # beside it is not that body, for example a flower cluster.
+        if creature is not None:
+            body = creature[0]
             faces = [face for face in faces if boxes_overlap(face.bbox, body)]
         eyes: list[Detection] = []
         for face in faces:
-            eyes.extend(self._eyes(luma, face.bbox, width, height))
+            for box in _separated_eyes(luma, face.bbox, width, height):
+                eyes.append(
+                    Detection(
+                        label="eye",
+                        category="eye",
+                        confidence=0.62,
+                        bbox=box,
+                        source=self.name,
+                    )
+                )
         architecture = self._architecture(rgb, luma, skin, faces, width, height)
 
         found = faces + eyes + architecture
-        if mirrored is not None:
-            body, _reflection = mirrored
+        if creature is not None:
             found.append(
                 Detection(
                     label="animal",
                     category="animal",
                     confidence=0.74,
-                    bbox=body,
+                    bbox=creature[0],
                     source=self.name,
                 )
             )

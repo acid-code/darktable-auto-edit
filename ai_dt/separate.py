@@ -28,6 +28,8 @@ from ai_dt.guides.decide import (
 )
 from ai_dt.guides.library import Guide, GuideMatch, MaskPlan, clamp_grades, match_guide
 from ai_dt.guides.support import (
+    _components,
+    _feather,
     creature_box,
     extend_animal,
     held_mask,
@@ -37,8 +39,11 @@ from ai_dt.guides.support import (
     seat_mask,
     water_reflection,
 )
+from ai_dt.reading import mirror_box, mirror_intention
 from ai_dt.schema import Atmosphere, Detection
 from ai_dt.simulate import contrast_about_luma, grade_array
+
+_REFLECTION_MISS = "The reflection under the bird could not be found, so it was not clarified."
 
 
 def render_finish(
@@ -51,8 +56,26 @@ def render_finish(
     picture: Picture | None = None,
     guide_match: GuideMatch | None = None,
     nudges: dict | None = None,
+    stages: list[str] | None = None,
+    scales: dict[str, float] | None = None,
+    intentions: dict | None = None,
+    omit: set[str] | None = None,
+    asks: list | None = None,
+    strong: bool = False,
+    caps_open: bool = False,
+    intents: list | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """Return float RGB and a description of the type, guide, and masks used."""
+    """Return float RGB and a description of the type, guide, and masks used.
+
+    ``stages`` is the order to run. When it is omitted the guide's own
+    list is used. A measurement is kept after each stage. A stage that
+    overshoots is put back, and the stages after it do not run.
+
+    ``caps_open`` raises the exposure ceiling past about ±0.35 EV. It
+    defaults closed. ``strong`` is the same switch. ``intents`` is a list
+    of ``{"stage", "action"}`` records: darken, lift, hold, or skip.
+    Sentences are not read.
+    """
 
     height, width = int(pixels.shape[0]), int(pixels.shape[1])
     if picture is None:
@@ -90,57 +113,118 @@ def render_finish(
         covered = np.clip(reflection / np.float32(0.45), 0.0, 1.0)
         sharp = np.maximum(sharp, covered)
     isolate = subject is not None
-    graded = grade_array(pixels, atmosphere, None if isolate else vignette)
+    order = list(guide.stages if stages is None else stages)
+    echo = mirror_box(pixels)
+    reflection_intention = "lift"
+    reflection_failure = ""
+    if echo is not None:
+        reflection_intention = mirror_intention(pixels, echo)
+    if intentions and intentions.get("reflection") in {"lift", "hold", "quiet"}:
+        reflection_intention = str(intentions["reflection"])
+    theme_mask, theme_kind = _theme_field(pixels, subject)
+    if intentions and intentions.get("theme") in {"horizon", "window", "island", "reflection"}:
+        forced = _forced_theme(pixels, subject, str(intentions["theme"]))
+        if forced is not None:
+            theme_mask, theme_kind = forced
+    # Theme is not one of the shipped guide stages. Paint it unless this
+    # run already stopped, or the caller listed stages and left it out
+    # on purpose by passing a list that is not the guide.
+    paint_theme = stages is None or "theme" in order or "theme" not in set(guide.stages)
+    scale_of = scales or {}
+    intent_asks, intent_omit = _stage_intents(intents)
+    omitted = set(omit or [])
+    omitted.update(intent_omit)
+    ask_list = [item for item in (asks or []) if isinstance(item, dict)]
+    ask_list.extend(intent_asks)
+    # Default stays closed. Either the pipeline's strong flag or caps_open lifts it.
+    opened = bool(strong) or bool(caps_open)
+    allow_dark_surround = opened and _asked(ask_list, "darken", {"foreground", "rock"})
+    if _asked(ask_list, "lift", {"reflection"}):
+        reflection_intention = "lift"
+    elif _asked(ask_list, "hold", {"reflection"}):
+        reflection_intention = "hold"
+    elif _asked(ask_list, "darken", {"reflection"}):
+        reflection_intention = "quiet"
+
+    do_grade = stages is None or "grade" in order
+    if do_grade:
+        graded = grade_array(pixels, atmosphere, None if isolate else vignette)
+    else:
+        graded = np.clip(pixels.astype(np.float32, copy=False), 0.0, 1.0)
     current = graded
-    ran = ["grade"]
+    ran = ["grade"] if do_grade else []
     skipped: list[str] = []
     eyes = 0
+    eye_mask: np.ndarray | None = None
     subject_ev = 0.0
     background = "unchanged"
     saw_subject = False
+    measurements: list[dict] = []
+    stop_reason = ""
+    if do_grade:
+        measurements.append(_measurement("grade", current, subject, None, True, ""))
 
-    for stage in guide.stages:
+    for index, stage in enumerate(order):
         if stage == "grade":
+            continue
+        if stage == "theme":
+            continue
+        if stage in omitted and not (stage == "reflection" and _asked(ask_list, "lift", {"reflection"})):
+            # A guide or reasoner skip does not cancel a request to clarify the mirror.
+            skipped.append(stage)
             continue
         plan = guide.masks.get(stage)
         if plan is None or plan.build == "never":
             skipped.append(stage)
             continue
-        plan = clamp_grades(plan)
+        plan = _scaled_plan(clamp_grades(plan, opened=opened), scale_of.get(stage), opened=opened)
         nudge = None if not nudges else nudges.get(stage)
         if nudge is not None:
             plan = _with_nudge(plan, nudge)
+        before = current
+        proposed = current
+        eye_now = eye_mask
+        applied_stage = False
         if stage == "subject":
             if subject is None:
                 skipped.append(stage)
                 continue
             if picture.brightness < 0.32 and picture.type in {"portrait", "group", "street"}:
-                plan = replace(plan, exposure=_low_key_face_exposure(pixels, subject, plan.exposure))
-            current = _grade_region(current, subject, plan)
+                plan = replace(plan, exposure=_low_key_face_exposure(pixels, subject, plan.exposure, opened=opened))
+            plan = _subject_ask(plan, ask_list, opened)
+            proposed = _grade_region(current, subject, plan)
             subject_ev = plan.exposure
             saw_subject = True
-            ran.append(stage)
-            continue
-        if stage == "eyes":
+            applied_stage = True
+        elif stage == "eyes":
             if subject is None:
                 skipped.append(stage)
                 continue
-            eye_mask, eyes = _build_eyes(pixels, detections, subject)
-            if eye_mask is None:
+            eye_now, eyes = _build_eyes(pixels, detections, subject)
+            if eye_now is None:
                 eyes = 0
                 skipped.append(stage)
                 continue
-            current = _grade_region(current, eye_mask, plan)
-            ran.append(stage)
-            continue
-        if stage == "reflection":
+            eye_mask = eye_now
+            proposed = _grade_region(current, eye_now, plan)
+            applied_stage = True
+        elif stage == "reflection":
+            if reflection is None and _asked(ask_list, "lift", {"reflection"}):
+                # The user asked to clarify the mirror. A guide miss does not win.
+                echo = mirror_box(pixels)
+                if echo is not None:
+                    reflection = _soft_rect(height, width, echo)
+                    reflection_intention = "lift"
             if reflection is None:
+                if _asked(ask_list, "lift", {"reflection"}):
+                    reflection_failure = _REFLECTION_MISS
                 skipped.append(stage)
                 continue
-            current = _grade_reflection(current, reflection, plan)
-            ran.append(stage)
-            continue
-        if stage == "skin":
+            if _asked(ask_list, "lift", {"reflection"}):
+                reflection_intention = "lift"
+            proposed = _grade_reflection(current, reflection, plan, reflection_intention)
+            applied_stage = True
+        elif stage == "skin":
             if subject is None:
                 skipped.append(stage)
                 continue
@@ -148,10 +232,9 @@ def render_finish(
             if skin is None:
                 skipped.append(stage)
                 continue
-            current = _grade_region(current, skin, plan)
-            ran.append(stage)
-            continue
-        if stage == "background":
+            proposed = _grade_region(current, skin, plan)
+            applied_stage = True
+        elif stage == "background":
             if subject is None or (plan.defocus <= 0.0 and plan.mute <= 0.0 and abs(plan.exposure) < 0.01):
                 skipped.append(stage)
                 continue
@@ -164,49 +247,169 @@ def render_finish(
                     mute=min(plan.mute, 0.1),
                     saturation=max(plan.saturation, -0.02),
                 )
-            current = _grade_background(current, graded, sharp if sharp is not None else subject, plan)
+            cover = sharp if sharp is not None else subject
+            before_metrics = _measurement(stage, current, subject, eye_mask, True, "")
+            if (
+                not allow_dark_surround
+                and plan.exposure < 0.0
+                and before_metrics["background"] is not None
+                and before_metrics["subject"] is not None
+                and before_metrics["background"] + 0.02 < before_metrics["subject"]
+            ):
+                # Already darker than the subject. Defocus can stay. Exposure does not.
+                plan = replace(plan, exposure=0.0)
+            if allow_dark_surround:
+                floor = -0.5 if opened else -0.2
+                plan = clamp_grades(replace(plan, exposure=min(float(plan.exposure), floor)), opened=opened)
+            hold = _behind_mask(subject) if _asked(ask_list, "lift", {"behind"}) else None
+            proposed = _grade_background(
+                current,
+                graded,
+                cover,
+                plan,
+                theme_mask if theme_kind in {"window", "island"} else None,
+                hold,
+                darken_all=allow_dark_surround,
+            )
             if plan.defocus > 0.05:
                 background = "defocus"
-            ran.append(stage)
-            continue
-        if stage == "sky":
+            applied_stage = True
+        elif stage == "sky":
             sky = _sky_mask(pixels)
             if sky is None:
                 skipped.append(stage)
                 continue
-            current = _grade_region(current, sky, plan)
-            ran.append(stage)
-            continue
-        if stage == "horizon":
+            proposed = _grade_region(current, sky, plan)
+            applied_stage = True
+        elif stage == "horizon":
             horizon = _horizon_mask(pixels)
             if horizon is None:
                 skipped.append(stage)
                 continue
             warmth = 0.0 if nudge is None else float(getattr(nudge, "warmth", 0.0))
-            current = _grade_horizon(current, horizon, plan, warmth)
-            ran.append(stage)
-            continue
-        if stage == "foreground":
+            proposed = _grade_horizon(current, horizon, plan, warmth)
+            applied_stage = True
+        elif stage == "foreground":
+            if _frame_is_the_request(ask_list):
+                # This request is the bird, the dark water, and the mirror.
+                # A land or structure grade does not belong on it.
+                skipped.append(stage)
+                continue
             foreground = _foreground_mask(pixels, plan, picture, detections)
             if foreground is None:
                 skipped.append(stage)
                 continue
-            current = _grade_region(current, foreground, plan)
-            ran.append(stage)
-            continue
-        if stage == "highlights":
+            proposed = _grade_region(current, foreground, plan)
+            applied_stage = True
+        elif stage == "highlights":
             protected, used = _grade_highlights(current, plan)
             if not used:
                 skipped.append(stage)
                 continue
-            current = protected
-            ran.append(stage)
+            proposed = protected
+            applied_stage = True
+        else:
+            skipped.append(stage)
             continue
-        skipped.append(stage)
+        if not applied_stage:
+            continue
+        reason_stop = _overshot(
+            picture, stage, before, proposed, subject, eye_mask, allow_dark_surround=allow_dark_surround
+        )
+        if reason_stop:
+            measurements.append(_measurement(stage, proposed, subject, eye_mask, False, reason_stop))
+            current = before
+            if stage == "eyes":
+                eyes = 0
+            if stage == "subject":
+                saw_subject = False
+                subject_ev = 0.0
+            if stage == "background":
+                background = "unchanged"
+            stop_reason = reason_stop
+            for later in order[index + 1 :]:
+                if later not in skipped and later != "grade":
+                    skipped.append(later)
+            break
+        current = proposed
+        ran.append(stage)
+        measurements.append(_measurement(stage, current, subject, eye_mask, True, ""))
+
+    theme_note = ""
+    if "theme" in omitted:
+        skipped.append("theme")
+    elif (
+        paint_theme
+        and not stop_reason
+        and theme_mask is not None
+        and not (theme_kind == "horizon" and "horizon" in ran)
+    ):
+        theme_plan = clamp_grades(
+            MaskPlan(
+                build="subject",
+                skip="",
+                exposure=0.0 if theme_kind == "window" else 0.05,
+                contrast=0.0,
+                saturation=0.0,
+                clarity=0.04 if theme_kind != "window" else 0.0,
+                defocus=0.0,
+                mute=0.0,
+            )
+        )
+        current = _grade_region(current, theme_mask, theme_plan)
+        ran.append("theme")
+        theme_note = theme_kind
+        measurements.append(_measurement("theme", current, subject, eye_mask, True, ""))
+
+    gradient_note: dict = {}
+    if not stop_reason:
+        current, gradient_note, ran, skipped = _apply_gradient(
+            current,
+            pixels,
+            subject,
+            picture,
+            ask_list,
+            intentions,
+            omitted,
+            opened,
+            ran,
+            skipped,
+        )
+        current, ran = _apply_rock(
+            current,
+            pixels,
+            subject,
+            ask_list,
+            omitted,
+            opened,
+            ran,
+        )
+        current = _apply_behind(current, subject, ask_list, opened)
+
+    if (
+        reflection is not None
+        and "reflection" in skipped
+        and _asked(ask_list, "lift", {"reflection"})
+    ):
+        # An earlier stage can stop the run. That does not cancel the mirror
+        # the user asked to clarify.
+        ref_plan = guide.masks.get("reflection")
+        if ref_plan is not None and ref_plan.build != "never":
+            ref_plan = _scaled_plan(
+                clamp_grades(ref_plan, opened=opened), scale_of.get("reflection"), opened=opened
+            )
+            current = _grade_reflection(current, reflection, ref_plan, "lift")
+            skipped = [name for name in skipped if name != "reflection"]
+            if "reflection" not in ran:
+                ran.append("reflection")
+            reflection_failure = ""
+            reflection_intention = "lift"
 
     reason = guide.reason
     if guide_match is not None and guide_match.fallback:
         reason = guide_match.reason
+    if stop_reason:
+        reason = f"{reason} {stop_reason}".strip()
     features = _kept_features(guide, picture, ran, saw_subject, kept_now)
     return np.clip(current, 0.0, 1.0), _info(
         picture,
@@ -220,6 +423,15 @@ def render_finish(
         skipped=skipped,
         reason=reason,
         features=features,
+        measurements=measurements,
+        stop_reason=stop_reason,
+        reflection=reflection_intention if reflection is not None else "",
+        reflection_failure=reflection_failure,
+        theme=theme_note or theme_kind,
+        scales={key: float(value) for key, value in scale_of.items()},
+        gradient=gradient_note,
+        vignette="vignette" not in omitted,
+        strong=opened,
     )
 
 
@@ -236,6 +448,15 @@ def _info(
     skipped: list[str],
     reason: str,
     features: list[str],
+    measurements: list[dict] | None = None,
+    stop_reason: str = "",
+    reflection: str = "",
+    reflection_failure: str = "",
+    theme: str = "",
+    scales: dict | None = None,
+    gradient: dict | None = None,
+    vignette: bool = True,
+    strong: bool = False,
 ) -> dict:
     return {
         "applied": applied,
@@ -251,7 +472,105 @@ def _info(
         "stages_ran": list(ran),
         "skipped": list(skipped),
         "features": list(features),
+        "measurements": list(measurements or []),
+        "stop_reason": stop_reason,
+        "reflection": reflection,
+        "reflection_failure": reflection_failure,
+        "theme": theme,
+        "scales": dict(scales or {}),
+        "gradient": dict(gradient or {}),
+        "vignette": bool(vignette),
+        "strong": bool(strong),
     }
+
+
+def _scaled_plan(plan: MaskPlan, scale: float | None, *, opened: bool = False) -> MaskPlan:
+    if scale is None or abs(float(scale) - 1.0) < 1e-6:
+        return plan
+    factor = max(0.0, min(1.5, float(scale)))
+    return clamp_grades(
+        replace(
+            plan,
+            exposure=plan.exposure * factor,
+            contrast=plan.contrast * factor,
+            saturation=plan.saturation * factor,
+            clarity=plan.clarity * factor,
+        ),
+        opened=opened,
+    )
+
+
+def _masked_mean(luma: np.ndarray, mask: np.ndarray | None) -> float | None:
+    if mask is None:
+        return None
+    chosen = mask > np.float32(0.45)
+    if int(chosen.sum()) < 8:
+        return None
+    return float(luma[chosen].mean())
+
+
+def _measurement(
+    stage: str,
+    pixels: np.ndarray,
+    subject: np.ndarray | None,
+    eyes: np.ndarray | None,
+    kept: bool,
+    reason: str,
+) -> dict:
+    luma = _luma(pixels)
+    background = None
+    if subject is not None:
+        outside = subject < np.float32(0.35)
+        if int(outside.sum()) >= 8:
+            background = float(luma[outside].mean())
+    return {
+        "stage": stage,
+        "frame": round(float(luma.mean()), 4),
+        "subject": None if _masked_mean(luma, subject) is None else round(_masked_mean(luma, subject), 4),
+        "eyes": None if _masked_mean(luma, eyes) is None else round(_masked_mean(luma, eyes), 4),
+        "background": None if background is None else round(background, 4),
+        "spread": round(float(luma.std()), 4),
+        "kept": kept,
+        "reason": reason,
+    }
+
+
+def _overshot(
+    picture: Picture,
+    stage: str,
+    before: np.ndarray,
+    after: np.ndarray,
+    subject: np.ndarray | None,
+    eyes: np.ndarray | None,
+    *,
+    allow_dark_surround: bool = False,
+) -> str:
+    """A short reason when this stage went too far, else an empty string."""
+
+    after_luma = _luma(after)
+    if stage == "eyes" and eyes is not None and subject is not None:
+        eye_level = _masked_mean(after_luma, eyes)
+        face_level = _masked_mean(after_luma, subject)
+        if eye_level is not None and face_level is not None and eye_level > face_level + 0.02:
+            return "The eye is hotter than the face."
+    if stage == "background" and subject is not None and not allow_dark_surround:
+        before_metrics = _measurement(stage, before, subject, eyes, True, "")
+        after_metrics = _measurement(stage, after, subject, eyes, True, "")
+        if (
+            before_metrics["background"] is not None
+            and before_metrics["subject"] is not None
+            and after_metrics["background"] is not None
+            and after_metrics["subject"] is not None
+            and before_metrics["background"] + 0.01 >= before_metrics["subject"]
+            and after_metrics["background"] + 0.02 < after_metrics["subject"]
+        ):
+            return "The background is already darker than the subject."
+    if picture.type == "night":
+        before_spread = float(_luma(before).std())
+        after_spread = float(after_luma.std())
+        if after_spread < 0.012 and after_spread < before_spread * 0.55:
+            return "The night turned into a flat color."
+    return ""
 
 
 def _maybe_subject(
@@ -547,7 +866,7 @@ def _grade_horizon(
     return np.clip(adjusted * weight + pixels * (1.0 - weight), 0.0, 1.0)
 
 
-def _low_key_face_exposure(pixels: np.ndarray, subject: np.ndarray, base: float) -> float:
+def _low_key_face_exposure(pixels: np.ndarray, subject: np.ndarray, base: float, *, opened: bool = False) -> float:
     luma = _luma(pixels)
     chosen = subject > np.float32(0.45)
     if float(chosen.mean()) < 0.005:
@@ -557,7 +876,9 @@ def _low_key_face_exposure(pixels: np.ndarray, subject: np.ndarray, base: float)
         return base
     extra = float(np.log2((0.38 + 1e-4) / (median + 1e-4)))
     extra = max(0.0, min(0.28, extra * 0.45))
-    return max(-0.35, min(0.35, base + extra))
+    cap = 1.0 if opened else 0.35
+    floor = -1.6 if opened else -0.35
+    return max(floor, min(cap, base + extra))
 
 
 def _foreground_mask(
@@ -591,7 +912,12 @@ def _grade_highlights(pixels: np.ndarray, plan: MaskPlan) -> tuple[np.ndarray, b
     return np.clip(mixed, 0.0, 1.0), True
 
 
-def _grade_reflection(pixels: np.ndarray, mask: np.ndarray, plan: MaskPlan) -> np.ndarray:
+def _grade_reflection(
+    pixels: np.ndarray,
+    mask: np.ndarray,
+    plan: MaskPlan,
+    intention: str = "lift",
+) -> np.ndarray:
     """Sharpen the mirror and lift it a little, without painting a new color.
 
     Contrast pivots on the echo itself, so a dark streak is not pulled toward
@@ -601,6 +927,15 @@ def _grade_reflection(pixels: np.ndarray, mask: np.ndarray, plan: MaskPlan) -> n
     """
 
     exposure = float(plan.exposure)
+    clarity = float(plan.clarity)
+    contrast = float(plan.contrast)
+    if intention == "hold":
+        exposure = 0.0
+        contrast = min(contrast, 0.04)
+    elif intention == "quiet":
+        exposure = min(exposure, -0.06)
+        clarity = min(clarity, 0.12)
+        contrast = min(contrast, 0.04)
     chosen = mask > np.float32(0.5)
     luma0 = _luma(pixels)
     if int(chosen.sum()) > 30:
@@ -613,15 +948,14 @@ def _grade_reflection(pixels: np.ndarray, mask: np.ndarray, plan: MaskPlan) -> n
     luma = _luma(out)
     pivot = float(np.median(luma[chosen])) if int(chosen.sum()) > 30 else 0.5
     pivot = min(0.8, max(0.05, pivot))
-    contrast = float(plan.contrast)
     new_luma = (luma - np.float32(pivot)) * np.float32(1.0 + contrast) + np.float32(pivot)
     head = np.clip((luma - np.float32(0.78)) / np.float32(0.16), 0.0, 1.0)
     new_luma = new_luma * (1.0 - head) + luma * head
     new_luma = np.clip(new_luma, 0.0, 1.0)
     out = out * (new_luma / np.maximum(luma, np.float32(1e-4)))[..., None]
-    if abs(plan.clarity) >= 0.01:
+    if abs(clarity) >= 0.01:
         soft = _blur_rgb(np.clip(out, 0.0, 1.0), 1.3)
-        detail = (out - soft) * np.float32(plan.clarity * 2.0)
+        detail = (out - soft) * np.float32(clarity * 2.0)
         room = np.clip((np.float32(0.98) - np.max(out, axis=2)) / np.float32(0.18), 0.0, 1.0)
         out = out + detail * room[..., None]
     out = np.clip(out, 0.0, 1.0)
@@ -640,16 +974,138 @@ def _grade_background(
     source: np.ndarray,
     subject: np.ndarray,
     plan: MaskPlan,
+    theme: np.ndarray | None = None,
+    hold: np.ndarray | None = None,
+    darken_all: bool = False,
 ) -> np.ndarray:
+    """Defocus the surround, and darken only the part that competes with the subject.
+
+    A quiet surround keeps its exposure. A theme window or color island
+    is left out of both the darkening and the blur.
+    """
+
     height, width = source.shape[:2]
     if plan.defocus > 0.05:
         radius = max(8.0, plan.defocus * 0.045 * min(height, width))
-        base = _blur_rgb(source, radius)
+        blurred = _blur_rgb(source, radius)
     else:
-        base = source
-    base = _tone(base, plan, mute=plan.mute)
+        blurred = source
+    luma = _luma(source)
+    core = subject > np.float32(0.45)
+    subject_level = float(np.median(luma[core])) if int(core.sum()) >= 8 else float(luma.mean())
+    outside = subject < np.float32(0.35)
+    competing = outside & (luma > np.float32(subject_level + 0.06))
+    if theme is not None:
+        protected = theme > np.float32(0.4)
+        competing = competing & ~protected
+        blurred = np.where(protected[..., None], source, blurred)
+    if hold is not None:
+        protected = hold > np.float32(0.4)
+        competing = competing & ~protected
+        blurred = np.where(protected[..., None], source, blurred)
+    # Both parts of the surround fall soft. Only the competing part is darkened,
+    # unless the user asked the end result to go darker. Then the water comes down
+    # and the subject mask stays out of it.
+    quiet_plan = replace(plan, exposure=0.0 if plan.exposure < 0.0 else plan.exposure)
+    quiet = _tone(blurred, quiet_plan, mute=plan.mute)
+    bright = _tone(blurred, plan, mute=plan.mute)
+    if darken_all and plan.exposure < 0.0:
+        base = bright
+    else:
+        base = np.where(competing[..., None], bright, quiet)
     weight = subject[..., None]
     return np.clip(current * weight + base * (1.0 - weight), 0.0, 1.0)
+
+
+def _theme_field(
+    pixels: np.ndarray,
+    subject: np.ndarray | None,
+) -> tuple[np.ndarray | None, str]:
+    horizon = _horizon_mask(pixels)
+    if horizon is not None:
+        return horizon, "horizon"
+    window = _window_field(pixels, subject)
+    if window is not None:
+        return window, "window"
+    island = _island_field(pixels, subject)
+    if island is not None:
+        return island, "island"
+    return None, ""
+
+
+def _forced_theme(
+    pixels: np.ndarray,
+    subject: np.ndarray | None,
+    kind: str,
+) -> tuple[np.ndarray | None, str] | None:
+    if kind == "horizon":
+        horizon = _horizon_mask(pixels)
+        if horizon is not None:
+            return horizon, "horizon"
+    if kind == "window":
+        window = _window_field(pixels, subject)
+        if window is not None:
+            return window, "window"
+    if kind == "island":
+        island = _island_field(pixels, subject)
+        if island is not None:
+            return island, "island"
+    if kind == "reflection":
+        echo = mirror_box(pixels)
+        if echo is None:
+            return None
+        height, width = pixels.shape[:2]
+        return _soft_rect(height, width, echo), "reflection"
+    return None
+
+
+def _window_field(pixels: np.ndarray, subject: np.ndarray | None) -> np.ndarray | None:
+    luma = _luma(pixels)
+    chroma = np.max(np.abs(pixels - luma[..., None]), axis=2)
+    # A window is a small near-white opening. A warm flower is bright too, and is not one.
+    bright = (luma > np.float32(0.78)) & (chroma < np.float32(0.08))
+    if subject is not None:
+        bright = bright & (subject < np.float32(0.25))
+    if float(bright.mean()) > 0.12 or int(bright.sum()) < 12:
+        return None
+    height, width = luma.shape
+    ys, xs = np.nonzero(bright)
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    area = ((x1 - x0 + 1) * (y1 - y0 + 1)) / float(height * width)
+    if area < 0.004 or area > 0.12:
+        return None
+    box = (x0 / width, y0 / height, (x1 - x0 + 1) / width, (y1 - y0 + 1) / height)
+    mask = _ellipse(height, width, box, expand=1.15, inner=0.55, feather=0.8)
+    mask = np.where(bright, np.maximum(mask, np.float32(0.65)), mask * np.float32(0.35))
+    if float(mask.max()) < 0.2:
+        return None
+    return mask.astype(np.float32)
+
+
+def _island_field(pixels: np.ndarray, subject: np.ndarray | None) -> np.ndarray | None:
+    luma = _luma(pixels)
+    chroma = np.max(np.abs(pixels - luma[..., None]), axis=2)
+    red = pixels[..., 0]
+    green = pixels[..., 1]
+    blue = pixels[..., 2]
+    skin = (red > 0.38) & (green > 0.18) & (blue > 0.28) & (red > green) & (red > blue)
+    leafy = (green > red + np.float32(0.04)) & (green > blue + np.float32(0.02))
+    core = (chroma > np.float32(0.18)) & ~skin & ~leafy
+    if subject is not None:
+        core = core & (subject < np.float32(0.25))
+    count = int(core.sum())
+    if count < 20 or count > int(0.08 * core.size):
+        return None
+    height, width = luma.shape
+    ys, xs = np.nonzero(core)
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    box_area = max(1, (x1 - x0 + 1) * (y1 - y0 + 1))
+    if count / box_area < 0.35:
+        return None
+    box = (x0 / width, y0 / height, (x1 - x0 + 1) / width, (y1 - y0 + 1) / height)
+    return _ellipse(height, width, box, expand=1.2, inner=0.5, feather=0.75)
 
 
 def _tone(pixels: np.ndarray, plan: MaskPlan, mute: float = 0.0) -> np.ndarray:
@@ -702,7 +1158,7 @@ def _center_on_subject(
 def _reflection_mask(pixels: np.ndarray, subject: np.ndarray | None) -> np.ndarray | None:
     """The mirror in the water: a bird's streak, or a wider echo below a shore.
 
-    A compact animal keeps the tight ellipse under its body. A house or a
+    A compact animal keeps the mirror directly under its body. A house or a
     mountain has no subject mask; only the echo is graded, and the shape
     above is left alone.
     """
@@ -710,8 +1166,11 @@ def _reflection_mask(pixels: np.ndarray, subject: np.ndarray | None) -> np.ndarr
     height, width = int(pixels.shape[0]), int(pixels.shape[1])
     compact = reflected_subject(pixels)
     if compact is not None and subject is not None and float(np.max(subject)) > 0.0:
-        _body, reflection = compact
+        body, reflection = compact
         if _reflection_under_subject(reflection, subject):
+            shaped = _mirror_below_body(pixels, body, reflection)
+            if shaped is not None:
+                return shaped
             return _ellipse(height, width, reflection, expand=1.2, inner=0.5, feather=0.85)
     found = water_reflection(pixels)
     if found is None:
@@ -721,6 +1180,58 @@ def _reflection_mask(pixels: np.ndarray, subject: np.ndarray | None) -> np.ndarr
         if not _reflection_under_subject(reflection, subject):
             return None
     return _soft_rect(height, width, reflection)
+
+
+def _mirror_below_body(
+    pixels: np.ndarray,
+    body: tuple[float, float, float, float],
+    reflection: tuple[float, float, float, float],
+) -> np.ndarray | None:
+    """The bright mirror in the water directly under the body.
+
+    The check for a bird is a narrow streak. The mirror itself is the
+    connected shape under the body that stands out from the water beside
+    it. Pads and the open water stay out because they are separate pieces.
+    """
+
+    height, width = int(pixels.shape[0]), int(pixels.shape[1])
+    x, _y, bw, bh = body
+    x0 = min(width - 1, max(0, int(x * width)))
+    x1 = min(width, max(x0 + 2, int((x + bw) * width)))
+    y0 = min(height - 1, max(0, int((_y + bh) * height)))
+    if x1 - x0 < 4 or height - y0 < 6:
+        return None
+    y1 = min(height, y0 + max(8, int(0.30 * height)))
+    luma = _luma(pixels)
+    gap = max(4, int(0.03 * width))
+    left = luma[y0:y1, max(0, x0 - gap * 5) : max(0, x0 - gap)]
+    right = luma[y0:y1, min(width, x1 + gap) : min(width, x1 + gap * 5)]
+    parts = [part for part in (left, right) if part.size >= 8]
+    if not parts:
+        return None
+    level = float(np.median(np.concatenate([part.ravel() for part in parts])))
+    window = luma[y0:y1, x0:x1]
+    chosen = window > np.float32(level + 0.08)
+    if int(chosen.sum()) < 20:
+        return None
+    pieces = [piece for piece in _components(chosen) if int(piece.sum()) >= 20 and bool(piece[:4].any())]
+    if not pieces:
+        return None
+    main = max(pieces, key=lambda piece: int(piece.sum()))
+    ys, xs = np.nonzero(main)
+    if int(ys.max()) - int(ys.min()) < int(0.04 * height):
+        return None
+    if (int(xs.max()) - int(xs.min()) + 1) / float(width) > 0.45:
+        return None
+    if float(main.mean()) > 0.55:
+        return None
+    mask = np.zeros((height, width), dtype=bool)
+    mask[y0:y1, x0:x1] = main
+    rx = min(width - 1, max(0, int((reflection[0] + reflection[2] * 0.5) * width)))
+    ry = min(height - 1, max(0, int((reflection[1] + reflection[3] * 0.35) * height)))
+    if not bool(mask[max(0, ry - 2) : ry + 3, max(0, rx - 2) : rx + 3].any()):
+        return None
+    return _feather(mask, height, width)
 
 
 def _reflection_under_subject(
@@ -815,6 +1326,373 @@ def _blur_rgb(pixels: np.ndarray, radius: float) -> np.ndarray:
     image = image.filter(ImageFilter.GaussianBlur(radius=max(0.6, radius / scale)))
     image = image.resize((width, height), Image.Resampling.BILINEAR)
     return np.asarray(image).astype(np.float32) / np.float32(255.0)
+
+
+# Closed caps stay inside about a third of a stop. Open caps are the
+# strong range, and only when caps_open (or the pipeline's strong flag) is set.
+_CLOSED_EV = 0.35
+_OPEN_EV = 1.6
+_OPEN_GRADIENT_EV = -0.70
+
+
+def _stage_intents(intents: list | None) -> tuple[list[dict], set[str]]:
+    """Turn stage/action records into asks and skips.
+
+    Each item is ``{"stage": ..., "action": ...}``. Actions are darken,
+    lift, hold, and skip. Unknown stages are ignored. Sentences are not read.
+    """
+
+    targets = {
+        "subject": "subject",
+        "rock": "rock",
+        "foreground": "foreground",
+        "behind": "behind",
+        "sky": "sky",
+        "reflection": "reflection",
+        "surround": "foreground",
+        "background": "foreground",
+    }
+    skips = {
+        "surround": "background",
+        "background": "background",
+        "foreground": "background",
+        "eye": "eyes",
+        "eyes": "eyes",
+    }
+    asks: list[dict] = []
+    omit: set[str] = set()
+    for item in intents or []:
+        if not isinstance(item, dict):
+            continue
+        stage = str(item.get("stage") or item.get("target") or "").strip().lower()
+        action = str(item.get("action") or item.get("verb") or "").strip().lower()
+        if not stage or action not in {"darken", "lift", "hold", "skip"}:
+            continue
+        if stage == "gradient":
+            if action == "skip":
+                omit.add("gradient")
+            elif action in {"darken", "lift"}:
+                asks.append({"verb": "gradient", "target": "", "source": "intent"})
+            continue
+        if action == "skip":
+            omit.add(skips.get(stage, stage))
+            continue
+        target = targets.get(stage)
+        if target is None:
+            continue
+        asks.append({"verb": action, "target": target, "source": "intent"})
+    return asks, omit
+
+
+def _frame_is_the_request(asks: list) -> bool:
+    """True when the user asked for the bird, darker water, and a clearer reflection."""
+
+    return (
+        (_asked(asks, "lift", {"subject"}) or _asked(asks, "hold", {"subject"}))
+        and _asked(asks, "darken", {"foreground", "rock"})
+        and _asked(asks, "lift", {"reflection"})
+    )
+
+
+def _asked(asks: list, verb: str, targets: set[str]) -> bool:
+    for item in asks:
+        if str(item.get("verb") or "") != verb:
+            continue
+        if not targets or str(item.get("target") or "") in targets:
+            return True
+    return False
+
+
+def _subject_ask(plan: MaskPlan, asks: list, opened: bool) -> MaskPlan:
+    """Replace the subject exposure when the user named that target."""
+
+    if _asked(asks, "darken", {"subject"}):
+        exposure = -0.90 if opened else -0.22
+        return clamp_grades(replace(plan, exposure=exposure), opened=opened)
+    if _asked(asks, "lift", {"subject"}):
+        exposure = max(float(plan.exposure), 0.55 if opened else 0.15)
+        return clamp_grades(replace(plan, exposure=exposure), opened=opened)
+    if _asked(asks, "hold", {"subject"}):
+        return clamp_grades(replace(plan, exposure=0.0), opened=opened)
+    return plan
+
+
+def _behind_mask(subject: np.ndarray) -> np.ndarray | None:
+    """The frame above the body. Light behind the subject lives here."""
+
+    height, width = subject.shape
+    rows = np.nonzero(subject > np.float32(0.45))[0]
+    if rows.size == 0:
+        return None
+    top = int(rows.min())
+    if top < 4:
+        return None
+    mask = np.zeros((height, width), dtype=np.float32)
+    mask[:top, :] = 1.0
+    return mask
+
+
+def _linear_field(shape: tuple[int, int], axis: str, bright: str) -> np.ndarray:
+    height, width = shape
+    if axis == "horizontal":
+        ramp = np.linspace(1.0, 0.0, width, dtype=np.float32)
+        if bright == "right":
+            ramp = ramp[::-1].copy()
+        field = np.broadcast_to(ramp, (height, width)).copy()
+    else:
+        ramp = np.linspace(1.0, 0.0, height, dtype=np.float32)
+        if bright == "bottom":
+            ramp = ramp[::-1].copy()
+        field = np.broadcast_to(ramp[:, None], (height, width)).copy()
+    return _blur(field, max(6.0, 0.06 * min(height, width)))
+
+
+def _end_mean(luma: np.ndarray, axis: str, bright: str, *, which: str) -> float:
+    height, width = luma.shape
+    if axis == "horizontal":
+        band = max(2, width // 5)
+        left = float(luma[:, :band].mean())
+        right = float(luma[:, -band:].mean())
+        bright_side = left if bright == "left" else right
+        dark_side = right if bright == "left" else left
+    else:
+        band = max(2, height // 5)
+        top = float(luma[:band, :].mean())
+        bottom = float(luma[-band:, :].mean())
+        bright_side = top if bright == "top" else bottom
+        dark_side = bottom if bright == "top" else top
+    return bright_side if which == "bright" else dark_side
+
+
+def _apply_gradient(
+    current: np.ndarray,
+    pixels: np.ndarray,
+    subject: np.ndarray | None,
+    picture: Picture,
+    asks: list,
+    intentions: dict | None,
+    omitted: set[str],
+    opened: bool,
+    ran: list[str],
+    skipped: list[str],
+) -> tuple[np.ndarray, dict, list[str], list[str]]:
+    """One soft linear exposure field. A weak one is skipped."""
+
+    if "gradient" in omitted:
+        skipped.append("gradient")
+        return current, {"skipped": True, "reason": "The gradient was reverted."}, ran, skipped
+    regions = list(intentions.get("regions") or []) if isinstance(intentions, dict) else []
+    user_gradient = any(
+        isinstance(item, dict) and item.get("verb") == "gradient" and item.get("source") == "user"
+        for item in asks
+    )
+    # A request about the bird, the dark water, and the reflection does not
+    # grow a sky gradient just because the frame is uneven.
+    if _frame_is_the_request(asks) and not user_gradient:
+        return current, {}, ran, skipped
+    asked = user_gradient or _asked(asks, "gradient", set())
+    measured = any(isinstance(item, dict) and item.get("role") == "gradient" for item in regions)
+    if not asked and not measured:
+        return current, {}, ran, skipped
+    close = picture.type in {"portrait", "group"} and (
+        picture.compact_area >= 0.08
+        or (
+            picture.subject_box is not None
+            and picture.subject_box[2] * picture.subject_box[3] >= 0.08
+        )
+    )
+    if picture.type == "night":
+        skipped.append("gradient")
+        return (
+            current,
+            {"skipped": True, "reason": "A night frame that should stay dark does not get a gradient."},
+            ran,
+            skipped,
+        )
+    if close:
+        skipped.append("gradient")
+        kind = "portrait" if picture.type == "portrait" else "group"
+        return (
+            current,
+            {"skipped": True, "reason": f"A close {kind} does not get a gradient."},
+            ran,
+            skipped,
+        )
+    from ai_dt.reading import linear_falloff
+
+    falloff = linear_falloff(pixels)
+    if falloff is None:
+        skipped.append("gradient")
+        return (
+            current,
+            {"skipped": True, "reason": "There is no directional falloff worth a gradient."},
+            ran,
+            skipped,
+        )
+    if abs(float(falloff["strength"])) < 0.08:
+        skipped.append("gradient")
+        return (
+            current,
+            {"skipped": True, "reason": "The gradient would move exposure by a negligible amount."},
+            ran,
+            skipped,
+        )
+    # A real falloff stays modest until the caps are open and the gradient was asked for.
+    strength = float(falloff["strength"])
+    if asked and opened:
+        strength = min(strength, _OPEN_GRADIENT_EV)
+    ceiling = _OPEN_EV if opened else _CLOSED_EV
+    strength = max(-ceiling, min(ceiling, strength))
+    luma = _luma(current)
+    subject_level = _masked_mean(luma, subject) if subject is not None else None
+    dark_side = _end_mean(luma, falloff["axis"], falloff["bright"], which="dark")
+    if subject_level is not None and dark_side <= subject_level + 0.01:
+        skipped.append("gradient")
+        return (
+            current,
+            {
+                "axis": falloff["axis"],
+                "strength": 0.0,
+                "reason": "The dark end is already as dark as the subject.",
+            },
+            ran,
+            skipped,
+        )
+    field = _linear_field(current.shape[:2], falloff["axis"], falloff["bright"])
+    if subject is not None:
+        # The subject, including its soft edge, stays out of the darkening.
+        field = field * (subject < np.float32(0.2)).astype(np.float32)
+        perch = perch_mask(pixels, subject)
+        if perch is not None:
+            field = np.clip(field * (1.0 - perch), 0.0, 1.0)
+        if _asked(asks, "lift", {"behind"}):
+            hold = _behind_mask(subject)
+            if hold is not None:
+                field = np.clip(field * (hold < np.float32(0.4)).astype(np.float32), 0.0, 1.0)
+    plan = clamp_grades(
+        MaskPlan(
+            build="subject",
+            skip="",
+            exposure=strength,
+            contrast=0.0,
+            saturation=0.0,
+            clarity=0.0,
+            defocus=0.0,
+            mute=0.0,
+        ),
+        opened=opened,
+    )
+    if abs(plan.exposure) < 0.08:
+        skipped.append("gradient")
+        return (
+            current,
+            {"skipped": True, "reason": "The gradient would move exposure by a negligible amount."},
+            ran,
+            skipped,
+        )
+    proposed = _grade_region(current, field, plan)
+    if subject is not None:
+        before_subject = _masked_mean(luma, subject)
+        after_subject = _masked_mean(_luma(proposed), subject)
+        if (
+            before_subject is not None
+            and after_subject is not None
+            and after_subject + 0.03 < before_subject
+        ):
+            skipped.append("gradient")
+            return (
+                current,
+                {"axis": falloff["axis"], "strength": 0.0, "reason": "The gradient would crush the subject."},
+                ran,
+                skipped,
+            )
+    ran.append("gradient")
+    return (
+        proposed,
+        {
+            "axis": falloff["axis"],
+            "bright": falloff["bright"],
+            "strength": round(float(plan.exposure), 4),
+            "reason": falloff["reason"],
+        },
+        ran,
+        skipped,
+    )
+
+
+def _apply_rock(
+    current: np.ndarray,
+    pixels: np.ndarray,
+    subject: np.ndarray | None,
+    asks: list,
+    omitted: set[str],
+    opened: bool,
+    ran: list[str],
+) -> tuple[np.ndarray, list[str]]:
+    """Darken the perch when the user asked to darken the foreground or the rock."""
+
+    if subject is None or "background" in omitted:
+        return current, ran
+    if not _asked(asks, "darken", {"foreground", "rock"}):
+        return current, ran
+    perch = perch_mask(pixels, subject)
+    if perch is None:
+        return current, ran
+    rock = np.clip(perch * (subject < np.float32(0.35)).astype(np.float32), 0.0, 1.0)
+    if float(rock.max()) < 0.2:
+        return current, ran
+    exposure = -_OPEN_EV if opened else -0.22
+    plan = clamp_grades(
+        MaskPlan(
+            build="subject",
+            skip="",
+            exposure=exposure,
+            contrast=0.0,
+            saturation=0.0,
+            clarity=0.0,
+            defocus=0.0,
+            mute=0.0,
+        ),
+        opened=opened,
+    )
+    return _grade_region(current, rock, plan), ran
+
+
+def _apply_behind(
+    current: np.ndarray,
+    subject: np.ndarray | None,
+    asks: list,
+    opened: bool,
+) -> np.ndarray:
+    """Lift the region behind the subject when that intent is present.
+
+    Closed caps stay inside about ±0.35 EV. Open caps may push the light
+    behind the body clearly above the subject.
+    """
+
+    if subject is None or not _asked(asks, "lift", {"behind"}):
+        return current
+    hold = _behind_mask(subject)
+    if hold is None:
+        return current
+    exposure = 0.55 if opened else 0.12
+    mask = np.clip(hold * (subject < np.float32(0.2)).astype(np.float32), 0.0, 1.0)
+    if float(mask.max()) < 0.2:
+        return current
+    plan = clamp_grades(
+        MaskPlan(
+            build="subject",
+            skip="",
+            exposure=exposure,
+            contrast=0.0,
+            saturation=0.0,
+            clarity=0.0,
+            defocus=0.0,
+            mute=0.0,
+        ),
+        opened=opened,
+    )
+    return _grade_region(current, mask, plan)
 
 
 def _blur(values: np.ndarray, radius: float) -> np.ndarray:

@@ -12,11 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from ai_dt.guides.decide import Picture
 from ai_dt.guides.library import match_guide
-from ai_dt.pipeline import analyze
+from ai_dt.pipeline import analyze, write_outputs
 from ai_dt.recipes.ingest import ingest_note
 from ai_dt.recipes.library import load_library, match_vibe
 from ai_dt.recipes.reason import preset_phrase, reason_about
@@ -356,6 +356,107 @@ class PipelineVibeTests(unittest.TestCase):
         after = render_preview(sample_image("portrait"), moody)
         before = sample_image("portrait")
         self.assertNotEqual(list(after.getdata())[0], list(before.getdata())[0])
+
+
+def _dark_face() -> Image.Image:
+    image = Image.new("RGB", (320, 240), (236, 232, 220))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((90, 30, 230, 200), fill=(148, 96, 74))
+    draw.ellipse((120, 80, 145, 105), fill=(20, 14, 12))
+    draw.ellipse((175, 80, 200, 105), fill=(20, 14, 12))
+    return image
+
+
+def _vivid_land() -> Image.Image:
+    image = Image.new("RGB", (320, 200), (20, 70, 230))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 90, 319, 199), fill=(16, 170, 28))
+    return image
+
+
+class ReadingTests(unittest.TestCase):
+    def test_the_reading_sits_beside_the_picture_and_prints_its_sentence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "face.png"
+            _dark_face().save(path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram", output_dir=directory)
+            write_outputs(recipe, directory)
+            payload = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+        reading = payload["reading"]
+        self.assertTrue(reading["sentence"])
+        self.assertIn("regions", reading)
+        self.assertIn("problems", reading)
+        self.assertIn("leave_alone", reading)
+        self.assertIn(reading["sentence"], payload["style"]["description"])
+        self.assertEqual(payload["picture"]["type"], recipe["picture"]["type"])
+        self.assertIn("reasoning", payload)
+
+
+class RecommendTests(unittest.TestCase):
+    def test_a_dark_face_recommends_a_subject_lift_and_not_a_frame_bump(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "face.png"
+            _dark_face().save(path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram")
+        ids = [item["id"] for item in recipe["recommendations"]]
+        titles = " ".join(item["title"].lower() for item in recipe["recommendations"])
+        self.assertIn("subject-lift", ids)
+        self.assertNotIn("frame-exposure", ids)
+        self.assertNotIn("exposure", titles)
+        self.assertTrue(all(item["applied"] is False for item in recipe["recommendations"]))
+        self.assertLessEqual(len(recipe["recommendations"]), 3)
+        self.assertIn("faithful", recipe["recipe_match"]["id"])
+
+    def test_a_saturated_landscape_does_not_recommend_velvia(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "land.png"
+            _vivid_land().save(path)
+            recipe = analyze(path, detector="heuristic", advisor="histogram")
+        self.assertEqual(recipe["picture"]["type"], "landscape")
+        ids = [item["id"] for item in recipe["recommendations"]]
+        titles = [item["title"].lower() for item in recipe["recommendations"]]
+        self.assertNotIn("fuji-velvia", ids)
+        self.assertTrue(all("velvia" not in title for title in titles))
+        self.assertIn("faithful", recipe["recipe_match"]["id"])
+        self.assertTrue(all(item["applied"] is False for item in recipe["recommendations"]))
+
+
+class SteerTests(unittest.TestCase):
+    def test_a_follow_up_can_skip_a_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "face.png"
+            _dark_face().save(path)
+            first = analyze(path, detector="heuristic", advisor="histogram", output_dir=directory)
+            write_outputs(first, directory)
+            second = analyze(
+                path,
+                detector="heuristic",
+                advisor="histogram",
+                output_dir=directory,
+                steer="skip the eyes",
+            )
+        self.assertNotIn("eyes", second["guide"]["stages_ran"])
+        self.assertIn("eyes", second["plan"]["skip"])
+
+    def test_less_on_the_eyes_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "face.png"
+            _dark_face().save(path)
+            first = analyze(path, detector="heuristic", advisor="histogram", output_dir=directory)
+            write_outputs(first, directory)
+            second = analyze(
+                path,
+                detector="heuristic",
+                advisor="histogram",
+                output_dir=directory,
+                steer="less on the eyes",
+            )
+        self.assertIn("eyes", second["guide"]["stages_ran"])
+        self.assertNotIn("eyes", second["plan"]["scales"])
+        self.assertIn("Ignored: less, on, eyes.", second["plan"]["summary"])
 
 
 if __name__ == "__main__":

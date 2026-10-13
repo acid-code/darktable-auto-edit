@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image, ImageFilter
 
-from ai_dt.guides.support import boxes_overlap, creature_box, is_elongated, is_face_bar, reflected_subject
+from ai_dt.guides.support import boxes_overlap, creature_box, is_elongated, is_face_bar
 from ai_dt.schema import Detection
 
 # A warm compact body has to be this solid before it beats a night reading.
@@ -286,6 +286,18 @@ def _crop(pixels: np.ndarray, box: tuple[float, float, float, float]) -> np.ndar
     return pixels[y0:y1, x0:x1]
 
 
+def _face_ok(pixels: np.ndarray, box: tuple[float, float, float, float]) -> bool:
+    """Skin, a quiet interior, and two separated dark spots.
+
+    A warm textured cluster fails this, and so does a facade or a field.
+    The check does not name what the cluster is.
+    """
+
+    from ai_dt.detectors.heuristic import heuristic_face_ok
+
+    return heuristic_face_ok(pixels, box)
+
+
 def _face_is_skin(pixels: np.ndarray, box: tuple[float, float, float, float]) -> bool:
     """Reject a yellow body that the loose detector called a face.
 
@@ -298,7 +310,7 @@ def _face_is_skin(pixels: np.ndarray, box: tuple[float, float, float, float]) ->
         return False
     if _skin_fraction(region) < 0.34:
         return False
-    # Leaves packed between warm blossoms are not a cheek.
+    # Green packed through the box is not a cheek, for example a flower cluster.
     red = region[..., 0]
     green = region[..., 1]
     blue = region[..., 2]
@@ -479,6 +491,9 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
     # A full-width branch is warm and woody. It is the perch, not the animal.
     if warm is not None and is_elongated(warm.box, view.shape):
         warm = None
+    # A textured cluster is not a compact creature. The interior is busy.
+    if warm is not None and _interior_edge(view, warm) > 0.1:
+        warm = None
     plain = plain_subject_box(view)
     skin_box = skin_subject_box(view)
     # A warm horizon can fill a wide skin box. That strip is not a head.
@@ -512,13 +527,12 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
     )
 
     people = [item for item in _people(found) if not is_face_bar(item.bbox)]
-    real_faces = [item for item in people if _face_is_skin(view, item.bbox)]
-    mirrored = reflected_subject(view)
-    if mirrored is not None:
-        # A flower cluster away from the body is not the person in this frame.
-        body_box, _reflection_box = mirrored
-        people = [item for item in people if boxes_overlap(item.bbox, body_box)]
-        real_faces = [item for item in real_faces if boxes_overlap(item.bbox, body_box)]
+    real_faces = [item for item in people if _face_ok(view, item.bbox)]
+    creature_now = _creature()
+    if creature_now is not None:
+        # A patch away from the compact body is not the subject, for example a flower cluster.
+        people = [item for item in people if boxes_overlap(item.bbox, creature_now.box)]
+        real_faces = [item for item in real_faces if boxes_overlap(item.bbox, creature_now.box)]
     # A warm body can fool the face detector. Trust the face only when the
     # box is actually skin; otherwise a bird shaped like a face stays an animal.
     if real_faces:
@@ -558,24 +572,29 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
             **facts,
         )
 
-    if mirrored is not None and not real_faces:
-        body_box, reflection_box = mirrored
-        # A house or a ridge echoed in water is not a creature. Only a compact
-        # body over its own narrow mirror takes this path.
-        narrow_mirror = reflection_box[2] <= 0.22 and body_box[2] <= 0.45
-        if narrow_mirror and not is_elongated(body_box, view.shape):
-            return _picture(
-                "animal",
-                "A compact subject stands in the water, and its reflection is below it, so this is an animal.",
-                blob=Blob(body_box, fill=1.0, area=_area(body_box)),
-                **facts,
-            )
-
-    if skin_box is not None and _is_body(skin_box):
+    if skin_box is not None and _is_body(skin_box) and _face_ok(view, skin_box.box):
         return _picture(
             "portrait",
             "A skin-toned face fills part of the frame, so this is a portrait.",
             blob=skin_box,
+            **facts,
+        )
+
+    if creature_now is not None and not real_faces and _face_ok(view, creature_now.box):
+        return _picture(
+            "portrait",
+            "A skin-toned face with a quiet interior and two dark spots fills the frame, so this is a portrait.",
+            blob=creature_now,
+            **facts,
+        )
+
+    # A compact body of its own color is the animal. A separate warm patch
+    # is not that body, and a mirror in the water is not one either.
+    if creature_now is not None and not real_faces:
+        return _picture(
+            "animal",
+            "A compact subject of its own color stands apart, so this is an animal.",
+            blob=creature_now,
             **facts,
         )
 

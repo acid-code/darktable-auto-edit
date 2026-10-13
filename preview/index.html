@@ -119,6 +119,21 @@
     dd { margin: 0; }
     ol { margin: 0 0 12px; padding-left: 1.2rem; color: var(--muted); }
     ol strong { color: var(--text); font-weight: 600; }
+    .plan {
+      margin-top: 16px;
+      padding: 16px 18px 8px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+    .plan[hidden] { display: none; }
+    .plan ol { color: var(--text); }
+    .plan-text {
+      white-space: pre-wrap;
+      margin: 0 0 12px;
+      color: var(--text);
+      line-height: 1.45;
+    }
     details { margin: 8px 0 16px; color: var(--muted); }
     summary { cursor: pointer; color: var(--text); }
     code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.88em; }
@@ -147,6 +162,8 @@
       <input class="file" id="upload" type="file" accept="image/jpeg,image/png,image/webp">
       <label for="vibe">Vibe</label>
       <textarea id="vibe" name="vibe" placeholder="Leave this blank for a faithful correction. Try “moody dark”, “warm film”, or “crisp building”."></textarea>
+      <label for="steer">Steer</label>
+      <textarea id="steer" name="steer" placeholder="Clauses, separated by commas. Example: strong, darken the subject, darken the foreground, light behind the subject"></textarea>
       <button class="primary" type="submit">Match this vibe</button>
       <p class="hint">Exposure stays mostly measured. The recipe is allowed a small share of the grade so a look cannot blow out a lit subject.</p>
     </form>
@@ -163,10 +180,16 @@
           <img id="after" alt="Approximate result after the matched recipe" hidden>
         </figure>
       </div>
+      <div id="plan" class="plan" hidden>
+        <h2>Plan</h2>
+        <p id="stages" class="plan-text"></p>
+      </div>
       <div class="result">
         <p class="status" id="status" role="status">Measuring the portrait sample…</p>
         <div id="report" hidden>
           <dl>
+            <dt>Reading</dt><dd id="reading"></dd>
+            <dt>Looks</dt><dd id="looks"></dd>
             <dt>Scene</dt><dd id="scene"></dd>
             <dt>Query</dt><dd id="query"></dd>
             <dt>Look</dt><dd id="title"></dd>
@@ -195,6 +218,7 @@
   <script>
     const form = document.querySelector("#look");
     const vibe = document.querySelector("#vibe");
+    const steer = document.querySelector("#steer");
     const status = document.querySelector("#status");
     const report = document.querySelector("#report");
     const before = document.querySelector("#before");
@@ -245,6 +269,12 @@
       showImage(before, beforeEmpty, payload.before_png);
       showImage(after, afterEmpty, payload.after_png);
       const match = payload.match || {};
+      const reading = payload.reading || {};
+      document.querySelector("#reading").textContent = reading.sentence || "";
+      const looks = payload.recommendations || [];
+      document.querySelector("#looks").textContent = looks.length
+        ? looks.map((item) => item.title).join(", ")
+        : "Faithful";
       document.querySelector("#scene").textContent = match.scene || "general";
       document.querySelector("#query").textContent = match.query || "";
       document.querySelector("#title").textContent = match.title || "No recipe applied";
@@ -267,6 +297,17 @@
         row.append(name, " · " + Number(item.score).toFixed(2));
         list.append(row);
       });
+      const planBox = document.querySelector("#plan");
+      const stages = document.querySelector("#stages");
+      const plan = payload.plan || {};
+      const text = String(plan.text || plan.label || "").trim();
+      if (text) {
+        stages.textContent = text;
+        planBox.hidden = false;
+      } else {
+        stages.textContent = "";
+        planBox.hidden = true;
+      }
       report.hidden = false;
       status.className = "status";
       status.textContent = payload.note;
@@ -276,7 +317,7 @@
       status.className = "status loading";
       status.textContent = "Measuring the preview and matching recipes…";
       form.querySelector(".primary").disabled = true;
-      const body = { vibe: vibe.value };
+      const body = { vibe: vibe.value, steer: steer.value };
       if (uploadData) body.image_base64 = uploadData;
       else body.sample = sample;
       try {

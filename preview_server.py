@@ -54,9 +54,12 @@ def _load_upload(payload: str) -> Image.Image:
 
 def analyze_request(body: dict) -> dict:
     vibe = body.get("vibe") or ""
+    steer = body.get("steer") or ""
     if not isinstance(vibe, str):
         raise ValueError("vibe must be text")
-    if len(vibe) > 400:
+    if not isinstance(steer, str):
+        raise ValueError("steer must be text")
+    if len(vibe) > 400 or len(steer) > 400:
         raise ValueError("Keep the vibe under 400 characters")
     sample = body.get("sample")
     upload = body.get("image_base64")
@@ -80,6 +83,7 @@ def analyze_request(body: dict) -> dict:
         detector="heuristic",
         advisor="histogram",
         vibe=vibe,
+        steer=steer,
         style_name="AI Edit preview",
         output_dir=work,
     )
@@ -95,6 +99,9 @@ def analyze_request(body: dict) -> dict:
         "atmosphere": recipe["analysis"]["atmosphere"],
         "subjects": recipe["analysis"]["subjects"],
         "match": match,
+        "reading": recipe.get("reading") or {},
+        "recommendations": recipe.get("recommendations") or [],
+        "plan": recipe.get("plan") or {},
         "modules": [
             {"operation": item["operation"], "multi_name": item["multi_name"], "params": item["params"]}
             for item in recipe["modules"]

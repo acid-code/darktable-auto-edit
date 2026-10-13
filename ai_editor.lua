@@ -122,6 +122,7 @@ local DEFAULTS = {
   preview = 1280,
   vibe = "",
   preset = "",
+  steer = "",
 }
 
 local function register_preferences()
@@ -205,6 +206,15 @@ local function register_preferences()
     "AI editor: vibe",
     "Words typed in the Vibe box on the AI Editor panel. Leave blank for a faithful correction. Examples: warm, moody, quiet, provia, velvia, astia, classic chrome, acros, pro neg, eterna, nostalgic neg, reala ace. fuji or fujicam picks one film simulation for the picture.",
     DEFAULTS.vibe
+  )
+  pcall(
+    dt.preferences.register,
+    PREFERENCE,
+    "steer",
+    "string",
+    "AI editor: steer",
+    "Explicit clauses: strong or epic, darken or lift a target, gradient, revert or skip a stage. Unknown words are ignored.",
+    DEFAULTS.steer
   )
   pcall(
     dt.preferences.register,
@@ -302,7 +312,7 @@ local function image_source_path(image)
   return folder .. sep .. name
 end
 
-local function run_processor(preview, work_dir, original, vibe)
+local function run_processor(preview, work_dir, original, vibe, steer)
   local processor = join_path(script_directory(), "ai_processor.py")
   if file_size(processor) < 10 then
     return nil, "ai_processor.py is not next to ai_editor.lua"
@@ -336,6 +346,10 @@ local function run_processor(preview, work_dir, original, vibe)
   if vibe ~= "" then
     parts[#parts + 1] = " --vibe "
     parts[#parts + 1] = shell_quote(vibe)
+  end
+  if type(steer) == "string" and steer ~= "" then
+    parts[#parts + 1] = " --steer "
+    parts[#parts + 1] = shell_quote(steer)
   end
   if type(original) == "string" and original ~= "" then
     parts[#parts + 1] = " --original "
@@ -436,6 +450,11 @@ local function summary(recipe, image)
   end
   local input = type(recipe.input) == "table" and recipe.input or {}
   local separation = type(recipe.separation) == "table" and recipe.separation or {}
+  local reading_line = ""
+  local reading = type(recipe.reading) == "table" and recipe.reading or nil
+  if reading and type(reading.sentence) == "string" and reading.sentence ~= "" then
+    reading_line = reading.sentence .. "\n"
+  end
   local reasoning_line = ""
   local decision = ""
   local reasoning = type(recipe.reasoning) == "table" and recipe.reasoning or nil
@@ -491,7 +510,8 @@ local function summary(recipe, image)
     render = render .. " The history vignette only darkens around the subject. The brightness of these layers is in edited.tif."
   end
   return string.format(
-    "%s%s\n%+.2f EV, contrast %+.2f, warmth %+.2f\n%d subject region(s) via %s / %s%s%s%s%s\nHistory updated for %s.",
+    "%s%s%s\n%+.2f EV, contrast %+.2f, warmth %+.2f\n%d subject region(s) via %s / %s%s%s%s%s\nHistory updated for %s.",
+    reading_line,
     named,
     tostring(analysis.mood or "Edit applied"),
     tonumber(atmosphere.exposure_ev) or 0,
@@ -512,11 +532,12 @@ local status_label
 local run_button
 local revert_button
 local vibe_entry
+local steer_entry
 local preset_box
 local preset_ids = {}
 local preset_queries = {}
 
-local function process_image(image, index, total, vibe)
+local function process_image(image, index, total, vibe, steer)
   local edge = tonumber(preference("preview", "integer")) or DEFAULTS.preview
   if edge < 256 then
     edge = 256
@@ -538,7 +559,7 @@ local function process_image(image, index, total, vibe)
   end
   status_label.label = string.format("Analyzing %s…", image.filename or "image")
   yield_ui()
-  local _, run_error = run_processor(preview, work, image_source_path(image), vibe)
+  local _, run_error = run_processor(preview, work, image_source_path(image), vibe, steer)
   if run_error then
     return nil, run_error
   end
@@ -547,6 +568,13 @@ local function process_image(image, index, total, vibe)
   local recipe, apply_error = apply_recipe(image, work)
   if not recipe then
     return nil, apply_error
+  end
+  local plan = type(recipe.plan) == "table" and recipe.plan or {}
+  if type(plan.label) == "string" and plan.label ~= "" then
+    return plan.label
+  end
+  if type(plan.text) == "string" and plan.text ~= "" then
+    return plan.text
   end
   return summary(recipe, image) .. "\nRecipe: " .. join_path(work, "output.json")
 end
@@ -558,6 +586,19 @@ local function remember_vibe()
     text = text:sub(1, 400)
   end
   pcall(dt.preferences.write, PREFERENCE, "vibe", "string", text)
+  return text
+end
+
+local function remember_steer()
+  local text = ""
+  if steer_entry then
+    text = tostring(steer_entry.text or "")
+  end
+  text = text:gsub("^%s+", ""):gsub("%s+$", "")
+  if #text > 400 then
+    text = text:sub(1, 400)
+  end
+  pcall(dt.preferences.write, PREFERENCE, "steer", "string", text)
   return text
 end
 
@@ -582,6 +623,7 @@ end
 
 local function run_analysis()
   local vibe = vibe_to_send()
+  local steer = remember_steer()
   local images = selected_images()
   if #images == 0 then
     status_label.label = "Select an image on the lighttable, then run the analysis again."
@@ -597,7 +639,7 @@ local function run_analysis()
   end
   local last = ""
   for index, image in ipairs(images) do
-    local text, failure = process_image(image, index, #images, vibe)
+    local text, failure = process_image(image, index, #images, vibe, steer)
     if not text then
       status_label.label = string.format("%s failed.\n%s", image.filename or "Image", failure or "unknown error")
       dt.print("AI analysis failed")
@@ -904,6 +946,13 @@ if preset_box then
 end
 local look_row = dt.new_widget("box")(look_row_spec)
 
+steer_entry = dt.new_widget("entry") {
+  text = stored_string("steer"),
+  placeholder = "strong, darken the subject",
+  editable = true,
+  tooltip = "Clauses separated by commas or the word and. epic or strong opens the caps. darken, lift, or hold a subject, foreground, rock, sky, behind, or reflection. gradient. revert or skip a stage. Unknown words are ignored.",
+}
+
 status_label = dt.new_widget("label") {
   label = "Select an image, then run a local analysis. Edits are appended to the history stack.",
   selectable = true,
@@ -925,6 +974,7 @@ local panel = dt.new_widget("box") {
   orientation = "vertical",
   vibe_label,
   look_row,
+  steer_entry,
   run_button,
   revert_button,
   dt.new_widget("separator") {},

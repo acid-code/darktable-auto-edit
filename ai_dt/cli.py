@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Look to apply. Empty keeps a faithful correction. A Fuji sim name, or fuji / fujicam, selects one film simulation.",
     )
+    parser.add_argument(
+        "--steer",
+        default="",
+        help="Explicit clauses: strong or epic, darken/lift/hold a target, gradient, revert or skip a stage.",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -75,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             style_name=args.style_name,
             output_dir=args.output_dir,
             vibe=args.vibe,
+            steer=args.steer,
             source_path=args.original,
             full_res=args.full_res,
         )
@@ -94,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     picture_type = picture.get("type") or "general"
     guide_title = guide.get("title") or "Faithful general"
     print(format_picture_line(picture_type, guide_title, recipe.get("features")))
+    sentence = str((recipe.get("reading") or {}).get("sentence") or "").strip()
+    if sentence:
+        print(sentence)
     print(
         f"{atmosphere['mood']}: exposure {atmosphere['exposure_ev']:+.2f} EV, "
         f"contrast {atmosphere['contrast']:+.2f}, "

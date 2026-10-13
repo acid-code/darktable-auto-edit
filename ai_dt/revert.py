@@ -31,7 +31,11 @@ def is_ai_editor_history_name(multi_name: str | None) -> bool:
     return multi_name.startswith("AI ")
 
 
-def revert_image_history(connection: sqlite3.Connection, image_id: int) -> int:
+def revert_image_history(
+    connection: sqlite3.Connection,
+    image_id: int,
+    stage: str | None = None,
+) -> int:
     """Delete this plugin's history rows for one image. Return how many.
 
     ``history_end`` is an index into the history list ordered by ``num``, not
@@ -47,7 +51,7 @@ def revert_image_history(connection: sqlite3.Connection, image_id: int) -> int:
         raise LookupError(f"image {image_id} is not in the library")
 
     rows = connection.execute(
-        "SELECT num, multi_name FROM main.history WHERE imgid = ? ORDER BY num",
+        "SELECT num, multi_name, operation FROM main.history WHERE imgid = ? ORDER BY num",
         (image_id,),
     ).fetchall()
     history_end = image[0]
@@ -56,8 +60,14 @@ def revert_image_history(connection: sqlite3.Connection, image_id: int) -> int:
 
     delete_nums: list[int] = []
     removed_before_end = 0
-    for index, (num, multi_name) in enumerate(rows):
+    named = (stage or "").strip().lower()
+    for index, (num, multi_name, operation) in enumerate(rows):
         if not is_ai_editor_history_name(multi_name):
+            continue
+        # The vignette is the history module. Other stages are in the TIFF.
+        if named and named != "vignette":
+            continue
+        if named == "vignette" and operation != "vignette":
             continue
         delete_nums.append(int(num))
         if index < history_end:
@@ -82,13 +92,13 @@ def revert_image_history(connection: sqlite3.Connection, image_id: int) -> int:
     return len(delete_nums)
 
 
-def revert_library_image(library_path: str, image_id: int) -> int:
+def revert_library_image(library_path: str, image_id: int, stage: str | None = None) -> int:
     """Open the library, remove this plugin's rows, and commit."""
 
     connection = sqlite3.connect(library_path, timeout=8)
     try:
         connection.execute("BEGIN IMMEDIATE")
-        removed = revert_image_history(connection, image_id)
+        removed = revert_image_history(connection, image_id, stage)
         connection.commit()
         return removed
     except Exception:
@@ -105,9 +115,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Remove AI editor history rows from a darktable library.")
     parser.add_argument("--library", required=True, help="Path to library.db")
     parser.add_argument("--image", required=True, type=int, help="Darktable image id")
+    parser.add_argument("--stage", default="", help="One stage to drop, such as vignette. Empty removes every AI row.")
     args = parser.parse_args(argv)
     try:
-        removed = revert_library_image(args.library, args.image)
+        removed = revert_library_image(args.library, args.image, args.stage or None)
     except LookupError as exc:
         print(str(exc), file=sys.stderr)
         return 1

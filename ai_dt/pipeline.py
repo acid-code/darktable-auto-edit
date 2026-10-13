@@ -11,7 +11,7 @@ from PIL import Image
 from ai_dt.advisors.combine import combine_atmospheres
 from ai_dt.advisors.histogram import HistogramAdvisor, refine_for_subjects
 from ai_dt.advisors.ollama_llava import OllamaLLaVAAdvisor
-from ai_dt.detectors.heuristic import HeuristicDetector
+from ai_dt.detectors.heuristic import HeuristicDetector, gate_faces
 from ai_dt.detectors.mediapipe_faces import MediaPipeFaceDetector
 from ai_dt.detectors.merge import merge_detections
 from ai_dt.detectors.yolo import YoloDetector
@@ -20,8 +20,21 @@ from ai_dt.io_image import LoadedImage, is_raw, load_image
 from ai_dt.mapping import build_modules, render_style
 from ai_dt.guides.decide import decide_picture
 from ai_dt.guides.library import match_guide
+from ai_dt.reading import read_frame
 from ai_dt.recipes.library import blend_look, match_vibe, scene_from_detections
 from ai_dt.recipes.reason import reason_about
+from ai_dt.recipes.recommend import recommend_looks
+from ai_dt.reasoner import propose_stages
+from ai_dt.steer import (
+    apply_proposal,
+    build_run_lines,
+    empty_plan,
+    format_plan_label,
+    format_plan_text,
+    load_stored,
+    revise_plan,
+    stage_intents,
+)
 from ai_dt.schema import Atmosphere
 from ai_dt.separate import render_finish
 from ai_dt.simulate import vignette_from_modules
@@ -29,6 +42,27 @@ from ai_dt.tiff16 import write_rgb16
 
 DETECTORS = ("auto", "yolo", "mediapipe", "heuristic")
 ADVISORS = ("auto", "ollama", "histogram")
+
+
+def _finish_intents(bundle: dict) -> list[dict]:
+    """Turn the steer plan's asks into the renderer's stage and action records."""
+
+    intents: list[dict] = []
+    for item in bundle.get("asks") or []:
+        if not isinstance(item, dict):
+            continue
+        verb = str(item.get("verb") or "")
+        target = str(item.get("target") or "")
+        if verb == "gradient":
+            intents.append({"stage": "gradient", "action": "darken"})
+            continue
+        if verb in {"darken", "lift", "hold"} and target:
+            intents.append({"stage": target, "action": verb})
+    for stage in bundle.get("skip") or []:
+        name = str(stage)
+        if name:
+            intents.append({"stage": name, "action": "skip"})
+    return intents
 
 
 def _guide_record(guide_match, separation: dict) -> dict:
@@ -130,6 +164,7 @@ def analyze(
     guides_dir: Path | None = None,
     source_path: Path | None = None,
     full_res: bool = False,
+    steer: str = "",
 ) -> dict:
     """Analyze one image and return the recipe written to ``output.json``.
 
@@ -141,6 +176,7 @@ def analyze(
     loaded, input_notes = _open_input(path, source_path, full_res=full_res)
     image = loaded.image
     detections, detector_notes = _detect(image, detector, yolo_model)
+    detections = gate_faces(loaded.pixels, detections)
     measured, suggestion, advisor_notes = _advise(
         image, path, advisor, ollama_model, prompt_path
     )
@@ -151,12 +187,40 @@ def analyze(
     # others as masks on a subject or a line.
     picture = decide_picture(loaded.pixels, detections)
     guide_match = match_guide(picture.type, directory=guides_dir)
+    reading = read_frame(loaded.pixels, picture, detections)
+    recommendations = recommend_looks(picture, reading)
+    reflection = "lift"
+    theme = ""
+    for region in reading.regions:
+        if region.get("role") == "reflection":
+            reflection = str(region.get("intention") or reflection)
+        elif region.get("role") == "theme" and not theme:
+            theme = str(region.get("kind") or "")
+    plan = empty_plan(list(guide_match.guide.stages), reflection=reflection, theme=theme)
+    if output_dir is not None and steer.strip():
+        stored = load_stored(output_dir)
+        if stored is not None:
+            previous = stored["plan"]
+            plan["skip"] = list(previous.get("skip") or [])
+            plan["scales"] = dict(previous.get("scales") or {})
+            plan["pinned"] = str(previous.get("pinned") or "")
+            plan["asks"] = [dict(item) for item in (previous.get("asks") or []) if isinstance(item, dict)]
+            plan["strong"] = bool(previous.get("strong"))
+            plan["strong_word"] = str(previous.get("strong_word") or "")
+            plan["gradient"] = bool(previous.get("gradient"))
+            plan["proposed"] = [dict(item) for item in (previous.get("proposed") or []) if isinstance(item, dict)]
     scene = scene_from_detections(detections)
-    match = match_vibe(scene, vibe, directory=library_dir)
+    # A pinned preset is the user choosing a look. A recommendation is not.
+    vibe_for_reason = plan["pinned"] or vibe
+    match = match_vibe(scene, vibe_for_reason, directory=library_dir)
+    preset_name = match.recipe.title if match.recipe is not None else ""
+    plan = apply_proposal(plan, propose_stages(reading.sentence, vibe, preset_name, steer))
+    if steer.strip():
+        plan = revise_plan(plan, steer)
     reasoning = reason_about(
         picture,
         detections,
-        vibe,
+        vibe_for_reason,
         guide_match.guide,
         match,
         directory=library_dir,
@@ -173,8 +237,20 @@ def analyze(
         atmosphere.source = f"{atmosphere.source}+masks:{names}"
     if reasoning.decision:
         atmosphere.rationale = f"{atmosphere.rationale} {reasoning.decision}".strip()
+    # Caps follow the user's epic or strong word. A blank steer stays closed.
+    # stage_intents never reports a flag the reasoner set on its own.
+    bundle = stage_intents(plan)
+    caps_open = bool(bundle["caps_open"]) if steer.strip() else False
+    intents = _finish_intents(bundle)
+    include_vignette = "vignette" not in set(bundle["skip"])
     adjusted, modules, local_edits, plugins = build_modules(
-        image, atmosphere, detections, vignette_strength=vignette_strength
+        image,
+        atmosphere,
+        detections,
+        vignette_strength=vignette_strength,
+        picture=picture,
+        include_vignette=include_vignette,
+        opened=caps_open,
     )
     rendered, separation = render_finish(
         loaded.pixels,
@@ -185,7 +261,21 @@ def analyze(
         picture=picture,
         guide_match=guide_match,
         nudges=reasoning.nudges,
+        stages=bundle["stages"],
+        scales=plan["scales"],
+        intentions={
+            "reflection": plan["reflection"],
+            "theme": plan["theme"],
+            "regions": reading.to_dict().get("regions") or [],
+        },
+        omit=set(bundle["skip"]),
+        asks=bundle["asks"],
+        caps_open=caps_open,
+        intents=intents,
     )
+    plan["lines"] = build_run_lines(plan, separation)
+    plan["text"] = format_plan_text(plan)
+    plan["label"] = format_plan_label(plan)
     stacked = [
         stage
         for stage in separation.get("stages_ran", [])
@@ -211,7 +301,7 @@ def analyze(
     if kept_features:
         kept = " Kept " + ", ".join(kept_features) + "."
     description = (
-        f"Local AI edit. {picture.type} — {guide_match.guide.title} guide.{kept} {adjusted.mood}.{look} "
+        f"{reading.sentence} Local AI edit. {picture.type} — {guide_match.guide.title} guide.{kept} {adjusted.mood}.{look} "
         f"Exposure {adjusted.exposure_ev:+.2f} EV, "
         f"contrast {adjusted.contrast:+.2f}, "
         f"warmth {adjusted.temperature_shift:+.2f}. "
@@ -245,6 +335,9 @@ def analyze(
             "guide_notes": guide_match.warnings,
         },
         "picture": picture.to_dict(),
+        "reading": reading.to_dict(),
+        "recommendations": recommendations,
+        "plan": plan,
         "guide": _guide_record(guide_match, separation),
         "features": list(separation.get("features") or []),
         "recipe_match": match.to_dict(),

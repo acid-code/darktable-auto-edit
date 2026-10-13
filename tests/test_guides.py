@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 from ai_dt.cli import main
+from ai_dt.detectors.heuristic import gate_faces
 from ai_dt.guides.decide import Picture, decide_picture
 from ai_dt.guides.ingest import ingest_note
 from ai_dt.guides.library import load_guides, match_guide, validate_guide
@@ -557,6 +558,8 @@ class PictureTypeTests(unittest.TestCase):
                     rendered = np.array(recipe["_rendered"])
                 self.assertEqual(recipe["picture"]["type"], picture_type)
                 self.assertNotEqual(recipe["picture"]["type"], "animal")
+                categories = {item["category"] for item in recipe["analysis"]["subjects"]}
+                self.assertNotIn("animal", categories)
                 self.assertFalse(recipe["separation"]["applied"])
                 self.assertEqual(recipe["separation"]["background"], "unchanged")
                 self.assertNotIn("background", recipe["guide"]["stages_ran"])
@@ -756,6 +759,184 @@ class KeptFeatureTests(unittest.TestCase):
         needles = finished[20:80, 20:160]
         self.assertGreater(_texture(chair), _texture(needles) * 1.6)
         self.assertGreater(float(finished[120:200, 340:420, 0].mean()), 0.45)
+
+
+def _flowers_beside_a_bird() -> np.ndarray:
+    height, width = 480, 720
+    image = np.full((height, width, 3), (0.20, 0.46, 0.18), dtype=np.float32)
+    image[160:310, 40:170] = (0.12, 0.28, 0.62)
+    image[185:215, 90:125] = (0.03, 0.03, 0.04)
+    image[40:450, 220:700] = (0.90, 0.55, 0.42)
+    vein = np.array([0.50, 0.28, 0.20], dtype=np.float32)
+    image[40:450, 220:700:4] = vein
+    image[40:450:4, 220:700] = vein
+    return image
+
+
+def _open_field() -> Image.Image:
+    image = Image.new("RGB", (640, 420), (78, 148, 46))
+    draw = ImageDraw.Draw(image)
+    for y in range(90, 400, 16):
+        draw.line((0, y, 640, y), fill=(52, 112, 32), width=3)
+    draw.rectangle((0, 28, 639, 108), fill=(186, 154, 96))
+    return image
+
+
+def _warm_facade() -> np.ndarray:
+    facade = np.full((480, 640, 3), (0.55, 0.72, 0.86), dtype=np.float32)
+    facade[30:460, 20:420] = (0.84, 0.58, 0.40)
+    mortar = np.array([0.48, 0.28, 0.20], dtype=np.float32)
+    facade[30:460, 20:420:4] = mortar
+    facade[30:460:4, 20:420] = mortar
+    return facade
+
+
+def _skin_head() -> Image.Image:
+    image = Image.new("RGB", (800, 600), (28, 28, 32))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((250, 80, 560, 480), fill=(214, 162, 127))
+    draw.ellipse((330, 200, 370, 240), fill=(25, 18, 18))
+    draw.ellipse((450, 200, 490, 240), fill=(25, 18, 18))
+    return image
+
+
+class FaceGateTests(unittest.TestCase):
+    def _modules(self, pixels: np.ndarray | Image.Image) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frame.png"
+            if isinstance(pixels, Image.Image):
+                pixels.save(path)
+            else:
+                _save_array(pixels, path)
+            return analyze(path, detector="heuristic", advisor="histogram")
+
+    def test_warm_flowers_beside_a_bird_are_not_a_face(self) -> None:
+        recipe = self._modules(_flowers_beside_a_bird())
+        names = [item["multi_name"] for item in recipe["modules"]]
+        self.assertNotIn("AI face", names)
+        vignettes = [item for item in recipe["modules"] if item["operation"] == "vignette"]
+        if vignettes:
+            self.assertEqual(vignettes[0]["multi_name"], "AI animal")
+            self.assertLess(vignettes[0]["params"]["center_x"], -0.2)
+
+    def test_an_open_field_has_no_vignette(self) -> None:
+        recipe = self._modules(_open_field())
+        names = [item["multi_name"] for item in recipe["modules"]]
+        self.assertNotIn("AI face", names)
+        self.assertFalse(any(item["operation"] == "vignette" for item in recipe["modules"]))
+        self.assertEqual(recipe["picture"]["measurements"]["compact_area"], 0.0)
+
+    def test_a_warm_gridded_facade_is_not_a_face(self) -> None:
+        recipe = self._modules(_warm_facade())
+        names = [item["multi_name"] for item in recipe["modules"]]
+        categories = {item["category"] for item in recipe["analysis"]["subjects"]}
+        self.assertNotIn("AI face", names)
+        self.assertNotIn("face", categories)
+
+    def test_a_dry_compact_body_is_an_animal(self) -> None:
+        image = np.full((480, 720, 3), (0.24, 0.40, 0.18), dtype=np.float32)
+        image[170:360, 270:450] = (0.40, 0.36, 0.16)
+        recipe = self._modules(image)
+        categories = {item["category"] for item in recipe["analysis"]["subjects"]}
+        self.assertEqual(recipe["picture"]["type"], "animal")
+        self.assertIn("animal", categories)
+        self.assertNotIn("AI face", [item["multi_name"] for item in recipe["modules"]])
+
+    def test_a_head_with_two_eyes_is_still_a_face(self) -> None:
+        recipe = self._modules(_skin_head())
+        names = [item["multi_name"] for item in recipe["modules"]]
+        categories = {item["category"] for item in recipe["analysis"]["subjects"]}
+        self.assertIn("AI face", names)
+        self.assertIn("face", categories)
+        self.assertIn("eye", categories)
+
+    def test_a_person_is_not_promoted_by_a_nearby_skin_blob(self) -> None:
+        pixels = _flowers_beside_a_bird()
+        image = Image.fromarray(np.rint(np.clip(pixels, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB")
+        from ai_dt.detectors.heuristic import HeuristicDetector
+
+        found = HeuristicDetector().detect(image)
+        person = Detection("person", "person", 0.9, (0.02, 0.25, 0.16, 0.5), "yolo")
+        gated = gate_faces(pixels, found + [person])
+        self.assertTrue(any(item.category == "person" and item.source == "yolo" for item in gated))
+        self.assertFalse(any(item.category == "face" for item in gated))
+        self.assertEqual(person.bbox, next(item.bbox for item in gated if item.category == "person"))
+
+    def test_a_mediapipe_face_stays(self) -> None:
+        face = Detection("face", "face", 0.92, (0.3, 0.2, 0.22, 0.4), "mediapipe")
+        pixels = np.full((80, 80, 3), 0.4, dtype=np.float32)
+        gated = gate_faces(pixels, [face])
+        self.assertEqual([item.source for item in gated], ["mediapipe"])
+
+
+class LookbackTests(unittest.TestCase):
+    def test_an_eye_hotter_than_the_face_stops_the_stage(self) -> None:
+        pixels = np.full((160, 160, 3), 0.18, dtype=np.float32)
+        pixels[30:140, 40:120] = (0.55, 0.40, 0.32)
+        pixels[50:70, 55:75] = (0.92, 0.90, 0.88)
+        pixels[50:70, 90:110] = (0.92, 0.90, 0.88)
+        face = (40 / 160, 30 / 160, 80 / 160, 110 / 160)
+        detections = [
+            Detection("face", "face", 0.9, face, "test"),
+            Detection("eye", "eye", 0.8, (55 / 160, 50 / 160, 20 / 160, 20 / 160), "test"),
+            Detection("eye", "eye", 0.8, (90 / 160, 50 / 160, 20 / 160, 20 / 160), "test"),
+        ]
+        picture = Picture(
+            type="portrait",
+            reason="A face is the clear subject, so this is a portrait.",
+            brightness=0.4,
+            warmth=0.08,
+            saturation=0.1,
+            edges=0.04,
+            line_fraction=0.01,
+            sky=0.0,
+            skin=0.4,
+            highlight_specks=0.0,
+            compact_area=0.2,
+            compact_fill=0.8,
+            subject_box=face,
+        )
+        _rendered, info = render_finish(
+            pixels,
+            Atmosphere(),
+            detections,
+            guide=match_guide("portrait").guide,
+            picture=picture,
+            stages=["grade", "subject", "eyes", "background"],
+        )
+        self.assertIn("eye", info["stop_reason"].lower())
+        self.assertNotIn("eyes", info["stages_ran"])
+        self.assertNotIn("background", info["stages_ran"])
+        self.assertGreaterEqual(len(info["measurements"]), 2)
+        self.assertTrue(any(item["stage"] == "eyes" and item["kept"] is False for item in info["measurements"]))
+
+    def test_a_weak_reflection_is_held(self) -> None:
+        pixels = _heron_on_water()
+        pixels = pixels.copy()
+        pixels[340:450, 300:370] = (0.08, 0.085, 0.09)
+        picture = decide_picture(pixels, [])
+        detections = []
+        if picture.subject_box is not None:
+            detections = [Detection("animal", "animal", 0.8, picture.subject_box, "test")]
+        _rendered, info = render_finish(pixels, Atmosphere(), detections, picture=picture)
+        self.assertEqual(info["reflection"], "hold")
+        self.assertIn("reflection", info["stages_ran"])
+        mirror = _luma_mean(_rendered[360:430, 310:360]) - _luma_mean(pixels[360:430, 310:360])
+        self.assertLess(abs(mirror), 0.02)
+
+
+class RegionTests(unittest.TestCase):
+    def test_a_bright_window_is_protected_from_the_surround(self) -> None:
+        pixels = np.full((200, 280, 3), (0.28, 0.40, 0.24), dtype=np.float32)
+        pixels[40:160, 24:100] = (0.12, 0.32, 0.70)
+        pixels[16:184, 140:260] = (0.72, 0.70, 0.62)
+        pixels[28:68, 168:214] = (0.97, 0.97, 0.98)
+        picture = decide_picture(pixels, [])
+        rendered, info = render_finish(pixels, Atmosphere(), [], picture=picture)
+        self.assertEqual(info["theme"], "window")
+        window = _luma_mean(rendered[28:68, 168:214]) - _luma_mean(pixels[28:68, 168:214])
+        ground = _luma_mean(rendered[90:160, 220:255]) - _luma_mean(pixels[90:160, 220:255])
+        self.assertGreater(window, ground)
 
 
 if __name__ == "__main__":

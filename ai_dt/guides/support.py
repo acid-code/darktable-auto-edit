@@ -502,28 +502,96 @@ def boxes_overlap(
     return width > 0.0 and height > 0.0
 
 
+def _strong_foliage(pixels: np.ndarray) -> np.ndarray:
+    """Green that is clearly leaves. A mildly olive body is not this."""
+
+    red = pixels[..., 0]
+    green = pixels[..., 1]
+    blue = pixels[..., 2]
+    return (green > red + np.float32(0.08)) & (green > blue + np.float32(0.06))
+
+
+def _reflection_block(pixels: np.ndarray) -> np.ndarray:
+    """Pixels that belong to a water mirror, not to the body above it."""
+
+    height, width = pixels.shape[:2]
+    blocked = np.zeros((height, width), dtype=bool)
+    boxes: list[tuple[float, float, float, float]] = []
+    mirrored = reflected_subject(pixels)
+    if mirrored is not None:
+        boxes.append(mirrored[1])
+    found = water_reflection(pixels)
+    if found is not None:
+        boxes.append(found[1])
+    for box in boxes:
+        x, y, bw, bh = box
+        x0 = min(width - 1, max(0, int((x - 0.01) * width)))
+        y0 = min(height - 1, max(0, int(y * height)))
+        x1 = min(width, max(x0 + 1, int((x + bw + 0.01) * width)))
+        y1 = min(height, max(y0 + 1, int((y + bh) * height)))
+        # The echo can touch the body through a thin gap. Cut from the
+        # shore downward so the mirror is not part of the creature.
+        blocked[y0:, x0:x1] = True
+    return blocked
+
+
 def creature_box(
     pixels: np.ndarray,
 ) -> tuple[tuple[float, float, float, float], float, float] | None:
     """A compact body that is not the green background and not the perch.
 
-    Brown, woody, elongated structure is left out on purpose so a branch
-    the animal is standing on is not mistaken for the animal.
+    An elongated brown branch is left out. A compact body of its own color
+    is kept, including a brown or olive animal that is not a branch. A
+    water reflection is not part of the body. A textured cluster fails the
+    fill and edge gates, the same way any other busy patch does.
     """
 
     small = _small(pixels)
-    candidate = _creature_pixels(small)
-    thick = _thick(candidate, 0.016, 0.5)
+    blocked = _reflection_block(small)
+    background = _corner_median(small)
+    distance = np.sqrt(np.sum((small - background) ** 2, axis=2))
+    apart = distance > np.float32(0.16)
+    foliage = _strong_foliage(small)
+    woody = _woody(small)
+    skin = _skin(small)
+    # Mild olive stays. Strong leaves and the mirror do not.
+    mild = apart & ~foliage & ~woody & ~blocked
+    # A brown animal is woody and compact. A branch is the same color and
+    # is rejected later because it is a bar. Skin is a face, not this body.
+    brown = apart & woody & ~skin & ~foliage & ~blocked
     best: tuple[tuple[float, float, float, float], float, float] | None = None
     best_count = 0
-    for component in _components(thick):
-        measured = _compact_region(component, small)
-        if measured is None:
-            continue
-        count = int(component.sum())
-        if count > best_count:
-            best = measured
-            best_count = count
+    for candidate in (mild, brown):
+        thick = _thick(candidate, 0.016, 0.5)
+        for component in _components(thick):
+            measured = _compact_region(component, small)
+            if measured is None:
+                continue
+            count = int(component.sum())
+            if count > best_count:
+                best = measured
+                best_count = count
+    # A compact body over a narrow mirror is the creature. A wide echo of a
+    # house or a ridge never reaches here, so a reflection alone is not an animal.
+    # A wide shallow band, such as pads on the water, is not that body.
+    mirrored = reflected_subject(pixels)
+    if mirrored is not None:
+        body, _echo = mirrored
+        area = float(body[2] * body[3])
+        compact_body = (
+            not is_elongated(body, small.shape)
+            and body[2] < 0.72
+            and body[3] < 0.72
+            and area >= 0.02
+        )
+        if compact_body:
+            picked = (body, 0.55, area)
+            if best is None:
+                return picked
+            bw, bh = float(best[0][2]), float(best[0][3])
+            band = bw > bh * 1.45 and bh < 0.45
+            if band and not boxes_overlap(best[0], body):
+                return picked
     return best
 
 
@@ -754,6 +822,10 @@ def _compact_region(
     y0, y1 = int(ys.min()), int(ys.max())
     if x0 <= 1 and y0 <= 1 and x1 >= width - 2 and y1 >= height - 2:
         return None
+    # A compact body sits inside the frame. A slab that runs from one edge
+    # to the opposite edge is a wall, a field, or a shore.
+    if (y0 <= 1 and y1 >= height - 2) or (x0 <= 1 and x1 >= width - 2):
+        return None
     box_w = x1 - x0 + 1
     box_h = y1 - y0 + 1
     fill = count / float(max(1, box_w * box_h))
@@ -765,6 +837,10 @@ def _compact_region(
     if norm[2] >= 0.8 and fill < 0.5:
         return None
     if is_elongated(norm, component.shape):
+        return None
+    # A compact body does not run most of the way across the frame.
+    # A wall or a field does, and it is not a creature.
+    if norm[2] >= 0.72 or norm[3] >= 0.72:
         return None
     pad_x = int(box_w * 0.12)
     pad_y = int(box_h * 0.14)

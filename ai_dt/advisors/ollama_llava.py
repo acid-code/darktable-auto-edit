@@ -9,13 +9,12 @@ this module. The model name is likewise a constructor argument, so
 from __future__ import annotations
 
 import json
-import os
-import socket
 from pathlib import Path
 
 from PIL import Image
 
 from ai_dt.errors import AdvisorUnavailable
+from ai_dt.ollama_host import ollama_reachable
 from ai_dt.schema import Atmosphere
 
 _PACKAGE = Path(__file__).resolve().parents[1]
@@ -31,29 +30,6 @@ _LIMITS = {
     "highlights": (-0.4, 0.4),
     "vibrance": (-0.3, 0.3),
 }
-
-
-def ollama_reachable(timeout: float = 0.4) -> bool:
-    """Return True when a TCP connection to the Ollama host succeeds."""
-
-    hostport = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
-    hostport = hostport.removeprefix("http://").removeprefix("https://").split("/")[0]
-    if hostport.startswith("["):
-        host, _, port_text = hostport[1:].partition("]")
-        port_text = port_text[1:] if port_text.startswith(":") else "11434"
-    elif ":" in hostport:
-        host, port_text = hostport.rsplit(":", 1)
-    else:
-        host, port_text = hostport, "11434"
-    try:
-        port = int(port_text)
-    except ValueError:
-        port = 11434
-    try:
-        with socket.create_connection((host, port), timeout):
-            return True
-    except OSError:
-        return False
 
 
 def _load_prompt(path: Path | None) -> str:

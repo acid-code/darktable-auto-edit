@@ -87,6 +87,31 @@ The model is not allowed to ignore the measurement. Its numbers are clamped, the
 
 The LLaVA prompt is `ai_dt/prompts/llava_lighting.txt`. Replace it by editing that file, passing `--prompt /path/to/prompt.txt`, or setting the Lua preference "AI editor: prompt file".
 
+## Local reasoning model
+
+On each run the editor tries Ollama at `127.0.0.1:11434` by itself. It sends the picture description, the vibe words, and the preset name, and asks for a short stage plan. The photo is not uploaded.
+
+If nothing is listening and `GEMINI_API_KEY` is unset, reasoning is skipped. The steer line is still applied, and the rest of the edit continues. The note is `Reasoning was skipped. No local model and no Gemini key.`
+
+On Windows, install Ollama with winget. Approve the Windows prompt if it appears:
+
+```powershell
+winget install --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
+```
+
+The same installer is `OllamaSetup.exe` from [ollama.com/download](https://ollama.com/download). Open a new terminal so `ollama` is on `PATH`, then start the server and pull the text model the reasoner asks for:
+
+```powershell
+ollama serve
+ollama pull llama3.2
+```
+
+The Ollama app listens on that port after it starts, so `ollama serve` is only needed when nothing is already there. The reasoner model is `llama3.2`. Set `OLLAMA_REASON_MODEL` to another model you have pulled. Set `OLLAMA_HOST` when the server is somewhere other than `127.0.0.1:11434`. That is the same variable the Ollama client reads, and the lighting advisor uses it too.
+
+Gemini stays off unless `GEMINI_API_KEY` is set. It is optional.
+
+The lighting advisor is a separate step. Its vision model defaults to `llava`, and it runs only when the advisor is `ollama` or when `auto` finds Ollama already up. Pull it with `ollama pull llava` when you want those suggestions.
+
 ## Picture types and guides
 
 Each file in `guides/` is one picture type. The folder is only where the file lives. Matching uses the words inside it: the title, the type names, the words, the description, and the reason. Those words become a term-frequency vector, the same way a vibe matches a recipe. The query is the picture type, not the vibe and not the folder name. Cosine similarity picks the nearest guide. A small bonus is added when the guide lists that type.

@@ -162,6 +162,23 @@ class RevertHistoryTests(unittest.TestCase):
         )
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM history_hash").fetchone()[0], 1)
 
+    def test_a_named_stage_removes_only_that_history_module(self):
+        connection = _library()
+        connection.execute("INSERT INTO images VALUES (3, 3, 1, 0)")
+        connection.executemany(
+            "INSERT INTO history VALUES (?, ?, ?, ?)",
+            [
+                (3, 0, "exposure", "AI exposure"),
+                (3, 1, "colorbalancergb", "AI color"),
+                (3, 2, "vignette", "AI animal"),
+            ],
+        )
+        self.assertEqual(revert_image_history(connection, 3, "vignette"), 1)
+        self.assertEqual(
+            connection.execute("SELECT operation, multi_name FROM history ORDER BY num").fetchall(),
+            [("exposure", "AI exposure"), ("colorbalancergb", "AI color")],
+        )
+
     def test_missing_image_is_an_error(self):
         connection = _library()
         with self.assertRaises(LookupError):

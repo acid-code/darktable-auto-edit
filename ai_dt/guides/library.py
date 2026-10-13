@@ -290,12 +290,27 @@ def _clamp_number(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def clamp_grades(plan: MaskPlan) -> MaskPlan:
-    """Force one mask's numbers back inside the modest limits."""
+# Open only when the user wrote strong or epic. A guide file still uses the modest limits.
+OPEN_LIMITS = {
+    "exposure": (-1.6, 1.0),
+    "contrast": (-0.45, 0.45),
+    "saturation": (-0.5, 0.5),
+    "clarity": (-0.45, 0.9),
+    "defocus": (0.0, 1.0),
+    "mute": (0.0, 0.7),
+}
 
+
+def clamp_grades(plan: MaskPlan, *, opened: bool = False) -> MaskPlan:
+    """Force one mask's numbers back inside the modest limits.
+
+    ``opened`` is the strong or epic switch. Without it the tight caps stay.
+    """
+
+    limits = OPEN_LIMITS if opened else GRADE_LIMITS
     values = {}
     for key in GRADE_KEYS:
-        low, high = GRADE_LIMITS[key]
+        low, high = limits[key]
         values[key] = _clamp_number(float(getattr(plan, key)), low, high)
     if plan.build != "background":
         values["defocus"] = 0.0
