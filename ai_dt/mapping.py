@@ -145,24 +145,21 @@ def vignette_params(values: dict[str, float]) -> bytes:
     return blob
 
 
-def _warmth_to_color(atmosphere: Atmosphere) -> dict[str, float]:
-    shift = clamp(atmosphere.temperature_shift, -1.0, 1.0)
-    tint = clamp(atmosphere.tint, -1.0, 1.0)
-    if abs(shift) < 0.03 and abs(tint) < 0.03:
-        hue = 0.0
-        chroma = 0.0
-    else:
-        hue = 40.0 if shift >= 0 else 210.0
-        chroma = abs(shift) * 0.14
-        hue = (hue + tint * 40.0) % 360.0
-        chroma = clamp(chroma + abs(tint) * 0.08, 0.0, 0.16)
+def _warmth_to_color(atmosphere: Atmosphere, *, night: bool = False) -> dict[str, float]:
+    # Global hue is an offset added to every pixel. Any warmth above a few
+    # percent lands near 40 degrees and paints the frame red, night or not.
+    # Warmth stays in the channel mixer, which keeps the camera white balance.
+    # ``night`` is accepted so callers can keep passing the picture type.
+    _ = night
     return {
-        "global_H": hue,
-        "global_C": chroma,
+        "global_H": 0.0,
+        "global_C": 0.0,
         "contrast": clamp(atmosphere.contrast, -0.6, 0.6),
         "saturation_global": clamp(atmosphere.saturation, -0.6, 0.6),
         "vibrance": clamp(atmosphere.vibrance, -0.5, 0.5),
-        "brilliance_shadows": clamp(atmosphere.shadows, -0.6, 0.6),
+        # The tone equalizer opens shadows. Brilliance past about 0.12 is
+        # the +50% slider that shifts warm shadows yellow.
+        "brilliance_shadows": clamp(atmosphere.shadows, -0.12, 0.12),
         "brilliance_highlights": clamp(atmosphere.highlights, -0.6, 0.6),
     }
 
@@ -391,7 +388,8 @@ def build_modules(
             + "cannot carry a drawn mask."
         ).strip()
 
-    color_values = _warmth_to_color(adjusted)
+    night = str(getattr(picture, "type", "") or "") == "night"
+    color_values = _warmth_to_color(adjusted, night=night)
     exposure_blob = exposure_params(adjusted.exposure_ev, adjusted.black)
     color_blob = colorbalance_params(color_values)
     modules = [

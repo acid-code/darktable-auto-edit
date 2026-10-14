@@ -10,7 +10,8 @@ The vibe is not an input. A sentence cannot turn a portrait into wildlife.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -729,3 +730,69 @@ def decide_picture(pixels: np.ndarray, detections: list[Detection] | None = None
 def _largest_blob(people: list[Detection]) -> Blob:
     box = max(people, key=lambda item: _area(item.bbox)).bbox
     return Blob(box=box, fill=1.0, area=_area(box))
+
+
+# A steer can name the thing the compact-blob detector called an animal.
+_VEHICLE_WORDS = ("train", "tram", "metro", "subway", "locomotive", "railway")
+_URBAN_WORDS = frozenset({"urban", "city", "street", "downtown", "night"})
+
+
+def steer_words(steer: str) -> set[str]:
+    return set(re.findall(r"[a-z]+", (steer or "").lower()))
+
+
+def named_vehicle(steer: str) -> str:
+    """The vehicle the user named, when the detector did not find one."""
+
+    words = steer_words(steer)
+    for word in _VEHICLE_WORDS:
+        if word in words:
+            return word
+    return ""
+
+
+def apply_steer_scene(
+    picture: Picture,
+    detections: list[Detection] | None,
+    steer: str,
+) -> tuple[Picture, list[Detection], str, bool]:
+    """Let a train or urban steer replace a false animal label.
+
+    A compact light shape on a night street, such as a train, is filed as
+    an animal before the night reading runs. Words the user already typed
+    win over that label. The picture stays on an existing night or street
+    type. A real detector animal is kept when the steer does not name a
+    vehicle. Returns the picture, the detections, the subject name, and
+    whether the animal label was replaced.
+    """
+
+    found = list(detections or [])
+    subject = named_vehicle(steer)
+    words = steer_words(steer)
+    urban = bool(subject) or bool(words & _URBAN_WORDS)
+    if picture.type != "animal" or not urban:
+        keep_name = subject if picture.type in {"night", "street", "architecture", "general"} else ""
+        return picture, found, keep_name, False
+    real_animal = any(item.category == "animal" and item.source != "heuristic" for item in found)
+    if real_animal and not subject:
+        return picture, found, "", False
+    dark = picture.brightness < 0.45 or "night" in words
+    if dark:
+        new_type = "night"
+        reason = "The request names a night urban scene"
+    else:
+        new_type = "street"
+        reason = "The request names an urban scene"
+    if subject:
+        reason += f", and the {subject} is the subject the detector did not find"
+    reason += ", so this is not an animal."
+    updated = replace(
+        picture,
+        type=new_type,
+        reason=reason,
+        subject_box=None,
+        compact_area=0.0,
+        compact_fill=0.0,
+    )
+    kept = [item for item in found if item.category != "animal"]
+    return updated, kept, subject, True

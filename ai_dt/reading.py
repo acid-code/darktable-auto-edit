@@ -308,12 +308,15 @@ def linear_falloff(pixels: np.ndarray) -> dict | None:
         bright = "top" if vertical > 0 else "bottom"
         gap = abs(vertical)
         axis = "vertical"
+        profile = row
         reason = "The sky side is brighter than the land, so a soft gradient darkens the bright end."
     else:
         bright = "left" if horizontal > 0 else "right"
         gap = abs(horizontal)
         axis = "horizontal"
+        profile = col
         reason = "One side of the frame is brighter, so a soft gradient darkens that end."
+    position = _falloff_position(profile, bright_at_start=bright in {"top", "left"})
     if gap < 0.10:
         return None
     strength = -max(0.08, min(0.28, (gap - 0.04) * 0.55))
@@ -324,14 +327,35 @@ def linear_falloff(pixels: np.ndarray) -> dict | None:
         "bright": bright,
         "strength": round(float(strength), 4),
         "gap": round(float(gap), 4),
+        "position": round(float(position), 4),
         "reason": reason,
     }
+
+
+def _falloff_position(profile: np.ndarray, *, bright_at_start: bool) -> float:
+    """Where the bright end gives way to the dark end, as a fraction of the axis."""
+
+    band = max(2, int(profile.size) // 8)
+    if bright_at_start:
+        bright = float(profile[:band].mean())
+        dark = float(profile[-band:].mean())
+    else:
+        bright = float(profile[-band:].mean())
+        dark = float(profile[:band].mean())
+    mid = (bright + dark) * 0.5
+    if bright_at_start:
+        hits = np.where(profile <= mid)[0]
+    else:
+        hits = np.where(profile >= mid)[0]
+    index = int(hits[0]) if hits.size else profile.size // 2
+    return float(index) / float(max(profile.size - 1, 1))
 
 
 def read_frame(
     pixels: np.ndarray,
     picture: Picture,
     detections: list[Detection] | None = None,
+    subject_name: str = "",
 ) -> Reading:
     """Build the reading for one frame. The first sentence is the lead problem."""
 
@@ -458,4 +482,17 @@ def read_frame(
         sentence = picture.reason.strip() or "Nothing in this frame asks for a local change."
     if sentence and sentence[-1] not in ".!?":
         sentence += "."
+    named = " ".join(str(subject_name or "").lower().split())
+    if named:
+        regions.insert(
+            0,
+            {
+                "role": "subject",
+                "kind": named,
+                "intention": "hold",
+                "note": f"The {named} is the subject named in the request. The detector did not find one.",
+            },
+        )
+        if named not in sentence.lower():
+            sentence = f"The {named} is the subject. {sentence}"
     return Reading(sentence=sentence, regions=regions, problems=problems, leave_alone=leave)

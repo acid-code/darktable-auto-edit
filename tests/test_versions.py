@@ -71,6 +71,29 @@ class VersionTests(unittest.TestCase):
         self.assertIn("Velvia", sentence)
         self.assertIn("Lift the face.", sentence)
 
+    def test_a_picked_look_leads_the_sentence(self) -> None:
+        recipe = {
+            "features": ["train"],
+            "look_id": "shadow-lift",
+            "reasoning": {"set_aside": [{"title": "Quiet night"}]},
+            "recipe_match": {"title": "Faithful correction"},
+            "plan": {"label": "Open the dark bands."},
+        }
+        sentence = version_sentence(recipe)
+        self.assertTrue(sentence.startswith("Open shadows."))
+        self.assertNotIn("Faithful correction", sentence)
+        record = build_version_record(
+            recipe,
+            Path("/tmp/v2"),
+            image_id=1,
+            duplicate_index=2,
+            parent_id=1,
+            parent_index=0,
+            look_id="warmer",
+        )
+        self.assertEqual(record["look_title"], "Warmer")
+        self.assertTrue(record["sentence"].startswith("Warmer."))
+
     def test_record_keeps_the_parent_duplicate(self) -> None:
         record = build_version_record(
             {"features": [], "reasoning": {}, "recipe_match": {}, "plan": {"text": "Measured."}, "modules": []},
@@ -315,6 +338,13 @@ class MaskedModuleTests(unittest.TestCase):
 
     def test_a_sentence_turns_on_the_expert_modules(self) -> None:
         plan = revise_plan(empty_plan([]), "lift the shadows, warmer, more color, gradient")
+        plan["falloff"] = {
+            "axis": "vertical",
+            "bright": "top",
+            "position": 0.28,
+            "strength": -0.22,
+            "gap": 0.45,
+        }
         atmosphere = Atmosphere()
         apply_expert_requests(atmosphere, plan)
         modules: list[dict] = []
@@ -340,6 +370,33 @@ class MaskedModuleTests(unittest.TestCase):
         self.assertIn("graduatednd", names)
         self.assertNotIn("filmicrgb", names)
         self.assertNotIn("sigmoid", names)
+        gradient = next(item for item in modules if item["operation"] == "graduatednd")
+        self.assertLess(gradient["params"]["offset"], 40.0)
+        self.assertGreater(gradient["params"]["hardness"], 20.0)
+        self.assertFalse(
+            abs(gradient["params"]["rotation"]) < 1.0 and abs(gradient["params"]["offset"] - 50.0) < 2.0
+        )
+
+    def test_a_gradient_with_no_direction_is_left_out(self) -> None:
+        plan = revise_plan(empty_plan([]), "gradient")
+        modules: list[dict] = []
+        blobs: list[dict] = []
+        append_extra_modules(
+            modules,
+            blobs,
+            atmosphere=Atmosphere(),
+            picture_type="night",
+            reading={"problems": [], "regions": []},
+            plan=plan,
+            separation={"stages_ran": [], "gradient": {"skipped": True}},
+            guide=None,
+            history_ops=set(),
+            look="",
+            vibe="",
+            masks=False,
+        )
+        self.assertNotIn("graduatednd", [item["operation"] for item in modules])
+        self.assertIn("no measured direction", str(plan.get("gradient_note") or "").lower())
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ai_dt.choices import title_for
+
 
 def version_work_dir(root: Path, image_id: int, duplicate_index: int) -> Path:
     """Directory for one image id and one duplicate index."""
@@ -17,8 +19,22 @@ def version_work_dir(root: Path, image_id: int, duplicate_index: int) -> Path:
     return Path(root) / str(int(image_id)) / f"v{int(duplicate_index)}"
 
 
-def version_sentence(recipe: dict) -> str:
-    """One sentence: the look, what stayed, what was set aside, and the plan."""
+def choice_title(recipe: dict, look_id: str = "") -> str:
+    """The name of the button that made this duplicate."""
+
+    chosen = (look_id or str(recipe.get("look_id") or "")).strip()
+    named = title_for(chosen)
+    if named and chosen not in {"", "faithful"}:
+        return named
+    match = recipe.get("recipe_match") if isinstance(recipe.get("recipe_match"), dict) else {}
+    match_title = str(match.get("title") or "").strip()
+    if chosen in {"", "faithful"}:
+        return match_title or "Faithful"
+    return match_title or named or "Faithful"
+
+
+def version_sentence(recipe: dict, look_id: str = "") -> str:
+    """One sentence: the picked look, what stayed, what was set aside, and the plan."""
 
     features = [str(item) for item in (recipe.get("features") or []) if str(item).strip()]
     kept = "Kept " + ", ".join(features) + "." if features else "Kept the frame."
@@ -34,17 +50,13 @@ def version_sentence(recipe: dict) -> str:
         if aside_titles
         else "Nothing set aside."
     )
-    match = recipe.get("recipe_match") if isinstance(recipe.get("recipe_match"), dict) else {}
-    title = str(match.get("title") or "").strip() or "Faithful"
+    title = choice_title(recipe, look_id)
     plan = recipe.get("plan") if isinstance(recipe.get("plan"), dict) else {}
     plan_text = str(plan.get("label") or plan.get("text") or "").strip()
     sentence = f"{title}. {kept} {aside}"
     if plan_text:
         sentence = f"{sentence} {plan_text}"
-    sentence = " ".join(sentence.split())
-    if len(sentence) > 240:
-        sentence = sentence[:237].rstrip() + "..."
-    return sentence
+    return " ".join(sentence.split())
 
 
 def build_version_record(
@@ -77,13 +89,15 @@ def build_version_record(
             "image_id": int(parent_id),
             "duplicate_index": int(parent_index or 0),
         }
-    sentence = version_sentence(recipe)
+    chosen = look_id or "faithful"
+    sentence = version_sentence(recipe, chosen)
     return {
         "version": 1,
         "image_id": None if image_id is None else int(image_id),
         "duplicate_index": None if duplicate_index is None else int(duplicate_index),
         "parent": parent,
-        "look_id": look_id or "faithful",
+        "look_id": chosen,
+        "look_title": choice_title(recipe, chosen),
         "plan_text": str(plan.get("text") or ""),
         "sentence": sentence,
         "modules": modules,

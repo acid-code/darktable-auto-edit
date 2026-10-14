@@ -1,7 +1,7 @@
 """Lighting estimate from the pixels themselves.
 
-This advisor always runs. It is the measurement the LLaVA suggestion is blended
-with, and it is the whole suggestion when Ollama is not available.
+This advisor always runs. It is the measurement a vision suggestion is blended
+with, and it is the whole suggestion when no vision model is available.
 """
 
 from __future__ import annotations

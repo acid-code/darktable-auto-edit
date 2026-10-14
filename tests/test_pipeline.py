@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import unittest
 import zlib
+from unittest.mock import patch
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -156,7 +158,10 @@ class AnalysisTests(unittest.TestCase):
             recipe = self._run(path, directory)
         self.assertGreater(recipe["analysis"]["atmosphere"]["temperature_shift"], 0.08)
         self.assertLess(recipe["analysis"]["atmosphere"]["temperature_shift"], 0.28)
-        self.assertGreater(recipe["modules"][1]["params"]["global_C"], 0)
+        self.assertEqual(recipe["modules"][1]["params"]["global_C"], 0.0)
+        self.assertEqual(recipe["modules"][1]["params"]["global_H"], 0.0)
+        mixer = next(item for item in recipe["modules"] if item["operation"] == "channelmixerrgb")
+        self.assertGreater(mixer["params"]["warmth"], 0.08)
 
     def test_brown_red_leaves_keep_their_red(self) -> None:
         image = Image.new("RGB", (240, 160), (72, 132, 48))
@@ -232,15 +237,17 @@ class AnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             path = _save(Image.new("RGB", (80, 60), (40, 40, 40)), directory, "plain.png")
-            recipe = analyze(
-                path,
-                detector="auto",
-                advisor="auto",
-                output_dir=directory,
-                style_name="AI Edit auto",
-            )
+            with patch.dict(os.environ, {"MISTRAL_API_KEY": ""}, clear=False):
+                recipe = analyze(
+                    path,
+                    detector="auto",
+                    advisor="auto",
+                    output_dir=directory,
+                    style_name="AI Edit auto",
+                )
             write_outputs(recipe, directory)
         self.assertIn("histogram", recipe["backends"]["advisor"])
+        self.assertNotIn("mistral:", recipe["backends"]["advisor"])
         if importlib.util.find_spec("ultralytics") is None:
             self.assertTrue(
                 any("ultralytics" in note for note in recipe["backends"]["detector_notes"])
@@ -350,6 +357,105 @@ class LuaJsonTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+
+class NightTrainTests(unittest.TestCase):
+    def test_a_night_frame_with_a_train_steer_is_not_an_animal(self) -> None:
+        saved = os.environ.get("AI_EDITOR_REASONER")
+        os.environ["AI_EDITOR_REASONER"] = "off"
+        image = Image.new("RGB", (720, 480), (8, 12, 18))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((280, 150, 460, 250), fill=(186, 196, 176))
+        draw.rectangle((300, 165, 440, 210), fill=(70, 150, 110))
+        for origin in (40, 90, 140):
+            draw.ellipse((origin, 360, origin + 16, 376), fill=(220, 140, 60))
+        steer = (
+            "make the picture more urban feeling and more balanced "
+            "with the moving train as the main theme"
+        )
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                path = _save(image, directory, "night-train.png")
+                plain = analyze(path, detector="heuristic", advisor="histogram")
+                recipe = analyze(
+                    path,
+                    detector="heuristic",
+                    advisor="histogram",
+                    output_dir=directory,
+                    steer=steer,
+                )
+        finally:
+            if saved is None:
+                os.environ.pop("AI_EDITOR_REASONER", None)
+            else:
+                os.environ["AI_EDITOR_REASONER"] = saved
+        self.assertEqual(plain["picture"]["type"], "animal")
+        self.assertNotEqual(recipe["picture"]["type"], "animal")
+        self.assertIn(recipe["picture"]["type"], {"night", "street"})
+        self.assertNotIn("animal", recipe["features"])
+        self.assertNotIn("eyes", recipe["plan"].get("guide_stages") or [])
+        self.assertNotIn("eyes", recipe["separation"]["stages_ran"])
+        self.assertNotIn("eyes", recipe["plan"]["label"])
+        self.assertEqual(recipe["subject_name"], "train")
+        self.assertNotIn("The animal is lifted", recipe["analysis"]["rationale"])
+        self.assertIn("train", recipe["reading"]["sentence"].lower())
+        status = recipe["status_text"]
+        self.assertIn("Picture: measured locally", status)
+        self.assertIn("Plan: not used", status)
+        self.assertNotIn("Kept animal", status)
+        self.assertNotIn("Expert tools: gr", status)
+        choices = {item["id"]: item["why"] for item in recipe["choices"]}
+        self.assertIn("tone equalizer", choices["shadow-lift"].lower())
+        self.assertIn("shadows", choices["shadow-lift"].lower())
+        self.assertIn("train", choices["shadow-lift"].lower())
+        self.assertIn("color calibration", choices["warmer"].lower())
+        self.assertIn("color zones", choices["more-color"].lower())
+
+
+class StageTests(unittest.TestCase):
+    def test_staged_commands_finish_without_a_second_picture_call(self) -> None:
+        saved = os.environ.get("AI_EDITOR_REASONER")
+        os.environ["AI_EDITOR_REASONER"] = "off"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                path = _save(Image.new("RGB", (48, 32), (18, 18, 22)), directory, "stage.png")
+                args = [
+                    str(path),
+                    "--output-dir",
+                    tmp,
+                    "--detector",
+                    "heuristic",
+                    "--advisor",
+                    "histogram",
+                ]
+                self.assertEqual(main(args + ["--stage", "picture"]), 0)
+                self.assertEqual(main(args + ["--stage", "gemini"]), 0)
+                proposal = json.loads((directory / "proposal.json").read_text(encoding="utf-8"))
+                self.assertFalse(proposal["ask_ollama"])
+                proposal["proposal"] = {
+                    "status": "ollama",
+                    "backend": "llama3.2",
+                    "failure": "HTTP 503, high demand",
+                    "note": (
+                        "Gemini did not return a plan: HTTP 503, high demand. "
+                        "Stages proposed by the local model llama3.2."
+                    ),
+                    "paragraph": "Keep the frame.",
+                    "stages": [],
+                }
+                (directory / "proposal.json").write_text(json.dumps(proposal), encoding="utf-8")
+                self.assertEqual(main(args + ["--stage", "finish"]), 0)
+                recipe = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+        finally:
+            if saved is None:
+                os.environ.pop("AI_EDITOR_REASONER", None)
+            else:
+                os.environ["AI_EDITOR_REASONER"] = saved
+        self.assertIn(
+            "Plan: Gemini failed (HTTP 503, high demand), Ollama llama3.2",
+            recipe["status_text"],
+        )
 
 if __name__ == "__main__":
     unittest.main()

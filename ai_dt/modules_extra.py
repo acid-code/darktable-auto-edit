@@ -225,32 +225,48 @@ def _daylight_xy(kelvin: float) -> tuple[float, float]:
     return x_value, y_value
 
 
+# Darktable registers color calibration as the pipe white balance when the
+# illuminant is anything other than "same as pipeline" (0). That replaces
+# the camera as-shot balance. On a tungsten night the replacement is a
+# full-frame red cast, even when the requested warmth is only a few percent.
+_ILLUMINANT_PIPE = 0
+_ADAPTATION_BYPASS = 4  # DT_ADAPTATION_RGB: do not run a chromatic adaptation
+_GAIN_LIMIT = 0.08
+
+
 def channelmixer_params(warmth: float, tint: float) -> bytes | None:
-    """Color calibration. Positive warmth lowers the daylight temperature."""
+    """A small relative channel gain. It does not replace the camera white balance.
+
+    Positive warmth raises red and lowers blue by a few percent. The
+    illuminant stays the pipeline white (D50), and adaptation is bypassed,
+    so Darktable keeps the as-shot white balance.
+    """
 
     if _near(warmth) and _near(tint):
         return None
-    kelvin = _clamp(5003.0 - warmth * 1800.0, 2500.0, 12000.0)
-    x_value, y_value = _daylight_xy(kelvin)
-    y_value = _clamp(y_value + tint * 0.02, 0.05, 0.8)
-    illuminant = 7 if not _near(tint) else 2  # custom when tint moves off the locus, else daylight
-    identity = [0.0] * 24
-    identity[0] = 1.0  # red
-    identity[5] = 1.0  # green
-    identity[10] = 1.0  # blue
+    red = _clamp(1.0 + 0.10 * warmth - 0.04 * tint, 1.0 - _GAIN_LIMIT, 1.0 + _GAIN_LIMIT)
+    green = _clamp(1.0 - 0.08 * tint, 1.0 - _GAIN_LIMIT, 1.0 + _GAIN_LIMIT)
+    blue = _clamp(1.0 - 0.10 * warmth + 0.04 * tint, 1.0 - _GAIN_LIMIT, 1.0 + _GAIN_LIMIT)
+    channels = [0.0] * 24
+    channels[0] = red
+    channels[5] = green
+    channels[10] = blue
+    # Stored temperature stays D50. The pipe illuminant ignores it and does
+    # not install a daylight or custom CAT.
+    x_value, y_value = _daylight_xy(5003.0)
     blob = struct.pack(
         "<24f6i4i4fii",
-        *identity,
+        *channels,
         0, 0, 0, 0, 0, 0,  # normalize flags
-        illuminant,
+        _ILLUMINANT_PIPE,
         2,  # F3, unused unless the illuminant is fluorescent
         4,  # LED B5, unused unless the illuminant is LED
-        1,  # CAT16
+        _ADAPTATION_BYPASS,
         x_value,
         y_value,
-        kelvin,
-        1.0,  # gamut
-        1,  # clip
+        5003.0,
+        0.0,  # gamut compression off, same as Darktable's bypass preset
+        0,  # clip
         2,  # saturation algorithm v3
     )
     if len(blob) != CHANNELMIXER_BYTES:
@@ -258,13 +274,126 @@ def channelmixer_params(warmth: float, tint: float) -> bytes | None:
     return blob
 
 
-def graduated_params(enabled: bool) -> bytes | None:
-    if not enabled:
+def graduated_params(enabled: bool, placement: dict | None = None) -> bytes | None:
+    """Pack graduated density. Without a placement this is only the length check.
+
+    The style writer passes a measured line. Density is EV, hardness is
+    percent, rotation is degrees, and offset is percent of the frame.
+    Offset 50 and rotation 0 is the center horizontal, which is not used
+    unless a measurement actually sits there.
+    """
+
+    if placement is None and not enabled:
         return None
-    blob = struct.pack("<6f", 0.35, 0.0, 0.0, 50.0, 0.0, 0.0)
+    if placement is None:
+        density, hardness, rotation, offset = 0.35, 0.0, 0.0, 50.0
+    else:
+        density = _clamp(float(placement.get("density") or 0.0), -8.0, 8.0)
+        hardness = _clamp(float(placement.get("hardness") or 0.0), 0.0, 100.0)
+        rotation = _clamp(float(placement.get("rotation") or 0.0), -180.0, 180.0)
+        offset = _clamp(float(placement.get("offset") or 50.0), 0.0, 100.0)
+        if abs(density) < _EPS:
+            return None
+    blob = struct.pack("<6f", density, hardness, rotation, offset, 0.0, 0.0)
     if len(blob) != GRADUATED_BYTES:
         raise RuntimeError(f"graduated density blob is {len(blob)} bytes")
     return blob
+
+
+def _regions_of(reading: object) -> list[dict]:
+    regions = getattr(reading, "regions", None)
+    if regions is None and isinstance(reading, dict):
+        regions = reading.get("regions")
+    return [item for item in (regions or []) if isinstance(item, dict)]
+
+
+def _placement_from_falloff(info: dict) -> dict | None:
+    """Turn a bright-to-dark axis into the graduated-density line."""
+
+    axis = str(info.get("axis") or "")
+    bright = str(info.get("bright") or "")
+    if axis not in {"vertical", "horizontal"} or bright not in {"top", "bottom", "left", "right"}:
+        return None
+    raw = info.get("position")
+    position = 0.5 if raw is None else float(raw)
+    position = _clamp(position, 0.05, 0.95)
+    gap = abs(float(info.get("gap") or 0.0))
+    strength = abs(float(info.get("strength") or gap or 0.2))
+    density = _clamp(max(0.45, strength * 4.0), 0.4, 1.8)
+    hardness = _clamp(28.0 + gap * 80.0, 28.0, 75.0)
+    if axis == "vertical" and bright == "top":
+        rotation, offset = 0.0, position * 100.0
+    elif axis == "vertical" and bright == "bottom":
+        rotation, offset = 180.0, (1.0 - position) * 100.0
+    elif axis == "horizontal" and bright == "left":
+        rotation, offset = 90.0, position * 100.0
+    else:
+        rotation, offset = -90.0, (1.0 - position) * 100.0
+    return {
+        "density": round(density, 4),
+        "hardness": round(hardness, 4),
+        "rotation": round(rotation, 4),
+        "offset": round(offset, 4),
+        "axis": axis,
+        "bright": bright,
+    }
+
+
+def _falloff_from_box(box: object, kind: str) -> dict | None:
+    """A sky, a highlight band, or a bright region becomes a line across that edge."""
+
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    _x, y, _w, height = (float(item) for item in box)
+    if height <= 0.02:
+        return None
+    name = kind.lower()
+    # Darken the bright side. An upper region darkens above its lower edge.
+    if y + height <= 0.62:
+        position = y + height
+        bright = "top"
+    elif y >= 0.38:
+        position = y
+        bright = "bottom"
+    else:
+        position = y + height / 2.0
+        bright = "top"
+    return {
+        "axis": "vertical",
+        "bright": bright,
+        "position": position,
+        "strength": -0.22 if "highlight" in name else -0.18,
+        "gap": 0.22,
+    }
+
+
+def gradient_placement(plan: dict, separation: dict, reading: object) -> dict | None:
+    """The measured line, or None when the plan has no direction to place."""
+
+    if not plan.get("gradient"):
+        return None
+    candidates: list[dict] = []
+    falloff = plan.get("falloff")
+    if isinstance(falloff, dict) and falloff.get("axis"):
+        candidates.append(falloff)
+    recorded = separation.get("gradient") if isinstance(separation, dict) else None
+    if isinstance(recorded, dict) and recorded.get("axis") and not recorded.get("skipped"):
+        candidates.append(recorded)
+    for region in _regions_of(reading):
+        role = str(region.get("role") or "")
+        kind = str(region.get("kind") or "")
+        if role == "gradient" and region.get("axis"):
+            candidates.append(region)
+            continue
+        if role in {"sky", "highlights"} or kind in {"sky", "highlights", "bright-band", "blown-highlights"}:
+            synthesized = _falloff_from_box(region.get("box"), kind or role)
+            if synthesized is not None:
+                candidates.append(synthesized)
+    for info in candidates:
+        placed = _placement_from_falloff(info)
+        if placed is not None:
+            return placed
+    return None
 
 
 def diffuse_params(*, sharpness: float, iterations: int, radius: int) -> bytes | None:
@@ -441,12 +570,18 @@ def append_extra_modules(
 
     crop = crop_params(_horizon_box(reading), force=bool(plan.get("crop_horizon")))
     if crop is not None:
+        left, top, right, bottom = struct.unpack_from("<4f", crop, 0)
         _add(
             modules,
             blobs,
             operation="crop",
             version=CROP_VERSION,
-            params={"horizon": True},
+            params={
+                "left": round(left, 4),
+                "top": round(top, 4),
+                "right": round(right, 4),
+                "bottom": round(bottom, 4),
+            },
             blob=crop,
             multi_name="AI crop",
         )
@@ -466,14 +601,24 @@ def append_extra_modules(
             multi_name="AI color calibration",
         )
 
-    gradient = graduated_params(bool(plan.get("gradient")))
-    if gradient is not None:
+    placement = gradient_placement(plan, separation, reading)
+    if plan.get("gradient") and placement is None:
+        plan["gradient_note"] = (
+            "Graduated density was left out. There is no measured direction to place the line."
+        )
+    gradient = graduated_params(placement is not None, placement)
+    if gradient is not None and placement is not None:
         _add(
             modules,
             blobs,
             operation="graduatednd",
             version=GRADUATED_VERSION,
-            params={"density": 0.35},
+            params={
+                "density": placement["density"],
+                "hardness": placement["hardness"],
+                "rotation": placement["rotation"],
+                "offset": placement["offset"],
+            },
             blob=gradient,
             multi_name="AI gradient",
         )

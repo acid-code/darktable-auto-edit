@@ -2,9 +2,10 @@
 
 The inputs are the picture description, the vibe words, and the preset
 name. No picture is uploaded. Gemini is tried first when ``GEMINI_API_KEY``
-is set. Ollama is the fallback when Gemini is not configured or does not
-return a plan. If neither backend answers, reasoning is skipped and the
-caller's steer clauses still apply.
+is set. A busy model, a used-up free quota, or a missing model id tries the
+next text model. Ollama is the fallback when Gemini is not configured or
+none of those models return a plan. If neither backend answers, reasoning
+is skipped and the caller's steer clauses still apply.
 
 The model may only name stages and actions in the steer vocabulary.
 It cannot open the caps. ``epic`` and ``strong`` do that, and only when
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -63,10 +65,16 @@ The JSON may be raw or inside a ```json fence.
 
 Stages you may skip: gradient, subject, surround, vignette, theme, reflection, eyes, skin, sky.
 Targets you may darken, lift, or hold: subject, foreground, rock, sky, behind, reflection.
-foreground is the surround and the water, not the subject.
+foreground is the surround, not the subject.
+Name water, a reflection, eyes, or an animal only when the picture description or the request already says so. Do not invent them.
 A request to make a reflection clearer is action lift on stage reflection. Do not skip that stage.
 You may request the linear gradient with stage gradient and action darken, lift, or hold.
-Leave the gradient out when the request is the subject, the dark water, and the reflection.
+Leave the gradient out when the request is only about the subject.
+The local grade fills these controls from the picture. Do not invent slider numbers:
+exposure EV, a small color-calibration warmth on the pipeline white (never a custom illuminant or a daylight Kelvin), tone-equalizer shadow and highlight bands, color-zone saturation, graduated-density position rotation and density from a measured falloff, and a crop window when a horizon is off center.
+Diffuse strength is a masked control and is not written into the style.
+Do not ask for a center-line gradient. Name sky, highlights, or the bright end, or leave the gradient out.
+Caps stay closed. Only the user's own strong or epic word opens them.
 
 Picture: {description}
 Vibe: {vibe}
@@ -219,6 +227,74 @@ def _text_model() -> str:
     return os.environ.get("OLLAMA_REASON_MODEL", "llama3.2")
 
 
+# Highest free-tier daily quota first. These are text generateContent ids,
+# not Live API models. The API lists Gemini 3 Flash as gemini-3-flash-preview.
+# gemini-2.5-flash can return HTTP 404; that skips to the next id.
+REASON_MODELS = (
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+)
+DEFAULT_REASON_MODEL = REASON_MODELS[0]
+GEMINI_TIMEOUT_SECONDS = 30
+# A chain summary is already short: "model: reason; model: reason".
+_CHAIN_SUMMARY = re.compile(
+    r"^(?:[A-Za-z0-9._-]+: .+)(?:; [A-Za-z0-9._-]+: .+)*$"
+)
+
+
+def _reason_models() -> list[str]:
+    """The text models to try. ``GEMINI_REASON_MODEL`` is first when it is set."""
+
+    chosen = os.environ.get("GEMINI_REASON_MODEL", "").strip()
+    chain = list(REASON_MODELS)
+    if not chosen:
+        return chain
+    return [chosen] + [item for item in chain if item != chosen]
+
+
+def _reason_model() -> str:
+    return _reason_models()[0]
+
+
+def plain_gemini_failure(detail: str) -> str:
+    """A short reason safe to show in the panel. No response body and no key."""
+
+    text = " ".join(str(detail or "").split())
+    if _CHAIN_SUMMARY.match(text):
+        return text
+    lowered = text.lower()
+    if "timed out" in lowered:
+        return f"timed out after {int(GEMINI_TIMEOUT_SECONDS)}s"
+    code_match = re.search(r"HTTP\s+(\d+)", text, re.IGNORECASE)
+    code = code_match.group(1) if code_match else ""
+    if code == "503" or "high demand" in lowered or "unavailable" in lowered:
+        return "HTTP 503, high demand"
+    if code == "404" or "no longer available" in lowered or "not found" in lowered:
+        return f"HTTP {code or '404'}, model not available"
+    if code in {"401", "403"} or (code == "400" and "api key" in lowered):
+        return f"HTTP {code}, API key rejected"
+    if (
+        code == "429"
+        or "rate limit" in lowered
+        or "quota" in lowered
+        or "resource_exhausted" in lowered
+        or "resource exhausted" in lowered
+        or "free tier" in lowered
+        or "free plan" in lowered
+    ):
+        return f"HTTP {code or '429'}, rate limit"
+    if code:
+        return f"HTTP {code}"
+    if not text or lowered in {"no reply", "empty reply"}:
+        return "no reply"
+    if len(text) > 80:
+        text = text[:80].rstrip()
+    return text
+
+
 def _post_json(url: str, body: dict, timeout: float) -> dict | None:
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
@@ -229,7 +305,22 @@ def _post_json(url: str, body: dict, timeout: float) -> dict | None:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except OSError:
+            detail = ""
+        detail = " ".join(detail.split())
+        if len(detail) > 180:
+            detail = detail[:180].rstrip()
+        return {"_http_error": f"HTTP {exc.code} {detail}".strip()}
+    except TimeoutError:
+        return {"_http_error": "timed out"}
+    except urllib.error.URLError as exc:
+        reason = " ".join(str(getattr(exc, "reason", exc)).split())[:120]
+        return {"_http_error": f"request failed: {reason}".strip()}
+    except (OSError, json.JSONDecodeError):
         return None
     try:
         payload = json.loads(raw)
@@ -263,33 +354,104 @@ def _ask_ollama(description: str, vibe: str, preset: str, steer: str = "") -> di
     return interpret_reply(str(content)) if str(content).strip() else None
 
 
-def _ask_gemini(description: str, vibe: str, preset: str, steer: str = "") -> dict | None:
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        return None
-    model = os.environ.get("GEMINI_REASON_MODEL", "gemini-2.0-flash")
+def _gemini_advances(detail: str) -> bool:
+    """True when this model should be skipped and the next text model tried.
+
+    A rejected API key stops the chain. The same key would fail every id.
+    """
+
+    text = " ".join(str(detail or "").split())
+    lowered = text.lower()
+    code_match = re.search(r"HTTP\s+(\d+)", text, re.IGNORECASE)
+    code = code_match.group(1) if code_match else ""
+    if code in {"401", "403"} or (code == "400" and "api key" in lowered):
+        return False
+    if code in {"503", "429", "404"}:
+        return True
+    if "unavailable" in lowered or "high demand" in lowered:
+        return True
+    if any(
+        phrase in lowered
+        for phrase in (
+            "resource_exhausted",
+            "resource exhausted",
+            "quota",
+            "rate limit",
+            "free tier",
+            "free plan",
+        )
+    ):
+        return True
+    if "no longer available" in lowered or "not found" in lowered:
+        return True
+    return False
+
+
+def _ask_gemini_model(
+    model: str,
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str,
+    key: str,
+) -> dict:
+    """One generateContent call. ``model`` is set when the reply has a plan."""
+
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         + model
         + ":generateContent?key="
         + key
     )
-    payload = _post_json(
-        url,
-        {"contents": [{"parts": [{"text": _fill(description, vibe, preset, steer)}]}]},
-        timeout=30.0,
-    )
+    body = {"contents": [{"parts": [{"text": _fill(description, vibe, preset, steer)}]}]}
+    payload = _post_json(url, body, timeout=GEMINI_TIMEOUT_SECONDS)
     if payload is None:
-        return None
+        return {"paragraph": "", "stages": [], "error": "no reply"}
+    http_error = str(payload.get("_http_error") or "").strip()
+    if http_error:
+        if key:
+            http_error = http_error.replace(key, "")
+        return {"paragraph": "", "stages": [], "error": http_error}
     candidates = payload.get("candidates") or []
     if not candidates or not isinstance(candidates[0], dict):
-        return None
+        feedback = payload.get("promptFeedback") if isinstance(payload.get("promptFeedback"), dict) else {}
+        blocked = str((feedback or {}).get("blockReason") or "").strip()
+        return {"paragraph": "", "stages": [], "error": blocked or "empty reply"}
     content = candidates[0].get("content") or {}
     parts = content.get("parts") if isinstance(content, dict) else None
-    text = ""
-    if isinstance(parts, list) and parts and isinstance(parts[0], dict):
-        text = str(parts[0].get("text") or "")
-    return interpret_reply(text) if text.strip() else None
+    texts: list[str] = []
+    if isinstance(parts, list):
+        for part in parts:
+            if not isinstance(part, dict) or part.get("thought") is True:
+                continue
+            piece = str(part.get("text") or "").strip()
+            if piece:
+                texts.append(piece)
+    text = "\n".join(texts)
+    if not text.strip():
+        finish = str(candidates[0].get("finishReason") or "").strip()
+        return {"paragraph": "", "stages": [], "error": finish or "empty reply"}
+    parsed = interpret_reply(text)
+    parsed["model"] = model
+    return parsed
+
+
+def _ask_gemini(description: str, vibe: str, preset: str, steer: str = "") -> dict | None:
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        return None
+    tried: list[str] = []
+    for model in _reason_models():
+        reply = _ask_gemini_model(model, description, vibe, preset, steer, key)
+        error = str(reply.get("error") or "").strip()
+        if not error and (reply.get("paragraph") or reply.get("stages")):
+            return reply
+        reason = plain_gemini_failure(error or "no reply")
+        tried.append(f"{model}: {reason}")
+        if error and _gemini_advances(error):
+            continue
+        break
+    return {"paragraph": "", "stages": [], "error": "; ".join(tried)}
 
 
 def _from_reply(reply: dict | None, *, status: str, backend: str, note: str) -> dict | None:
@@ -309,6 +471,93 @@ def _from_reply(reply: dict | None, *, status: str, backend: str, note: str) -> 
     }
 
 
+def _note_gemini_failure(result: dict, gemini_failed: bool, detail: str = "") -> dict:
+    """Say Gemini was tried when the plan actually came from somewhere else."""
+
+    if not gemini_failed:
+        return result
+    updated = dict(result)
+    reason = plain_gemini_failure(detail) if str(detail or "").strip() else ""
+    if reason:
+        updated["failure"] = reason
+    note = str(updated.get("note") or "")
+    if "Gemini" in note and "did not" in note:
+        return updated
+    prefix = "Gemini did not return a plan."
+    if reason:
+        prefix = f"Gemini did not return a plan: {reason}."
+    updated["note"] = f"{prefix} {note}".strip()
+    return updated
+
+
+def propose_gemini(description: str, vibe: str, preset: str, steer: str = "") -> dict:
+    """Ask only Gemini. Ollama is a later stage when ``ask_ollama`` is set."""
+
+    if os.environ.get("AI_EDITOR_REASONER") == "off":
+        return {
+            "ask_ollama": False,
+            "gemini_tried": False,
+            "failure": "",
+            "proposal": skipped("Reasoning was skipped."),
+        }
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        return {"ask_ollama": True, "gemini_tried": False, "failure": "", "proposal": None}
+    reply = _ask_gemini(description, vibe, preset, steer)
+    error = str(reply.get("error") or "").strip() if isinstance(reply, dict) else "no reply"
+    model = str(reply.get("model") or "").strip() if isinstance(reply, dict) else ""
+    plan = _from_reply(
+        None if error else reply,
+        status="gemini",
+        backend=model or _reason_model(),
+        note="Stages proposed by Gemini.",
+    )
+    if plan and (plan.get("paragraph") or plan.get("stages")):
+        return {"ask_ollama": False, "gemini_tried": True, "failure": "", "proposal": plan}
+    reason = plain_gemini_failure(error)
+    return {"ask_ollama": True, "gemini_tried": True, "failure": reason, "proposal": None}
+
+
+def propose_ollama(
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str = "",
+    *,
+    failure: str = "",
+    gemini_tried: bool = False,
+) -> dict:
+    """Ask only Ollama. A Gemini failure is copied onto the plan."""
+
+    if os.environ.get("AI_EDITOR_REASONER") == "off":
+        return {"ask_ollama": False, "proposal": skipped("Reasoning was skipped.")}
+    reply = _ask_ollama(description, vibe, preset, steer)
+    if reply is not None:
+        result = _from_reply(
+            reply,
+            status="ollama",
+            backend=_text_model(),
+            note=f"Stages proposed by the local model {_text_model()}.",
+        ) or skipped("Ollama is up but the text model did not return a plan. Reasoning was skipped.")
+        return {
+            "ask_ollama": False,
+            "proposal": _note_gemini_failure(result, gemini_tried, failure),
+        }
+    if gemini_tried:
+        result = skipped(
+            f"Gemini was configured but did not return a plan. {failure} Reasoning was skipped.".strip()
+        )
+        return {"ask_ollama": False, "proposal": _note_gemini_failure(result, True, failure)}
+    if ollama_reachable():
+        return {
+            "ask_ollama": False,
+            "proposal": skipped("Ollama is up but the text model did not return a plan. Reasoning was skipped."),
+        }
+    return {
+        "ask_ollama": False,
+        "proposal": skipped("Reasoning was skipped. No local model and no Gemini key."),
+    }
+
+
 def propose_stages(description: str, vibe: str, preset: str, steer: str = "") -> dict:
     """Ask Gemini when a key is set, then Ollama. Skip when neither answers.
 
@@ -319,26 +568,18 @@ def propose_stages(description: str, vibe: str, preset: str, steer: str = "") ->
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
         return skipped("Reasoning was skipped.")
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if gemini_key:
-        gemini_plan = _from_reply(
-            _ask_gemini(description, vibe, preset, steer),
-            status="gemini",
-            backend=os.environ.get("GEMINI_REASON_MODEL", "gemini-2.0-flash"),
-            note="Stages proposed by Gemini.",
-        )
-        if gemini_plan and (gemini_plan.get("paragraph") or gemini_plan.get("stages")):
-            return gemini_plan
-    ollama_reply = _ask_ollama(description, vibe, preset, steer)
-    if ollama_reply is not None:
-        return _from_reply(
-            ollama_reply,
-            status="ollama",
-            backend=_text_model(),
-            note=f"Stages proposed by the local model {_text_model()}.",
-        ) or skipped("Ollama is up but the text model did not return a plan. Reasoning was skipped.")
-    if gemini_key:
-        return skipped("Gemini was configured but did not return a plan. Reasoning was skipped.")
-    if ollama_reachable():
-        return skipped("Ollama is up but the text model did not return a plan. Reasoning was skipped.")
+    gemini = propose_gemini(description, vibe, preset, steer)
+    if not gemini.get("ask_ollama") and isinstance(gemini.get("proposal"), dict):
+        return gemini["proposal"]
+    ollama = propose_ollama(
+        description,
+        vibe,
+        preset,
+        steer,
+        failure=str(gemini.get("failure") or ""),
+        gemini_tried=bool(gemini.get("gemini_tried")),
+    )
+    proposal = ollama.get("proposal")
+    if isinstance(proposal, dict):
+        return proposal
     return skipped("Reasoning was skipped. No local model and no Gemini key.")

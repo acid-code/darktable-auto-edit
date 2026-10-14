@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 from ai_dt.ollama_host import ollama_base_url
-from ai_dt.reasoner import propose_stages, validate_proposal
+from ai_dt.reasoner import plain_gemini_failure, propose_stages, validate_proposal
 from ai_dt.steer import (
     apply_proposal,
     empty_plan,
@@ -26,6 +26,45 @@ from ai_dt.steer import (
 
 def _boom(*_args, **_kwargs):
     raise AssertionError("network access is not allowed in steer tests")
+
+
+def _ollama_must_not_run(*_args, **_kwargs):
+    raise AssertionError("ollama")
+
+
+def _gemini_plan() -> dict:
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "stages": [
+                                        {
+                                            "stage": "subject",
+                                            "action": "hold",
+                                            "reason": "Hold the facade.",
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+
+def _models_called(urls: list[str]) -> list[str]:
+    models = []
+    for url in urls:
+        start = url.find("/models/")
+        tail = url[start + len("/models/") :]
+        models.append(tail.split(":", 1)[0])
+    return models
 
 
 @contextmanager
@@ -255,7 +294,7 @@ class ReasonerTests(unittest.TestCase):
             os.environ.pop("GEMINI_REASON_MODEL", None)
             result = propose_stages("facade", "", "")
         self.assertEqual(result["status"], "gemini")
-        self.assertEqual(result["backend"], "gemini-2.0-flash")
+        self.assertEqual(result["backend"], "gemini-3.5-flash-lite")
         self.assertEqual(result["stages"][0]["action"], "hold")
         self.assertNotIn("caps_open", result)
 
@@ -354,6 +393,193 @@ class ReasonerTests(unittest.TestCase):
         plan = apply_proposal(empty_plan(["sky"]), result)
         self.assertFalse(plan["caps_open"])
         self.assertFalse(plan["strong"])
+
+    def test_a_gemini_http_failure_is_named_on_the_ollama_plan(self) -> None:
+        from ai_dt.status_text import plan_backend_line
+
+        def gemini(*_args, **_kwargs):
+            return {
+                "paragraph": "",
+                "stages": [],
+                "error": (
+                    'HTTP 503 {"error": {"code": 503, "message": '
+                    '"This model is currently experiencing high demand.", "status": "UNAVAILABLE"}}'
+                ),
+            }
+
+        def ollama(*_args, **_kwargs):
+            return {
+                "paragraph": "Keep the train as the subject.",
+                "stages": [{"stage": "highlights", "action": "hold", "reason": "Hold the lamps."}],
+            }
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key"),
+            patch("ai_dt.reasoner._ask_gemini", gemini),
+            patch("ai_dt.reasoner._ask_ollama", ollama),
+        ):
+            result = propose_stages("night train", "", "")
+        self.assertEqual(result["status"], "ollama")
+        self.assertEqual(result["failure"], "HTTP 503, high demand")
+        self.assertEqual(
+            plan_backend_line(result),
+            "Plan: Gemini failed (HTTP 503, high demand), Ollama llama3.2",
+        )
+        self.assertEqual(plain_gemini_failure("timed out"), "timed out after 30s")
+        self.assertEqual(
+            plain_gemini_failure("HTTP 404 This model is no longer available."),
+            "HTTP 404, model not available",
+        )
+        self.assertEqual(
+            plain_gemini_failure(
+                'HTTP 429 {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Free tier finished."}}'
+            ),
+            "HTTP 429, rate limit",
+        )
+
+    def test_a_503_tries_the_next_gemini_model(self) -> None:
+        from ai_dt.reasoner import REASON_MODELS
+
+        calls: list[str] = []
+
+        def post(url, body, timeout):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "_http_error": (
+                        'HTTP 503 {"error": {"code": 503, "message": '
+                        '"This model is currently experiencing high demand.", "status": "UNAVAILABLE"}}'
+                    )
+                }
+            return _gemini_plan()
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key", GEMINI_REASON_MODEL=""),
+            patch("ai_dt.reasoner.ollama_reachable", return_value=True),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_ollama", _ollama_must_not_run),
+        ):
+            result = propose_stages("facade", "", "")
+        self.assertEqual(result["status"], "gemini")
+        self.assertEqual(result["backend"], REASON_MODELS[1])
+        self.assertEqual(_models_called(calls), [REASON_MODELS[0], REASON_MODELS[1]])
+        self.assertNotIn("failure", result)
+
+    def test_a_quota_error_tries_the_next_gemini_model(self) -> None:
+        from ai_dt.reasoner import REASON_MODELS
+
+        calls: list[str] = []
+
+        def post(url, body, timeout):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "_http_error": (
+                        'HTTP 429 {"error": {"code": 429, "message": '
+                        '"You exceeded your current quota. Free tier finished.", '
+                        '"status": "RESOURCE_EXHAUSTED"}}'
+                    )
+                }
+            return _gemini_plan()
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key", GEMINI_REASON_MODEL=""),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_ollama", _ollama_must_not_run),
+        ):
+            result = propose_stages("facade", "", "")
+        self.assertEqual(result["status"], "gemini")
+        self.assertEqual(result["backend"], REASON_MODELS[1])
+        self.assertEqual(_models_called(calls), [REASON_MODELS[0], REASON_MODELS[1]])
+
+    def test_a_missing_model_tries_the_next_and_a_named_model_is_first(self) -> None:
+        calls: list[str] = []
+
+        def post(url, body, timeout):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "_http_error": (
+                        "HTTP 404 This model models/gemini-2.5-flash is no longer available."
+                    )
+                }
+            return _gemini_plan()
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key", GEMINI_REASON_MODEL="gemini-2.5-flash"),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_ollama", _ollama_must_not_run),
+        ):
+            result = propose_stages("facade", "", "")
+        self.assertEqual(result["status"], "gemini")
+        self.assertEqual(result["backend"], "gemini-3.5-flash-lite")
+        self.assertEqual(_models_called(calls), ["gemini-2.5-flash", "gemini-3.5-flash-lite"])
+
+    def test_a_rejected_key_does_not_try_the_next_model(self) -> None:
+        calls: list[str] = []
+
+        def post(url, body, timeout):
+            calls.append(url)
+            return {"_http_error": "HTTP 401 API key not valid"}
+
+        def ollama(*_args, **_kwargs):
+            return {
+                "paragraph": "Hold the facade.",
+                "stages": [{"stage": "subject", "action": "hold", "reason": "Hold the facade."}],
+            }
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key", GEMINI_REASON_MODEL=""),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_ollama", ollama),
+        ):
+            result = propose_stages("facade", "", "")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["status"], "ollama")
+        self.assertIn("HTTP 401, API key rejected", result["failure"])
+
+    def test_every_gemini_model_fails_before_ollama(self) -> None:
+        from ai_dt.reasoner import REASON_MODELS
+        from ai_dt.status_text import plan_backend_line
+
+        calls: list[str] = []
+
+        def post(url, body, timeout):
+            calls.append(url)
+            return {
+                "_http_error": (
+                    'HTTP 503 {"error": {"code": 503, "status": "UNAVAILABLE", '
+                    '"message": "high demand"}}'
+                )
+            }
+
+        def ollama(*_args, **_kwargs):
+            return {
+                "paragraph": "Hold the facade.",
+                "stages": [{"stage": "subject", "action": "hold", "reason": "Hold the facade."}],
+            }
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key", GEMINI_REASON_MODEL=""),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_ollama", ollama),
+        ):
+            result = propose_stages("facade", "", "")
+        self.assertEqual(_models_called(calls), list(REASON_MODELS))
+        self.assertEqual(result["status"], "ollama")
+        self.assertEqual(result["backend"], "llama3.2")
+        self.assertIn("gemini-3.5-flash-lite: HTTP 503, high demand", result["failure"])
+        self.assertIn("gemini-3-flash-preview: HTTP 503, high demand", result["failure"])
+        self.assertEqual(
+            plan_backend_line(result),
+            "Plan: Gemini failed (" + result["failure"] + "), Ollama llama3.2",
+        )
 
     def test_validate_drops_caps_words_and_unknown_stages(self) -> None:
         kept = validate_proposal(

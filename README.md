@@ -79,13 +79,13 @@ YOLOv8's COCO weights know people and animals. They do not know eyes or building
 
 **Advisors** (`--advisor`, preference "AI editor: lighting advisor"):
 
-- `auto` — measure the histogram, and if Ollama is running, blend in a vision-model suggestion at 35%
+- `auto` — measure the histogram. If `MISTRAL_API_KEY` is set, blend in a Mistral vision suggestion at 35%. Otherwise, if Ollama is running, blend in LLaVA at 35%
 - `histogram` — pixels only
 - `ollama` — require a local Ollama vision model (default `llava`)
 
 The model is not allowed to ignore the measurement. Its numbers are clamped, then mixed with the histogram, so a hallucinated +4 EV cannot blow the photo out.
 
-The LLaVA prompt is `ai_dt/prompts/llava_lighting.txt`. Replace it by editing that file, passing `--prompt /path/to/prompt.txt`, or setting the Lua preference "AI editor: prompt file".
+The lighting prompt is `ai_dt/prompts/llava_lighting.txt`. Mistral vision and LLaVA both use it. Replace it by editing that file, passing `--prompt /path/to/prompt.txt`, or setting the Lua preference "AI editor: prompt file".
 
 ## Local reasoning model
 
@@ -110,7 +110,7 @@ The Ollama app listens on that port after it starts, so `ollama serve` is only n
 
 Gemini stays off unless `GEMINI_API_KEY` is set. It is optional.
 
-The lighting advisor is a separate step. Its vision model defaults to `llava`, and it runs only when the advisor is `ollama` or when `auto` finds Ollama already up. Pull it with `ollama pull llava` when you want those suggestions.
+The lighting advisor is a separate step from the text reasoner, and it does not send the picture to Gemini. With `--advisor auto`, `MISTRAL_API_KEY` sends the preview to Mistral's vision chat model. The default id is `ministral-14b-2512` (Ministral 3 14B, the documented replacement for retired Pixtral). Set `MISTRAL_VISION_MODEL` to another vision id. If that key is unset or the call fails, and Ollama is running, auto blends in LLaVA instead. `ollama` requires LLaVA. `histogram` is pixels only. Pull the local model with `ollama pull llava` when you want that fallback. These variables are read from the process environment. On startup the analyzer also loads a `.env` file next to `ai_processor.py` when that file exists. A variable already set in the environment wins over the file. Copy `.env.example` to `.env` for local keys. `.env` is not committed.
 
 ## Picture types and guides
 
@@ -348,7 +348,7 @@ After the script has started once, Darktable → preferences → **Lua options**
 
 - Python command
 - subject detector (`auto`, `yolo`, `mediapipe`, `heuristic`)
-- lighting advisor (`auto`, `ollama`, `histogram`)
+- lighting advisor (`auto`, `ollama`, `histogram`). `auto` uses Mistral when `MISTRAL_API_KEY` is set, otherwise Ollama, otherwise the histogram
 - YOLO model
 - Ollama model
 - prompt file (empty means the built-in prompt)

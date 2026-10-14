@@ -327,6 +327,8 @@ def render_finish(
             if stage == "background":
                 background = "unchanged"
             stop_reason = reason_stop
+            if stage not in skipped and stage != "grade":
+                skipped.append(stage)
             for later in order[index + 1 :]:
                 if later not in skipped and later != "grade":
                     skipped.append(later)

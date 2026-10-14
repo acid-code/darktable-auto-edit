@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from ai_dt import __version__
+from ai_dt.env import load_project_env
 from ai_dt.errors import AdvisorUnavailable, DetectorUnavailable, RawReadError, RawSupportUnavailable
 from ai_dt.guides.library import format_picture_line
 from ai_dt.pipeline import ADVISORS, DETECTORS, analyze, write_outputs
+from ai_dt.reasoner import propose_gemini, propose_ollama
+
+load_project_env()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,40 +90,103 @@ def build_parser() -> argparse.ArgumentParser:
         help="Darktable library.db, used to avoid stacking a second display transform.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--stage",
+        choices=("all", "picture", "gemini", "ollama", "finish"),
+        default="all",
+        help="Run one visible step. all is the single-process path.",
+    )
     return parser
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _read_json(path: Path) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name} was not an object")
+    return data
+
+
+def _analyze_kwargs(args) -> dict:
+    return {
+        "detector": args.detector,
+        "advisor": args.advisor,
+        "yolo_model": args.yolo_model,
+        "ollama_model": args.ollama_model,
+        "prompt_path": args.prompt,
+        "style_name": args.style_name,
+        "output_dir": args.output_dir,
+        "vibe": args.vibe,
+        "steer": args.steer,
+        "look": args.look,
+        "image_id": args.image_id,
+        "duplicate_index": args.duplicate_index,
+        "parent_id": args.parent_id,
+        "parent_index": args.parent_index,
+        "library_path": args.library,
+        "source_path": args.original,
+        "full_res": args.full_res,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_project_env()
     args = build_parser().parse_args(argv)
     image = args.image.expanduser()
     if not image.is_file():
         print(f"Not an image file: {image}", file=sys.stderr)
         return 2
     try:
-        recipe = analyze(
-            image,
-            detector=args.detector,
-            advisor=args.advisor,
-            yolo_model=args.yolo_model,
-            ollama_model=args.ollama_model,
-            prompt_path=args.prompt,
-            style_name=args.style_name,
-            output_dir=args.output_dir,
-            vibe=args.vibe,
-            steer=args.steer,
-            look=args.look,
-            image_id=args.image_id,
-            duplicate_index=args.duplicate_index,
-            parent_id=args.parent_id,
-            parent_index=args.parent_index,
-            library_path=args.library,
-            source_path=args.original,
-            full_res=args.full_res,
-        )
+        kwargs = _analyze_kwargs(args)
+        if args.stage == "picture":
+            record = analyze(image, picture_only=True, **kwargs)
+            _write_json(Path(args.output_dir) / "stage.json", record)
+            print("Picture stage finished.")
+            return 0
+        if args.stage in {"gemini", "ollama"}:
+            saved = _read_json(Path(args.output_dir) / "stage.json")
+            sentence = str(saved.get("sentence") or "")
+            preset = str(saved.get("preset") or "")
+            vibe = str(saved.get("vibe") or args.vibe)
+            steer = str(saved.get("steer") or args.steer)
+            if args.stage == "gemini":
+                payload = propose_gemini(sentence, vibe, preset, steer)
+            else:
+                previous: dict = {}
+                proposal_path = Path(args.output_dir) / "proposal.json"
+                if proposal_path.is_file():
+                    previous = _read_json(proposal_path)
+                payload = propose_ollama(
+                    sentence,
+                    vibe,
+                    preset,
+                    steer,
+                    failure=str(previous.get("failure") or ""),
+                    gemini_tried=bool(previous.get("gemini_tried")),
+                )
+            _write_json(Path(args.output_dir) / "proposal.json", payload)
+            print(f"{args.stage} stage finished.")
+            return 0
+        saved_advice = None
+        proposal = None
+        if args.stage == "finish":
+            saved_advice = _read_json(Path(args.output_dir) / "stage.json")
+            wrapped = _read_json(Path(args.output_dir) / "proposal.json")
+            proposal = wrapped.get("proposal") if isinstance(wrapped.get("proposal"), dict) else None
+            if proposal is None:
+                raise ValueError("The text plan stage did not write a proposal.")
+        recipe = analyze(image, saved_advice=saved_advice, proposal=proposal, **kwargs)
         json_path, style_path, edited_path = write_outputs(recipe, args.output_dir)
     except (DetectorUnavailable, AdvisorUnavailable, RawSupportUnavailable, RawReadError, OSError, ValueError) as exc:
-        print(str(exc), file=sys.stderr)
+        print(f"Analysis failed: {exc}", file=sys.stderr)
         return 3
+    except Exception as exc:
+        print(f"Analysis failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
 
     atmosphere = recipe["analysis"]["atmosphere"]
     subjects = recipe["analysis"]["subjects"]

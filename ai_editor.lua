@@ -153,7 +153,7 @@ local function register_preferences()
     "advisor",
     "enum",
     "AI editor: lighting advisor",
-    "auto measures the preview and, when Ollama is running, blends in a LLaVA suggestion.",
+    "auto measures the preview. When MISTRAL_API_KEY is set it blends in a Mistral vision suggestion. Otherwise, when Ollama is running, it blends in a LLaVA suggestion.",
     "auto",
     "auto",
     "ollama",
@@ -377,6 +377,10 @@ local function run_processor(preview, work_dir, original, vibe, steer, options)
     parts[#parts + 1] = " --library "
     parts[#parts + 1] = shell_quote(options.library)
   end
+  if type(options.stage) == "string" and options.stage ~= "" and options.stage ~= "all" then
+    parts[#parts + 1] = " --stage "
+    parts[#parts + 1] = shell_quote(options.stage)
+  end
   if type(original) == "string" and original ~= "" then
     parts[#parts + 1] = " --original "
     parts[#parts + 1] = shell_quote(original)
@@ -388,7 +392,16 @@ local function run_processor(preview, work_dir, original, vibe, steer, options)
   end
   write_file(join_path(work_dir, "run.log"), output)
   if exit_code ~= 0 then
-    return nil, "Python exited with code " .. tostring(exit_code) .. "\n" .. tail(output, 500)
+    local body = tostring(output or ""):gsub("%s+$", "")
+    if body == "" then
+      body = "Python exited with code " .. tostring(exit_code) .. " and wrote no error."
+    else
+      if #body > 2000 then
+        body = body:sub(#body - 1999)
+      end
+      body = "Python exited with code " .. tostring(exit_code) .. "\n" .. body
+    end
+    return nil, body
   end
   return output
 end
@@ -539,6 +552,7 @@ local function summary(recipe, image)
 end
 
 local status_label
+local look_name_label
 local run_button
 local revert_button
 local vibe_entry
@@ -638,7 +652,73 @@ local function fork_version(image)
   return nil, "Darktable could not duplicate this image"
 end
 
-local function set_version_name(image, sentence)
+local LOOK_TITLES = {
+  faithful = "Faithful",
+  ["shadow-lift"] = "Open shadows",
+  ["highlight-hold"] = "Hold highlights",
+  warmer = "Warmer",
+  ["more-color"] = "More color",
+  ["sky-gradient"] = "Sky gradient",
+  ["subject-lift"] = "Subject lift",
+  ["eye-detail"] = "Eye detail",
+  ["hold-reflection"] = "Hold the reflection",
+}
+
+local function look_title_of(record)
+  if type(record) ~= "table" then
+    return ""
+  end
+  if type(record.look_title) == "string" and record.look_title ~= "" then
+    return record.look_title
+  end
+  local id = record.look_id
+  if type(id) == "string" and LOOK_TITLES[id] then
+    return LOOK_TITLES[id]
+  end
+  return ""
+end
+
+local function read_version_record(image)
+  if image == nil then
+    return nil
+  end
+  local contents = read_file(join_path(work_dir_for(image), "version.json"))
+  if not contents then
+    return nil
+  end
+  local ok, record = pcall(json.decode, contents)
+  if not ok or type(record) ~= "table" then
+    return nil
+  end
+  return record
+end
+
+local set_version_name
+
+local function show_loaded_look(image)
+  if look_name_label == nil then
+    return
+  end
+  if image == nil then
+    look_name_label.label = "Look: —"
+    return
+  end
+  local title = look_title_of(read_version_record(image))
+  if title == "" then
+    look_name_label.label = "Look: not named yet"
+    return
+  end
+  look_name_label.label = "Look: " .. title
+  local current = ""
+  pcall(function()
+    current = image.version_name or ""
+  end)
+  if current ~= title and (current == "" or current:find("Faithful", 1, true) or #current > 40) then
+    set_version_name(image, title)
+  end
+end
+
+set_version_name = function(image, sentence)
   if type(sentence) ~= "string" or sentence == "" then
     return
   end
@@ -681,6 +761,56 @@ local function version_sentence_of(recipe)
   return ""
 end
 
+-- The panel shows every line. The duplicate version name stays short.
+local function panel_body(recipe)
+  if type(recipe) ~= "table" then
+    return ""
+  end
+  if type(recipe.status_text) == "string" and recipe.status_text ~= "" then
+    return recipe.status_text
+  end
+  local lines = {}
+  if type(recipe.picture_backend) == "string" and recipe.picture_backend ~= "" then
+    lines[#lines + 1] = recipe.picture_backend
+  end
+  if type(recipe.plan_backend) == "string" and recipe.plan_backend ~= "" then
+    lines[#lines + 1] = recipe.plan_backend
+  end
+  local sentence = version_sentence_of(recipe)
+  if sentence ~= "" then
+    lines[#lines + 1] = sentence
+  end
+  return table.concat(lines, "\n")
+end
+
+local function failure_text(work, failure)
+  local detail = tostring(failure or "unknown error")
+  detail = detail:gsub("^%s+", ""):gsub("%s+$", "")
+  if detail == "" or detail == "Failure" then
+    detail = "The analysis failed and did not report an error."
+  end
+  if #detail > 2000 then
+    detail = detail:sub(1, 2000)
+  end
+  local recipe = nil
+  if type(work) == "string" and work ~= "" then
+    recipe = read_recipe(work)
+  end
+  if type(recipe) == "table" then
+    local bits = {}
+    if type(recipe.picture_backend) == "string" and recipe.picture_backend ~= "" then
+      bits[#bits + 1] = recipe.picture_backend
+    end
+    if type(recipe.plan_backend) == "string" and recipe.plan_backend ~= "" then
+      bits[#bits + 1] = recipe.plan_backend
+    end
+    if #bits > 0 then
+      return table.concat(bits, "\n") .. "\n" .. detail
+    end
+  end
+  return detail
+end
+
 local function processor_options(image, parent)
   local options = {
     image_id = image.id,
@@ -692,6 +822,89 @@ local function processor_options(image, parent)
     options.parent_index = duplicate_index_of(parent)
   end
   return options
+end
+
+local progress_job = nil
+
+local function close_progress()
+  if not progress_job then
+    return
+  end
+  pcall(function()
+    progress_job.valid = false
+  end)
+  progress_job = nil
+end
+
+-- The panel text is set before each blocking command. yield_ui() is one
+-- short pause so the label can paint. A long sleep loop is not used.
+-- create_job is Darktable's progress bar (there is no panel progress widget).
+local function show_progress(message, fraction)
+  status_label.text = message
+  if progress_job then
+    pcall(function()
+      progress_job.valid = false
+    end)
+    progress_job = nil
+  end
+  if dt.gui and type(dt.gui.create_job) == "function" then
+    local ok, job = pcall(dt.gui.create_job, message, true)
+    if ok and job ~= nil and type(job) ~= "string" and type(job) ~= "number" then
+      progress_job = job
+      pcall(function()
+        job.percent = fraction
+      end)
+    end
+  end
+  yield_ui()
+end
+
+local function read_json_file(path)
+  local contents = read_file(path)
+  if not contents then
+    return nil
+  end
+  local ok, data = pcall(json.decode, contents)
+  if not ok or type(data) ~= "table" then
+    return nil
+  end
+  return data
+end
+
+local function run_staged(preview, work, original, vibe, steer, options)
+  options = type(options) == "table" and options or {}
+  local function step(stage)
+    local step_options = {}
+    for key, value in pairs(options) do
+      step_options[key] = value
+    end
+    step_options.stage = stage
+    return run_processor(preview, work, original, vibe, steer, step_options)
+  end
+  show_progress("Reading the picture with Mistral…", 0.15)
+  local _, run_error = step("picture")
+  if run_error then
+    return nil, run_error
+  end
+  show_progress("Asking Gemini…", 0.45)
+  _, run_error = step("gemini")
+  if run_error then
+    return nil, run_error
+  end
+  local proposal = read_json_file(join_path(work, "proposal.json"))
+  if type(proposal) == "table" and proposal.ask_ollama then
+    if proposal.gemini_tried then
+      show_progress("Gemini did not answer, asking Ollama…", 0.7)
+    else
+      show_progress("Asking Ollama…", 0.7)
+    end
+    _, run_error = step("ollama")
+    if run_error then
+      return nil, run_error
+    end
+  end
+  show_progress("Writing the looks…", 0.9)
+  return step("finish")
 end
 
 local function propose_image(image, index, total, vibe, steer)
@@ -713,12 +926,10 @@ local function propose_image(image, index, total, vibe, steer)
   if export_error then
     return nil, export_error
   end
-  status_label.text = string.format("Analyzing %s…", image.filename or "image")
-  yield_ui()
   local options = processor_options(image, nil)
-  local _, run_error = run_processor(preview, work, image_source_path(image), vibe, steer, options)
+  local _, run_error = run_staged(preview, work, image_source_path(image), vibe, steer, options)
   if run_error then
-    return nil, run_error
+    return nil, failure_text(work, run_error)
   end
   return read_recipe(work)
 end
@@ -734,6 +945,17 @@ local function carry_plan(source_dir, dest_dir)
     return
   end
   write_file(join_path(dest_dir, "output.json"), contents)
+end
+
+local function copy_work_file(source_dir, dest_dir, name)
+  if source_dir == dest_dir then
+    return file_size(join_path(dest_dir, name)) > 2
+  end
+  local contents = read_file(join_path(source_dir, name))
+  if not contents or contents == "" then
+    return false
+  end
+  return write_file(join_path(dest_dir, name), contents) == nil
 end
 
 local function apply_image(image, vibe, steer, look)
@@ -752,19 +974,32 @@ local function apply_image(image, vibe, steer, look)
   if mkdir_error then
     return nil, mkdir_error
   end
-  carry_plan(work_dir_for(image), work)
+  local source = work_dir_for(image)
+  carry_plan(source, work)
+  -- Propose already read the picture and wrote the plan. Applying a look
+  -- only rebuilds the grade. Another Mistral and Gemini round, and another
+  -- preview export, were the long wait after the button.
   local preview = join_path(work, "preview.jpg")
-  status_label.text = string.format("Exporting %s…", copy.filename or "duplicate")
-  yield_ui()
-  local export_error = export_preview(copy, preview, edge)
-  if export_error then
-    return nil, export_error
+  local reused = copy_work_file(source, work, "stage.json") and copy_work_file(source, work, "proposal.json")
+  if reused then
+    copy_work_file(source, work, "preview.jpg")
   end
-  status_label.text = string.format("Applying %s…", look)
-  yield_ui()
   local options = processor_options(copy, image)
   options.look = look
-  local _, run_error = run_processor(preview, work, image_source_path(copy), vibe, steer, options)
+  local run_error
+  if reused and file_size(preview) > 32 then
+    show_progress("Applying the look…", 0.55)
+    options.stage = "finish"
+    _, run_error = run_processor(preview, work, image_source_path(copy), vibe, steer, options)
+  else
+    status_label.text = string.format("Exporting %s…", copy.filename or "duplicate")
+    yield_ui()
+    local export_error = export_preview(copy, preview, edge)
+    if export_error then
+      return nil, export_error
+    end
+    _, run_error = run_staged(preview, work, image_source_path(copy), vibe, steer, options)
+  end
   if run_error then
     return nil, run_error
   end
@@ -773,8 +1008,20 @@ local function apply_image(image, vibe, steer, look)
     return nil, apply_error
   end
   local sentence = version_sentence_of(recipe)
-  set_version_name(copy, sentence)
+  local record = type(recipe.version_record) == "table" and recipe.version_record or nil
+  local label = look_title_of(record)
+  if label == "" then
+    label = sentence
+  end
+  set_version_name(copy, label)
+  if look_name_label ~= nil and label ~= "" and #label < 40 then
+    look_name_label.label = "Look: " .. label
+  end
   open_darkroom(copy)
+  local body = panel_body(recipe)
+  if body ~= "" then
+    return body
+  end
   return sentence ~= "" and sentence or summary(recipe, copy)
 end
 
@@ -854,6 +1101,9 @@ local function show_choices(recipe)
     elseif button then
       button.label = " "
       button.sensitive = false
+      pcall(function()
+        button.tooltip = ""
+      end)
       choice_ids[index] = nil
     end
   end
@@ -884,7 +1134,7 @@ local function run_analysis()
     if shown == nil then
       shown = recipe
     end
-    last = version_sentence_of(recipe)
+    last = panel_body(recipe)
     if last == "" then
       last = summary(recipe, image)
     end
@@ -1303,6 +1553,7 @@ end
 local function on_click()
   set_panel_busy(true)
   local ok, failure = pcall(run_analysis)
+  close_progress()
   set_panel_busy(false)
   if not ok then
     status_label.text = "Failed: " .. tostring(failure)
@@ -1464,18 +1715,21 @@ steer_entry = dt.new_widget("entry") {
   tooltip = "Say it directly, separated by commas or the word and. lift the shadows, hold the highlights, warmer, cooler, more color, mute, more contrast, gradient, crop. epic or strong opens the caps. darken, lift, or hold a subject, foreground, rock, sky, behind, or reflection. revert or skip a stage.",
 }
 
--- Labels stay on one line. text_view wraps at word and character breaks
--- (set by Darktable) and is stretched to the width the panel gives this row.
+-- text_view wraps at word and character breaks. A vertical box gives each
+-- status line its own height. A horizontal row stayed one line tall, and
+-- the status is not ellipsized.
 status_label = dt.new_widget("text_view") {
   text = "Select an image, then propose looks. A picked look is applied on a new duplicate.",
   editable = false,
 }
+look_name_label = dt.new_widget("label") {
+  label = "Look: —",
+  halign = "start",
+}
 local status_row = dt.new_widget("box") {
-  orientation = "horizontal",
+  orientation = "vertical",
   status_label,
 }
-status_row.expand = true
-status_row.fill = true
 
 run_button = dt.new_widget("button") {
   label = "Propose looks",
@@ -1491,6 +1745,7 @@ for index = 1, 6 do
     clicked_callback = function()
       set_panel_busy(true)
       local ok, failure = pcall(apply_choice, index)
+      close_progress()
       set_panel_busy(false)
       if not ok then
         status_label.text = "Failed: " .. tostring(failure)
@@ -1520,6 +1775,7 @@ local panel = dt.new_widget("box") {
   choice_buttons[6],
   revert_button,
   dt.new_widget("separator") {},
+  look_name_label,
   status_row,
 }
 
@@ -1539,6 +1795,32 @@ local registered, register_error = pcall(
 )
 if not registered then
   print("AI editor could not register its panel: " .. tostring(register_error))
+end
+
+local function image_from_event(...)
+  for index = 1, select("#", ...) do
+    local value = select(index, ...)
+    if type(value) == "userdata" or (type(value) == "table" and value.id ~= nil) then
+      return value
+    end
+  end
+  return nil
+end
+
+pcall(dt.register_event, script_data, "darkroom-image-loaded", function(...)
+  show_loaded_look(image_from_event(...))
+end)
+pcall(dt.register_event, script_data, "mouse-over-image-changed", function(...)
+  local image = image_from_event(...)
+  if image ~= nil then
+    show_loaded_look(image)
+  end
+end)
+if type(dt.gui.action_images) == "function" then
+  local ok, images = pcall(dt.gui.action_images)
+  if ok and type(images) == "table" then
+    show_loaded_look(images[1])
+  end
 end
 
 script_data.destroy = function()

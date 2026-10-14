@@ -416,6 +416,9 @@ def apply_proposal(plan: dict, proposal: dict) -> dict:
         note = "Reasoning was skipped."
     paragraph = _usable_paragraph(str(proposal.get("paragraph") or ""))
     updated["reasoning"] = {"status": status, "backend": backend, "note": note}
+    failure = str(proposal.get("failure") or "").strip()
+    if failure:
+        updated["reasoning"]["failure"] = failure
     if paragraph:
         updated["reasoning"]["paragraph"] = paragraph
     proposed: list[dict] = []
@@ -640,7 +643,9 @@ def build_run_lines(plan: dict, separation: dict) -> list[dict]:
         elif stage in {"gradient", "theme"}:
             skipped = stage in user_skip or stage not in ran
         else:
-            skipped = stage in user_skip or (stage not in ran and stage in render_skipped)
+            # A stage that never landed in the render did not run. An eye
+            # that overshot used to sit on neither list and still show up.
+            skipped = stage in user_skip or stage not in ran or stage in render_skipped
         reason, source, override = _line_reason(plan, separation, stage, skipped)
         failed = False
         if (
@@ -684,14 +689,19 @@ def build_run_lines(plan: dict, separation: dict) -> list[dict]:
                 reason = f"{who} asked to {verb} behind the subject."
             else:
                 reason = f"{who} asked to {verb} the {name}."
+        ran_names = set(separation.get("stages_ran") or [])
+        if name == "surround":
+            ran_now = "foreground" in ran_names or "background" in ran_names
+        else:
+            ran_now = name in ran_names
         lines.append(
             {
                 "stage": name,
                 "reason": reason,
-                "skipped": False,
+                "skipped": not ran_now,
                 "source": source,
                 "override": False,
-                "strong": bool(plan.get("caps_open")),
+                "strong": bool(plan.get("caps_open")) and ran_now,
             }
         )
         shown.add(name)
@@ -975,6 +985,10 @@ def format_plan_text(plan: dict) -> str:
         rows.append(summary)
     elif plan.get("ignored"):
         rows.append("Ignored: " + ", ".join(str(word) for word in plan["ignored"]) + ".")
+    for key in ("warmth_note", "gradient_note"):
+        note = str(plan.get(key) or "").strip()
+        if note and note not in rows:
+            rows.append(note)
     return "\n".join(rows)
 
 
@@ -1015,7 +1029,7 @@ def _tool_line(plan: dict) -> str:
         names.append("color calibration")
     if abs(float(plan.get("color") or 0)) > 0:
         names.append("color zones")
-    if plan.get("gradient"):
+    if plan.get("gradient") and not plan.get("gradient_note"):
         names.append("graduated density")
     if plan.get("crop_horizon"):
         names.append("crop")

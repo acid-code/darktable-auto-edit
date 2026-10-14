@@ -11,6 +11,10 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from ai_dt.env import load_project_env
+
+load_project_env()
+
 from ai_dt.cli import main
 
 if __name__ == "__main__":
