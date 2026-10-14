@@ -59,6 +59,31 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Explicit clauses: strong or epic, darken/lift/hold a target, gradient, revert or skip a stage.",
     )
+    parser.add_argument(
+        "--look",
+        default="",
+        help="A choice id to apply: faithful, a recommendation, or a recipe id. Empty proposes the measured grade.",
+    )
+    parser.add_argument("--image-id", type=int, default=None, help="Darktable image id for the version record.")
+    parser.add_argument(
+        "--duplicate-index",
+        type=int,
+        default=None,
+        help="Darktable duplicate index for the version record.",
+    )
+    parser.add_argument("--parent-id", type=int, default=None, help="Image id this duplicate was branched from.")
+    parser.add_argument(
+        "--parent-index",
+        type=int,
+        default=None,
+        help="Duplicate index this version was branched from.",
+    )
+    parser.add_argument(
+        "--library",
+        type=Path,
+        default=None,
+        help="Darktable library.db, used to avoid stacking a second display transform.",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -81,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             vibe=args.vibe,
             steer=args.steer,
+            look=args.look,
+            image_id=args.image_id,
+            duplicate_index=args.duplicate_index,
+            parent_id=args.parent_id,
+            parent_index=args.parent_index,
+            library_path=args.library,
             source_path=args.original,
             full_res=args.full_res,
         )

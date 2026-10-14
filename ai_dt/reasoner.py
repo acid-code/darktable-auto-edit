@@ -1,10 +1,10 @@
 """Propose stages from text the pipeline already has.
 
 The inputs are the picture description, the vibe words, and the preset
-name. No picture is uploaded. A local Ollama text model is the default.
-Gemini is used only when ``GEMINI_API_KEY`` is set. If neither backend
-is reachable, reasoning is skipped and the caller's steer clauses still
-apply.
+name. No picture is uploaded. Gemini is tried first when ``GEMINI_API_KEY``
+is set. Ollama is the fallback when Gemini is not configured or does not
+return a plan. If neither backend answers, reasoning is skipped and the
+caller's steer clauses still apply.
 
 The model may only name stages and actions in the steer vocabulary.
 It cannot open the caps. ``epic`` and ``strong`` do that, and only when
@@ -310,7 +310,7 @@ def _from_reply(reply: dict | None, *, status: str, backend: str, note: str) -> 
 
 
 def propose_stages(description: str, vibe: str, preset: str, steer: str = "") -> dict:
-    """Ask Ollama, then Gemini if a key is set. Skip when neither answers.
+    """Ask Gemini when a key is set, then Ollama. Skip when neither answers.
 
     The returned dict never opens caps. It has ``status``, ``backend``,
     ``note``, ``paragraph``, and ``stages``. A usable paragraph or stage
@@ -319,6 +319,16 @@ def propose_stages(description: str, vibe: str, preset: str, steer: str = "") ->
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
         return skipped("Reasoning was skipped.")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        gemini_plan = _from_reply(
+            _ask_gemini(description, vibe, preset, steer),
+            status="gemini",
+            backend=os.environ.get("GEMINI_REASON_MODEL", "gemini-2.0-flash"),
+            note="Stages proposed by Gemini.",
+        )
+        if gemini_plan and (gemini_plan.get("paragraph") or gemini_plan.get("stages")):
+            return gemini_plan
     ollama_reply = _ask_ollama(description, vibe, preset, steer)
     if ollama_reply is not None:
         return _from_reply(
@@ -327,15 +337,7 @@ def propose_stages(description: str, vibe: str, preset: str, steer: str = "") ->
             backend=_text_model(),
             note=f"Stages proposed by the local model {_text_model()}.",
         ) or skipped("Ollama is up but the text model did not return a plan. Reasoning was skipped.")
-    if os.environ.get("GEMINI_API_KEY", "").strip():
-        gemini_reply = _ask_gemini(description, vibe, preset, steer)
-        if gemini_reply is not None:
-            return _from_reply(
-                gemini_reply,
-                status="gemini",
-                backend=os.environ.get("GEMINI_REASON_MODEL", "gemini-2.0-flash"),
-                note="Stages proposed by Gemini.",
-            ) or skipped("Gemini was configured but did not return a plan. Reasoning was skipped.")
+    if gemini_key:
         return skipped("Gemini was configured but did not return a plan. Reasoning was skipped.")
     if ollama_reachable():
         return skipped("Ollama is up but the text model did not return a plan. Reasoning was skipped.")

@@ -55,11 +55,14 @@ def _load_upload(payload: str) -> Image.Image:
 def analyze_request(body: dict) -> dict:
     vibe = body.get("vibe") or ""
     steer = body.get("steer") or ""
+    look = body.get("look") or ""
     if not isinstance(vibe, str):
         raise ValueError("vibe must be text")
     if not isinstance(steer, str):
         raise ValueError("steer must be text")
-    if len(vibe) > 400 or len(steer) > 400:
+    if not isinstance(look, str):
+        raise ValueError("look must be text")
+    if len(vibe) > 400 or len(steer) > 400 or len(look) > 80:
         raise ValueError("Keep the vibe under 400 characters")
     sample = body.get("sample")
     upload = body.get("image_base64")
@@ -84,12 +87,40 @@ def analyze_request(body: dict) -> dict:
         advisor="histogram",
         vibe=vibe,
         steer=steer,
+        look=look,
         style_name="AI Edit preview",
         output_dir=work,
     )
     write_outputs(recipe, work)
     after = render_preview(image, recipe)
     match = recipe.get("recipe_match") or {}
+    options = []
+    for choice in (recipe.get("choices") or [])[:3]:
+        if not isinstance(choice, dict):
+            continue
+        if choice.get("applied"):
+            preview = after
+        else:
+            alternate = analyze(
+                source,
+                detector="heuristic",
+                advisor="histogram",
+                vibe=vibe,
+                steer=steer,
+                look=str(choice.get("id") or ""),
+                style_name="AI Edit preview",
+            )
+            preview = render_preview(image, alternate)
+        options.append(
+            {
+                "id": choice.get("id"),
+                "title": choice.get("title"),
+                "why": choice.get("why"),
+                "applied": bool(choice.get("applied")),
+                "png": _png_data_url(preview),
+            }
+        )
+    version = recipe.get("version_record") or {}
     return {
         "sample": label,
         "before_png": _png_data_url(image),
@@ -101,6 +132,9 @@ def analyze_request(body: dict) -> dict:
         "match": match,
         "reading": recipe.get("reading") or {},
         "recommendations": recipe.get("recommendations") or [],
+        "choices": recipe.get("choices") or [],
+        "options": options,
+        "sentence": version.get("sentence") or "",
         "plan": recipe.get("plan") or {},
         "modules": [
             {"operation": item["operation"], "multi_name": item["multi_name"], "params": item["params"]}

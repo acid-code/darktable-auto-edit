@@ -13,6 +13,9 @@ Grammar, one clause at a time, case insensitive:
   targets: subject, foreground, rock, sky, behind, reflection
   ``light`` is the same verb as ``lift``. ``light behind the subject`` is lift behind.
 - ``gradient`` asks for the linear gradient. It stays modest unless ``strong`` or ``epic`` is also there.
+- Expert modules, said directly: ``lift the shadows``, ``hold the highlights``,
+  ``warmer`` or ``cooler``, ``more color`` or ``mute``, ``more contrast``,
+  ``crop``. These set tone equalizer, color calibration, color zones, and crop.
 
 A model cannot open the caps. Only these words in the user's own line can.
 """
@@ -44,6 +47,17 @@ _STAGE_WORDS = {
 }
 
 _TARGETS = frozenset({"subject", "foreground", "rock", "sky", "behind", "reflection"})
+_EXPERT_WORDS = {
+    "warmer": ("warmth", 0.4),
+    "warm": ("warmth", 0.4),
+    "cooler": ("warmth", -0.4),
+    "cool": ("warmth", -0.4),
+    "saturate": ("color", 0.35),
+    "mute": ("color", -0.35),
+    "desaturate": ("color", -0.35),
+    "crop": ("crop_horizon", True),
+    "contrast": ("contrast_push", 0.25),
+}
 
 # How a stage is named in the list the user reads.
 _DISPLAY = {
@@ -162,6 +176,9 @@ def parse_clause(clause: str) -> dict | None:
         return {"kind": "strong", "word": tokens[0]}
     if tokens == ["gradient"]:
         return {"kind": "gradient"}
+    tool = _expert_clause(tokens)
+    if tool is not None:
+        return tool
     if tokens[0] in _SKIP_VERBS and len(tokens) == 2 and tokens[1] in _STAGE_WORDS:
         return {"kind": "skip", "stage": _STAGE_WORDS[tokens[1]], "said": tokens[1]}
     if tokens[0] in _ASK_VERBS:
@@ -174,6 +191,56 @@ def parse_clause(clause: str) -> dict | None:
         if len(found) == 1 and len(rest) == 1:
             return {"kind": "ask", "verb": verb, "target": found[0]}
     return None
+
+
+def _expert_clause(tokens: list[str]) -> dict | None:
+    """A direct module request: shadows, highlights, warmth, color, contrast, crop."""
+
+    if tokens in (["lift", "shadows"], ["open", "shadows"], ["raise", "shadows"], ["shadows"]):
+        return {"kind": "tool", "name": "shadow_lift", "value": 0.5}
+    if tokens in (["hold", "highlights"], ["recover", "highlights"], ["highlights"]):
+        return {"kind": "tool", "name": "highlight_hold", "value": True}
+    if tokens in (["more", "color"], ["more", "saturation"]):
+        return {"kind": "tool", "name": "color", "value": 0.35}
+    if tokens in (["less", "color"], ["less", "saturation"]):
+        return {"kind": "tool", "name": "color", "value": -0.35}
+    if tokens in (["more", "contrast"],):
+        return {"kind": "tool", "name": "contrast_push", "value": 0.25}
+    if len(tokens) == 1 and tokens[0] in _EXPERT_WORDS:
+        name, value = _EXPERT_WORDS[tokens[0]]
+        return {"kind": "tool", "name": name, "value": value}
+    return None
+
+
+def _consume_expert(tokens: list[str], consumed: set[int]) -> list[dict]:
+    """Mark expert words inside a looser sentence and return their tools."""
+
+    items: list[dict] = []
+    if "shadows" in tokens and any(word in tokens for word in ("lift", "open", "raise", "brighten")):
+        items.append({"kind": "tool", "name": "shadow_lift", "value": 0.5})
+        for index, word in enumerate(tokens):
+            if word in {"shadows", "lift", "open", "raise", "brighten"}:
+                consumed.add(index)
+    if "highlights" in tokens and any(word in tokens for word in ("hold", "recover", "pull")):
+        items.append({"kind": "tool", "name": "highlight_hold", "value": True})
+        for index, word in enumerate(tokens):
+            if word in {"highlights", "hold", "recover", "pull"}:
+                consumed.add(index)
+    for index, word in enumerate(tokens):
+        if index in consumed or word not in _EXPERT_WORDS:
+            continue
+        name, value = _EXPERT_WORDS[word]
+        items.append({"kind": "tool", "name": name, "value": value})
+        consumed.add(index)
+        if word in {"warm", "cool"} and index + 1 < len(tokens) and tokens[index + 1] in {"it", "up", "down"}:
+            consumed.add(index + 1)
+    if "color" in tokens and any(word in tokens for word in ("more", "less")):
+        value = 0.35 if "more" in tokens else -0.35
+        items.append({"kind": "tool", "name": "color", "value": value})
+        for index, word in enumerate(tokens):
+            if word in {"color", "more", "less"}:
+                consumed.add(index)
+    return items
 
 
 def _loose_clause(clause: str) -> tuple[list[dict], list[str]]:
@@ -189,6 +256,7 @@ def _loose_clause(clause: str) -> tuple[list[dict], list[str]]:
         return [], []
     items: list[dict] = []
     consumed: set[int] = set()
+    items.extend(_consume_expert(tokens, consumed))
 
     for index, word in enumerate(tokens):
         if word in _OPEN:
@@ -267,6 +335,7 @@ def parse_steer(sentence: str) -> dict:
     gradient = False
     skip: list[str] = []
     asks: list[dict] = []
+    tools: dict[str, object] = {}
     ignored: list[str] = []
     for clause in _clauses(sentence):
         items, leftover = _interpret(clause)
@@ -284,6 +353,8 @@ def parse_steer(sentence: str) -> dict:
                 stage = str(parsed["stage"])
                 if stage not in skip:
                     skip.append(stage)
+            elif parsed["kind"] == "tool":
+                tools[str(parsed["name"])] = parsed["value"]
             else:
                 ask = {
                     "verb": parsed["verb"],
@@ -304,6 +375,7 @@ def parse_steer(sentence: str) -> dict:
         "gradient": gradient,
         "skip": skip,
         "asks": asks,
+        "tools": tools,
         "ignored": ignored,
         "summary": summary,
     }
@@ -421,10 +493,12 @@ def revise_plan(plan: dict, sentence: str) -> dict:
         # A second user clause for the same target replaces the earlier one.
         updated["asks"] = [item for item in updated["asks"] if not _same_ask(item, ask)]
         updated["asks"].append(ask)
+    for name, value in (parsed.get("tools") or {}).items():
+        updated[str(name)] = value
     updated["ignored"] = list(parsed["ignored"])
     updated["summary"] = parsed["summary"]
     updated["skip_by"] = skip_by
-    if parsed["asks"] or parsed["skip"] or parsed["strong"] or parsed["gradient"]:
+    if parsed["asks"] or parsed["skip"] or parsed["strong"] or parsed["gradient"] or parsed.get("tools"):
         updated["user"] = True
     updated = _sync_caps(updated)
     updated = _ensure_paragraph(updated)
@@ -478,6 +552,12 @@ def _copy_plan(plan: dict) -> dict:
         "gradient_by": str(plan.get("gradient_by") or "")
         if plan.get("gradient_by") in {"user", "reasoner"}
         else "",
+        "shadow_lift": float(plan.get("shadow_lift") or 0),
+        "highlight_hold": bool(plan.get("highlight_hold")),
+        "warmth": float(plan.get("warmth") or 0),
+        "color": float(plan.get("color") or 0),
+        "contrast_push": float(plan.get("contrast_push") or 0),
+        "crop_horizon": bool(plan.get("crop_horizon")),
         "skip_by": {
             str(key): str(value)
             for key, value in (plan.get("skip_by") or {}).items()
@@ -887,6 +967,9 @@ def format_plan_text(plan: dict) -> str:
             skipped_names.append(name)
     if skipped_names:
         rows.append("Skipped: " + ", ".join(skipped_names) + ".")
+    tools = _tool_line(plan)
+    if tools:
+        rows.append(tools)
     summary = str(plan.get("summary") or "").strip()
     if summary:
         rows.append(summary)
@@ -913,8 +996,34 @@ def format_plan_label(plan: dict) -> str:
         if name and name not in names:
             names.append(name)
     if names:
-        return f"{head} Stages: {', '.join(names)}."
-    return head
+        label = f"{head} Stages: {', '.join(names)}."
+    else:
+        label = head
+    tools = _tool_line(plan)
+    if tools:
+        return f"{label} {tools}"
+    return label
+
+
+def _tool_line(plan: dict) -> str:
+    """Name the expert modules a sentence or a picked look turned on."""
+
+    names: list[str] = []
+    if float(plan.get("shadow_lift") or 0) > 0 or plan.get("highlight_hold"):
+        names.append("tone equalizer")
+    if abs(float(plan.get("warmth") or 0)) > 0:
+        names.append("color calibration")
+    if abs(float(plan.get("color") or 0)) > 0:
+        names.append("color zones")
+    if plan.get("gradient"):
+        names.append("graduated density")
+    if plan.get("crop_horizon"):
+        names.append("crop")
+    if abs(float(plan.get("contrast_push") or 0)) > 0:
+        names.append("contrast")
+    if not names:
+        return ""
+    return "Expert tools: " + ", ".join(names) + "."
 
 
 def plan_stages(

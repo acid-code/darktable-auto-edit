@@ -419,8 +419,13 @@ def match_vibe(
     vibe: str = "",
     directory: Path | None = None,
     recipes: list[Recipe] | None = None,
+    recipe_id: str | None = None,
 ) -> Match:
-    """Return the nearest recipe and whether it should actually be applied."""
+    """Return the nearest recipe and whether it should actually be applied.
+
+    ``recipe_id`` is a look the user picked. That file is used when it is
+    in the library. The neighbors stay the three nearest to the query.
+    """
 
     if scene not in SCENES:
         scene = "general"
@@ -442,6 +447,24 @@ def match_vibe(
         )
     ranked = _rank(recipes, scene, query)
     neighbors = [item[1] for item in ranked if item[1].score > 0.02][:3]
+    pinned = (recipe_id or "").strip()
+    if pinned:
+        for recipe in recipes:
+            if recipe.id == pinned:
+                return Match(
+                    scene=scene,
+                    vibe=" ".join(vibe.split()),
+                    query=query,
+                    method="chosen-look",
+                    vectorizer="term-frequency",
+                    applied=True,
+                    reason="chosen look",
+                    recipe=recipe,
+                    score=1.0,
+                    cosine=1.0,
+                    neighbors=neighbors,
+                    warnings=warnings,
+                )
     best_recipe, best = ranked[0]
     # The scene name is part of the query, so a nonsense sentence can still
     # share that one word with every recipe for the scene. The user's own

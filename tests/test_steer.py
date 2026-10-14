@@ -122,6 +122,21 @@ class GrammarTests(unittest.TestCase):
         self.assertEqual(parsed["ignored"], ["epid", "please"])
         self.assertEqual(parsed["summary"], "Ignored: epid, please.")
 
+    def test_a_direct_sentence_names_the_expert_modules(self) -> None:
+        parsed = parse_steer("lift the shadows, warmer, more color, and hold the highlights")
+        self.assertEqual(parsed["tools"]["shadow_lift"], 0.5)
+        self.assertEqual(parsed["tools"]["warmth"], 0.4)
+        self.assertEqual(parsed["tools"]["color"], 0.35)
+        self.assertTrue(parsed["tools"]["highlight_hold"])
+        self.assertNotIn("shadows", parsed["ignored"])
+        self.assertNotIn("warmer", parsed["ignored"])
+        self.assertNotIn("color", parsed["ignored"])
+        loose = parse_steer("please make it warmer and open the shadows")
+        self.assertEqual(loose["tools"]["warmth"], 0.4)
+        self.assertEqual(loose["tools"]["shadow_lift"], 0.5)
+        self.assertNotIn("warmer", loose["ignored"])
+        self.assertNotIn("shadows", loose["ignored"])
+
     def test_the_heron_sentence_is_not_an_ignored_word_list(self) -> None:
         sentence = "epic, dark end result with the bird as the main subject. Make the refelction clearer"
         parsed = parse_steer(sentence)
@@ -204,7 +219,7 @@ class ReasonerTests(unittest.TestCase):
         self.assertNotIn("images", seen["body"])
         self.assertIn("a bird on a rock", seen["body"]["messages"][0]["content"])
 
-    def test_gemini_is_not_called_without_a_key_or_before_ollama(self) -> None:
+    def test_gemini_is_not_called_without_a_key(self) -> None:
         def gemini(*_args, **_kwargs):
             raise AssertionError("gemini")
 
@@ -213,13 +228,90 @@ class ReasonerTests(unittest.TestCase):
 
         with (
             _no_network(),
-            _env(GEMINI_API_KEY="test-key"),
+            _env(),
             patch("ai_dt.reasoner.ollama_reachable", return_value=True),
             patch("ai_dt.reasoner._post_json", post),
             patch("ai_dt.reasoner._ask_gemini", gemini),
         ):
             result = propose_stages("facade", "", "")
         self.assertEqual(result["status"], "ollama")
+
+    def test_gemini_is_asked_before_ollama(self) -> None:
+        def ollama(*_args, **_kwargs):
+            raise AssertionError("ollama")
+
+        def gemini(*_args, **_kwargs):
+            return {
+                "paragraph": "Hold the facade.",
+                "stages": [{"stage": "subject", "action": "hold", "reason": "Hold the facade."}],
+            }
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key"),
+            patch("ai_dt.reasoner._ask_ollama", ollama),
+            patch("ai_dt.reasoner._ask_gemini", gemini),
+        ):
+            os.environ.pop("GEMINI_REASON_MODEL", None)
+            result = propose_stages("facade", "", "")
+        self.assertEqual(result["status"], "gemini")
+        self.assertEqual(result["backend"], "gemini-2.0-flash")
+        self.assertEqual(result["stages"][0]["action"], "hold")
+        self.assertNotIn("caps_open", result)
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key", GEMINI_REASON_MODEL="gemini-2.5-flash"),
+            patch("ai_dt.reasoner._ask_ollama", ollama),
+            patch("ai_dt.reasoner._ask_gemini", gemini),
+        ):
+            named = propose_stages("facade", "", "")
+        self.assertEqual(named["status"], "gemini")
+        self.assertEqual(named["backend"], "gemini-2.5-flash")
+
+    def test_ollama_is_the_fallback_when_gemini_has_no_plan(self) -> None:
+        def no_plan(*_args, **_kwargs):
+            return None
+
+        def empty_plan(*_args, **_kwargs):
+            return {"paragraph": "", "stages": []}
+
+        def post(url, body, timeout):
+            self.assertIn("/api/chat", url)
+            return {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "caps_open": True,
+                            "stages": [
+                                {"stage": "subject", "action": "hold", "reason": "Hold the facade."}
+                            ],
+                        }
+                    )
+                }
+            }
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key"),
+            patch("ai_dt.reasoner.ollama_reachable", return_value=True),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_gemini", no_plan),
+        ):
+            missing = propose_stages("facade", "", "")
+        self.assertEqual(missing["status"], "ollama")
+        self.assertNotIn("caps_open", missing)
+        self.assertEqual(missing["stages"][0]["action"], "hold")
+
+        with (
+            _no_network(),
+            _env(GEMINI_API_KEY="test-key"),
+            patch("ai_dt.reasoner.ollama_reachable", return_value=True),
+            patch("ai_dt.reasoner._post_json", post),
+            patch("ai_dt.reasoner._ask_gemini", empty_plan),
+        ):
+            empty = propose_stages("facade", "", "")
+        self.assertEqual(empty["status"], "ollama")
 
     def test_gemini_runs_only_when_a_key_is_set(self) -> None:
         def post(url, body, timeout):

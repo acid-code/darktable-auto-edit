@@ -17,7 +17,11 @@ from ai_dt.detectors.merge import merge_detections
 from ai_dt.detectors.yolo import YoloDetector
 from ai_dt.errors import AdvisorUnavailable, DetectorUnavailable, RawReadError, RawSupportUnavailable
 from ai_dt.io_image import LoadedImage, is_raw, load_image
+from ai_dt.choices import apply_named_look, collect_choices, mark_recommendations
+from ai_dt.history_ops import history_operations
 from ai_dt.mapping import build_modules, render_style
+from ai_dt.masks_xmp import MASKS_REASON, ellipse_sidecar, masks_can_attach
+from ai_dt.modules_extra import append_extra_modules, retouch_decision
 from ai_dt.guides.decide import decide_picture
 from ai_dt.guides.library import match_guide
 from ai_dt.reading import read_frame
@@ -39,6 +43,7 @@ from ai_dt.schema import Atmosphere
 from ai_dt.separate import render_finish
 from ai_dt.simulate import vignette_from_modules
 from ai_dt.tiff16 import write_rgb16
+from ai_dt.versions import build_version_record, write_version
 
 DETECTORS = ("auto", "yolo", "mediapipe", "heuristic")
 ADVISORS = ("auto", "ollama", "histogram")
@@ -89,6 +94,31 @@ def _cap_fuji_color(atmosphere: Atmosphere, picture) -> Atmosphere:
         tint = max(tint, 0.0)
     atmosphere.temperature_shift = temperature
     atmosphere.tint = tint
+    return atmosphere
+
+
+def apply_expert_requests(atmosphere: object, plan: dict) -> object:
+    """Push a sentence or a picked look onto the modules that can carry it.
+
+    Tone equalizer, color calibration, and color zones stay out of the style
+    when their number is zero. A direct request sets that number.
+    """
+
+    lift = float(plan.get("shadow_lift") or 0)
+    if lift > 0:
+        atmosphere.shadows = max(float(atmosphere.shadows), lift)
+    if plan.get("highlight_hold"):
+        atmosphere.highlights = min(float(atmosphere.highlights), -0.35)
+        atmosphere.exposure_ev = min(float(atmosphere.exposure_ev), 0.0)
+    warmth = float(plan.get("warmth") or 0)
+    if warmth:
+        atmosphere.temperature_shift = max(-1.0, min(1.0, float(atmosphere.temperature_shift) + warmth))
+    color = float(plan.get("color") or 0)
+    if color:
+        atmosphere.saturation = max(-1.0, min(1.0, float(atmosphere.saturation) + color))
+    contrast = float(plan.get("contrast_push") or 0)
+    if contrast:
+        atmosphere.contrast = max(-1.0, min(1.0, float(atmosphere.contrast) + contrast))
     return atmosphere
 
 
@@ -165,6 +195,12 @@ def analyze(
     source_path: Path | None = None,
     full_res: bool = False,
     steer: str = "",
+    look: str = "",
+    image_id: int | None = None,
+    duplicate_index: int | None = None,
+    parent_id: int | None = None,
+    parent_index: int | None = None,
+    library_path: Path | None = None,
 ) -> dict:
     """Analyze one image and return the recipe written to ``output.json``.
 
@@ -188,7 +224,7 @@ def analyze(
     picture = decide_picture(loaded.pixels, detections)
     guide_match = match_guide(picture.type, directory=guides_dir)
     reading = read_frame(loaded.pixels, picture, detections)
-    recommendations = recommend_looks(picture, reading)
+    recommendations = mark_recommendations(recommend_looks(picture, reading), look)
     reflection = "lift"
     theme = ""
     for region in reading.regions:
@@ -197,7 +233,10 @@ def analyze(
         elif region.get("role") == "theme" and not theme:
             theme = str(region.get("kind") or "")
     plan = empty_plan(list(guide_match.guide.stages), reflection=reflection, theme=theme)
-    if output_dir is not None and steer.strip():
+    # A steer, or a look picked onto a duplicate, continues the plan already
+    # written in this folder. A blank first run has nothing to continue.
+    picked = (look or "").strip()
+    if output_dir is not None and (steer.strip() or picked):
         stored = load_stored(output_dir)
         if stored is not None:
             previous = stored["plan"]
@@ -212,11 +251,19 @@ def analyze(
     scene = scene_from_detections(detections)
     # A pinned preset is the user choosing a look. A recommendation is not.
     vibe_for_reason = plan["pinned"] or vibe
-    match = match_vibe(scene, vibe_for_reason, directory=library_dir)
+    recipe_id = "" if picked in {"", "faithful"} else picked
+    match = match_vibe(
+        scene,
+        vibe_for_reason,
+        directory=library_dir,
+        recipe_id=recipe_id or None,
+    )
     preset_name = match.recipe.title if match.recipe is not None else ""
     plan = apply_proposal(plan, propose_stages(reading.sentence, vibe, preset_name, steer))
     if steer.strip():
         plan = revise_plan(plan, steer)
+    if picked:
+        plan = apply_named_look(plan, picked)
     reasoning = reason_about(
         picture,
         detections,
@@ -243,6 +290,7 @@ def analyze(
     caps_open = bool(bundle["caps_open"]) if steer.strip() else False
     intents = _finish_intents(bundle)
     include_vignette = "vignette" not in set(bundle["skip"])
+    atmosphere = apply_expert_requests(atmosphere, plan)
     adjusted, modules, local_edits, plugins = build_modules(
         image,
         atmosphere,
@@ -276,6 +324,23 @@ def analyze(
     plan["lines"] = build_run_lines(plan, separation)
     plan["text"] = format_plan_text(plan)
     plan["label"] = format_plan_label(plan)
+    known_history = None
+    if library_path is not None and image_id is not None:
+        known_history = history_operations(Path(library_path), int(image_id))
+    modules, plugins = append_extra_modules(
+        modules,
+        plugins,
+        atmosphere=adjusted,
+        picture_type=picture.type,
+        reading=reading,
+        plan=plan,
+        separation=separation,
+        guide=guide_match.guide,
+        history_ops=known_history,
+        look=picked,
+        vibe=vibe,
+        masks=masks_can_attach(),
+    )
     stacked = [
         stage
         for stage in separation.get("stages_ran", [])
@@ -293,15 +358,15 @@ def analyze(
 
     name = _style_name(style_name)
     subject_labels = ", ".join(item.label for item in detections[:6]) or "none"
-    look = ""
+    look_note = ""
     if match.recipe is not None:
-        look = f" Look: {match.recipe.title}."
+        look_note = f" Look: {match.recipe.title}."
     kept_features = list(separation.get("features") or [])
     kept = ""
     if kept_features:
         kept = " Kept " + ", ".join(kept_features) + "."
     description = (
-        f"{reading.sentence} Local AI edit. {picture.type} — {guide_match.guide.title} guide.{kept} {adjusted.mood}.{look} "
+        f"{reading.sentence} Local AI edit. {picture.type} — {guide_match.guide.title} guide.{kept} {adjusted.mood}.{look_note} "
         f"Exposure {adjusted.exposure_ev:+.2f} EV, "
         f"contrast {adjusted.contrast:+.2f}, "
         f"warmth {adjusted.temperature_shift:+.2f}. "
@@ -337,7 +402,17 @@ def analyze(
         "picture": picture.to_dict(),
         "reading": reading.to_dict(),
         "recommendations": recommendations,
+        "choices": collect_choices(
+            recommendations,
+            (match.to_dict().get("neighbors") or []),
+            picked,
+        ),
         "plan": plan,
+        "masks": {
+            "attached": masks_can_attach(),
+            "reason": "" if masks_can_attach() else MASKS_REASON,
+        },
+        "retouch": retouch_decision(detections, masks=masks_can_attach()),
         "guide": _guide_record(guide_match, separation),
         "features": list(separation.get("features") or []),
         "recipe_match": match.to_dict(),
@@ -360,6 +435,14 @@ def analyze(
     }
     recipe["_plugins"] = plugins
     recipe["_rendered"] = rendered
+    recipe["_sidecar"] = ellipse_sidecar(local_edits)
+    recipe["_version_meta"] = {
+        "image_id": image_id,
+        "duplicate_index": duplicate_index,
+        "parent_id": parent_id,
+        "parent_index": parent_index,
+        "look_id": picked or "faithful",
+    }
     return recipe
 
 
@@ -401,11 +484,23 @@ def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     plugins = recipe.pop("_plugins")
     rendered = recipe.pop("_rendered")
+    sidecar = recipe.pop("_sidecar", "")
+    meta = recipe.pop("_version_meta", None) or {}
     style_path = directory / "edit.dtstyle"
     json_path = directory / "output.json"
     edited_path = directory / "edited.tif"
     recipe["style"]["file"] = str(style_path)
     recipe["render"] = {"file": str(edited_path), "format": "tiff16"}
+    record = build_version_record(
+        recipe,
+        directory,
+        image_id=meta.get("image_id"),
+        duplicate_index=meta.get("duplicate_index"),
+        parent_id=meta.get("parent_id"),
+        parent_index=meta.get("parent_index"),
+        look_id=str(meta.get("look_id") or "faithful"),
+    )
+    recipe["version_record"] = record
     style_xml = render_style(
         recipe["style"]["name"],
         recipe["style"]["description"],
@@ -413,6 +508,9 @@ def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     )
     style_path.write_text(style_xml, encoding="utf-8")
     write_rgb16(edited_path, rendered)
+    if sidecar:
+        (directory / "masks.xmp").write_text(sidecar, encoding="utf-8")
+    write_version(directory, record)
     import json
 
     json_path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8")

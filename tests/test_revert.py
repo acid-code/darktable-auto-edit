@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ai_dt.revert import is_ai_editor_history_name, main, revert_image_history
+from ai_dt.revert import is_ai_editor_history_name, main, revert_image_history, strip_ai_history
 
 
 def _library() -> sqlite3.Connection:
@@ -233,6 +233,131 @@ class RevertHistoryTests(unittest.TestCase):
                 [("",)],
             )
             check.close()
+
+
+class SidecarRevertTests(unittest.TestCase):
+    def test_ai_history_is_removed_and_the_rest_stays(self) -> None:
+        document = """
+        <rdf:Description darktable:history_end="3">
+          <rdf:li darktable:num="0" darktable:operation="exposure" darktable:multi_name=""/>
+          <rdf:li darktable:num="1" darktable:operation="colorbalancergb" darktable:multi_name="portrait"/>
+          <rdf:li darktable:num="2" darktable:operation="exposure" darktable:multi_name="AI exposure" darktable:params="abcd"/>
+          <rdf:li darktable:num="2" darktable:mask="1"/>
+        </rdf:Description>
+        """
+        cleaned, removed = strip_ai_history(document)
+        self.assertEqual(removed, 1)
+        self.assertNotIn("AI exposure", cleaned)
+        self.assertIn('darktable:multi_name="portrait"', cleaned)
+        self.assertIn('darktable:multi_name=""', cleaned)
+        self.assertNotIn('darktable:num="2"', cleaned)
+        self.assertIn('darktable:history_end="2"', cleaned)
+
+    def test_undone_ai_steps_do_not_pull_history_end_back(self) -> None:
+        document = """
+        <rdf:Description darktable:history_end="2">
+          <rdf:li darktable:num="0" darktable:operation="exposure" darktable:multi_name=""/>
+          <rdf:li darktable:num="1" darktable:operation="sigmoid" darktable:multi_name=""/>
+          <rdf:li darktable:num="2" darktable:operation="exposure" darktable:multi_name="AI exposure"/>
+          <rdf:li darktable:num="3" darktable:operation="colorbalancergb" darktable:multi_name="AI color"/>
+        </rdf:Description>
+        """
+        cleaned, removed = strip_ai_history(document)
+        self.assertEqual(removed, 2)
+        self.assertNotIn("AI exposure", cleaned)
+        self.assertNotIn("AI color", cleaned)
+        self.assertIn('darktable:operation="sigmoid"', cleaned)
+        self.assertIn('darktable:history_end="2"', cleaned)
+
+    def test_a_second_strip_of_the_same_sidecar_removes_nothing(self) -> None:
+        # Same shape as IMG_8489 version 0: 11 active modules, then AI color
+        # and AI exposure past history_end. The tag text is not a history name.
+        items = [
+            f'<rdf:li darktable:num="{num}" darktable:operation="exposure" darktable:multi_name=""/>'
+            for num in range(10)
+        ]
+        items.append(
+            '<rdf:li\n'
+            '  darktable:num="10"\n'
+            '  darktable:operation="sigmoid"\n'
+            '  darktable:multi_name="_builtin_scene-referred default"/>'
+        )
+        items.append(
+            '<rdf:li\n'
+            '  darktable:num="11"\n'
+            '  darktable:operation="colorbalancergb"\n'
+            '  darktable:multi_name="AI color"/>'
+        )
+        items.append(
+            '<rdf:li\n'
+            '  darktable:num="12"\n'
+            '  darktable:operation="exposure"\n'
+            '  darktable:multi_name="AI exposure"/>'
+        )
+        document = (
+            '<rdf:Description darktable:history_end="11">'
+            "<darktable:history><rdf:Seq>"
+            + "".join(items)
+            + "</rdf:Seq></darktable:history>"
+            "<dc:subject><rdf:Bag><rdf:li>AI Edit 11364</rdf:li></rdf:Bag></dc:subject>"
+            "</rdf:Description>"
+        )
+        cleaned, removed = strip_ai_history(document)
+        self.assertEqual(removed, 2)
+        self.assertNotIn('darktable:multi_name="AI color"', cleaned)
+        self.assertNotIn('darktable:multi_name="AI exposure"', cleaned)
+        self.assertIn('darktable:operation="sigmoid"', cleaned)
+        self.assertIn('darktable:history_end="11"', cleaned)
+        self.assertIn("<rdf:li>AI Edit 11364</rdf:li>", cleaned)
+        again, left = strip_ai_history(cleaned)
+        self.assertEqual(left, 0)
+        self.assertEqual(again, cleaned)
+
+    def test_only_ai_steps_inside_the_active_prefix_move_history_end(self) -> None:
+        # Same shape as IMG_8489 version 2: one AI module inside history_end,
+        # and more AI modules after it.
+        items = [
+            f'<rdf:li darktable:num="{num}" darktable:operation="exposure" darktable:multi_name=""/>'
+            for num in range(11)
+        ]
+        items.append(
+            '<rdf:li darktable:num="11" darktable:operation="channelmixerrgb"'
+            ' darktable:multi_name="AI color calibration"/>'
+        )
+        items.extend(
+            f'<rdf:li darktable:num="{num}" darktable:operation="exposure" darktable:multi_name="AI exposure"/>'
+            for num in range(12, 20)
+        )
+        document = '<rdf:Description darktable:history_end="12">' + "".join(items) + "</rdf:Description>"
+        cleaned, removed = strip_ai_history(document)
+        self.assertEqual(removed, 9)
+        self.assertEqual(cleaned.count('darktable:operation="exposure"'), 11)
+        self.assertNotIn("AI ", cleaned)
+        self.assertIn('darktable:history_end="11"', cleaned)
+        self.assertEqual(strip_ai_history(cleaned)[1], 0)
+
+    def test_command_line_second_pass_on_the_written_sidecar_removes_nothing(self) -> None:
+        document = (
+            '<rdf:Description darktable:history_end="2">'
+            '<rdf:li darktable:num="0" darktable:operation="exposure" darktable:multi_name=""/>'
+            '<rdf:li darktable:num="1" darktable:operation="exposure" darktable:multi_name="AI exposure"/>'
+            "</rdf:Description>"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "photo.xmp"
+            destination = Path(directory) / "revert.xmp"
+            source.write_text(document, encoding="utf-8")
+            first = StringIO()
+            with redirect_stdout(first):
+                code = main(["--xmp", str(source), "--xmp-out", str(destination)])
+            self.assertEqual(code, 0)
+            self.assertIn("removed 1", first.getvalue())
+            self.assertNotIn("AI exposure", destination.read_text(encoding="utf-8"))
+            second = StringIO()
+            with redirect_stdout(second):
+                code = main(["--xmp", str(destination), "--xmp-out", str(destination)])
+            self.assertEqual(code, 0)
+            self.assertIn("removed 0", second.getvalue())
 
 
 if __name__ == "__main__":

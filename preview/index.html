@@ -134,6 +134,33 @@
       color: var(--text);
       line-height: 1.45;
     }
+    .choices {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .choices button {
+      font: inherit;
+      text-align: left;
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px;
+      cursor: pointer;
+    }
+    .choices button[aria-pressed="true"] {
+      border-color: var(--brass);
+    }
+    .choices img {
+      aspect-ratio: 11 / 8;
+      object-fit: cover;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+    .choices strong { display: block; }
+    .choices span { color: var(--muted); font-size: 0.92rem; }
     details { margin: 8px 0 16px; color: var(--muted); }
     summary { cursor: pointer; color: var(--text); }
     code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.88em; }
@@ -180,6 +207,7 @@
           <img id="after" alt="Approximate result after the matched recipe" hidden>
         </figure>
       </div>
+      <div id="choices" class="choices"></div>
       <div id="plan" class="plan" hidden>
         <h2>Plan</h2>
         <p id="stages" class="plan-text"></p>
@@ -228,10 +256,12 @@
     const upload = document.querySelector("#upload");
     let sample = "portrait";
     let uploadData = "";
+    let lookId = "";
 
     document.querySelectorAll("[data-sample]").forEach((button) => {
       button.addEventListener("click", () => {
         sample = button.dataset.sample;
+        lookId = "";
         uploadData = "";
         upload.value = "";
         document.querySelectorAll("[data-sample]").forEach((other) => {
@@ -297,6 +327,27 @@
         row.append(name, " · " + Number(item.score).toFixed(2));
         list.append(row);
       });
+      const choiceBox = document.querySelector("#choices");
+      choiceBox.replaceChildren();
+      (payload.options || []).forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("aria-pressed", item.applied ? "true" : "false");
+        const picture = document.createElement("img");
+        picture.alt = item.title || "Look";
+        picture.src = item.png;
+        const name = document.createElement("strong");
+        name.textContent = item.title || item.id;
+        const why = document.createElement("span");
+        why.textContent = item.why || "";
+        button.append(picture, name, why);
+        button.addEventListener("click", () => {
+          lookId = item.id || "";
+          run();
+        });
+        choiceBox.append(button);
+      });
+      const sentence = String(payload.sentence || "").trim();
       const planBox = document.querySelector("#plan");
       const stages = document.querySelector("#stages");
       const plan = payload.plan || {};
@@ -310,14 +361,14 @@
       }
       report.hidden = false;
       status.className = "status";
-      status.textContent = payload.note;
+      status.textContent = sentence || payload.note;
     }
 
     async function run() {
       status.className = "status loading";
       status.textContent = "Measuring the preview and matching recipes…";
       form.querySelector(".primary").disabled = true;
-      const body = { vibe: vibe.value, steer: steer.value };
+      const body = { vibe: vibe.value, steer: steer.value, look: lookId };
       if (uploadData) body.image_base64 = uploadData;
       else body.sample = sample;
       try {
@@ -339,6 +390,7 @@
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      lookId = "";
       run();
     });
 
