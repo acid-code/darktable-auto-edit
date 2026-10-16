@@ -124,15 +124,18 @@ class MistralVisionAdvisor:
         self.prompt_path = prompt_path
         self.model = model or vision_model()
 
-    def advise(self, image: Image.Image, image_path=None) -> Atmosphere:
+    def advise(self, image: Image.Image, image_path=None, context: str = "") -> Atmosphere:
         key = os.environ.get("MISTRAL_API_KEY", "").strip()
         if not key:
             raise AdvisorUnavailable("MISTRAL_API_KEY is not set")
         prompt = _load_prompt(self.prompt_path or DEFAULT_PROMPT)
+        extra = str(context or "").strip()
+        if extra:
+            prompt = f"{prompt}\n\n{extra}"
         body = {
             "model": self.model,
             "temperature": 0,
-            "max_tokens": 400,
+            "max_tokens": 900 if context else 400,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -156,6 +159,12 @@ class MistralVisionAdvisor:
         parsed = _parse_json(_content_of(payload))
         mood = str(parsed.get("mood") or "").strip()
         rationale = str(parsed.get("rationale") or "").strip()
+        description = " ".join(str(parsed.get("description") or "").split())
+        summary = " ".join(str(parsed.get("summary") or "").split())
+        if len(description) > 1200:
+            description = description[:1200].rstrip()
+        if len(summary) > 500:
+            summary = summary[:500].rstrip()
         return Atmosphere(
             exposure_ev=_number(parsed, "exposure_ev") or 0.0,
             contrast=_number(parsed, "contrast") or 0.0,
@@ -168,4 +177,6 @@ class MistralVisionAdvisor:
             mood=mood or "model suggestion",
             rationale=rationale or f"Suggestion from {self.model}.",
             source=f"mistral:{self.model}",
+            scene_description=description,
+            scene_summary=summary,
         )

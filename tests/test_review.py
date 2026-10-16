@@ -145,6 +145,24 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("reflection", paragraph)
         self.assertFalse(reviewed["caps_open"])
 
+    def test_water_in_the_scene_description_is_kept(self) -> None:
+        plan = empty_plan(["grade"])
+        plan = apply_proposal(
+            plan,
+            {
+                "status": "gemini",
+                "paragraph": "Darken the water.",
+                "stages": [
+                    {"stage": "foreground", "action": "darken", "reason": "The water should go darker."},
+                ],
+            },
+        )
+        picture = type("Picture", (), {"type": "animal", "reason": "A compact subject."})()
+        reading = type("Reading", (), {"sentence": "The subject is darker than the ground.", "regions": [], "problems": [], "leave_alone": []})()
+        reviewed = review_plan(plan, picture, reading, "", "A heron stands over dark water.")
+        self.assertIn("water", str(reviewed["reasoning"]["paragraph"]).lower())
+        self.assertTrue(any(item.get("target") == "foreground" for item in reviewed["asks"]))
+
 
 class WarmerNightTests(unittest.TestCase):
     def test_warmer_on_a_night_frame_does_not_install_a_red_cast(self) -> None:

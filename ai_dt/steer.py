@@ -498,6 +498,12 @@ def apply_proposal(plan: dict, proposal: dict) -> dict:
             proposed.append({"stage": "gradient", "action": action, "reason": reason, "source": "reasoner"})
     updated["proposed"] = proposed
     updated["skip_by"] = skip_by
+    if proposal.get("operations"):
+        updated["operations"] = [
+            dict(item) for item in proposal["operations"] if isinstance(item, dict)
+        ]
+    if proposal.get("dropped"):
+        updated["dropped"] = [str(item) for item in proposal["dropped"] if str(item).strip()]
     # A reasoner never opens the caps. Leave a strong flag the user already set.
     return _sync_caps(updated)
 
@@ -551,32 +557,6 @@ def revise_plan(plan: dict, sentence: str) -> dict:
         updated["user"] = True
     updated = _sync_caps(updated)
     updated = _ensure_paragraph(updated)
-    if _request_story(updated) and not parsed["gradient"] and "gradient" not in parsed["skip"]:
-        # The sentence is the bird, the dark water, and the reflection.
-        # A model gradient or a sky darken is not part of that request.
-        user_sky = any(
-            item.get("source") == "user" and item.get("target") == "sky" for item in parsed["asks"]
-        )
-        updated["gradient"] = False
-        updated["gradient_by"] = ""
-        updated["skip"] = [stage for stage in updated["skip"] if stage != "gradient"]
-        skip_by = dict(updated.get("skip_by") or {})
-        skip_by.pop("gradient", None)
-        updated["skip_by"] = skip_by
-        updated["asks"] = [
-            item
-            for item in updated["asks"]
-            if item.get("source") == "user"
-            or (
-                item.get("verb") != "gradient"
-                and not (item.get("target") == "sky" and not user_sky)
-            )
-        ]
-        updated["proposed"] = [
-            item
-            for item in updated["proposed"]
-            if item.get("stage") not in {"gradient", "sky"} or (item.get("stage") == "sky" and user_sky)
-        ]
     if any(item.get("target") == "reflection" for item in parsed["asks"]) and "reflection" not in parsed["skip"]:
         # A guide or reasoner skip loses to a request to change the mirror.
         updated["skip"] = [stage for stage in updated["skip"] if stage != "reflection"]
@@ -624,6 +604,12 @@ def _copy_plan(plan: dict) -> dict:
         "features_done": [str(item) for item in (plan.get("features_done") or [])],
         "features_next": str(plan.get("features_next") or ""),
         "features_path": [str(item) for item in (plan.get("features_path") or [])],
+        "operations": [dict(item) for item in (plan.get("operations") or []) if isinstance(item, dict)],
+        "dropped": [str(item) for item in (plan.get("dropped") or []) if str(item).strip()],
+        "catalog_chosen": bool(plan.get("catalog_chosen")),
+        "history_chosen": [str(item) for item in (plan.get("history_chosen") or [])],
+        "history_skipped": [str(item) for item in (plan.get("history_skipped") or [])],
+        "display": str(plan.get("display") or ""),
     }
 
 
@@ -803,49 +789,11 @@ def _user_ask(plan: dict, target: str, verbs: set[str]) -> bool:
     return False
 
 
-def _request_story(plan: dict) -> str:
-    """The paragraph for a bird, dark water, and a clearer reflection.
-
-    Written when the model did not return one. It follows the sentence,
-    not a flower detector.
-    """
-
-    keep_subject = _user_ask(plan, "subject", {"lift", "hold"})
-    dark_water = _user_ask(plan, "foreground", {"darken"}) or _user_ask(plan, "rock", {"darken"})
-    clear_reflection = _user_ask(plan, "reflection", {"lift"})
-    if not (keep_subject and dark_water and clear_reflection):
-        return ""
-    word = str(plan.get("strong_word") or "strong")
-    sentences = [
-        "The bird is the subject, so it stays lifted and is not crushed.",
-        "The water around it should go darker.",
-        "The reflection under the bird should get clearer.",
-        "The rest of the frame stays background.",
-    ]
-    if plan.get("caps_open"):
-        sentences.append(f"Caps open because you said {word}.")
-    return " ".join(sentences)
-
-
-def _covers_request(paragraph: str, plan: dict) -> bool:
-    if not paragraph or _is_placeholder(paragraph):
-        return False
-    text = paragraph.lower()
-    if _user_ask(plan, "reflection", {"lift", "hold", "darken"}) and "reflect" not in text:
-        return False
-    if _user_ask(plan, "subject", {"lift", "hold"}) and "bird" not in text and "subject" not in text:
-        return False
-    if _user_ask(plan, "foreground", {"darken"}) or _user_ask(plan, "rock", {"darken"}):
-        if not any(word in text for word in ("dark", "water", "surround")):
-            return False
-    return True
-
-
 def _ensure_paragraph(plan: dict) -> dict:
+    """Keep the paragraph the model wrote. Do not replace it with a stock story."""
+
     reasoning = dict(plan.get("reasoning") or {})
     current = _usable_paragraph(str(reasoning.get("paragraph") or ""))
-    if _request_story(plan) and not _covers_request(current, plan):
-        current = _request_story(plan)
     if current:
         reasoning["paragraph"] = current
     plan["reasoning"] = reasoning
@@ -952,11 +900,7 @@ def _visible_lines(plan: dict) -> list[dict]:
         stage = str(line.get("stage") or "")
         if line.get("skipped") and source not in {"user", "reasoner"}:
             continue
-        if stage == "foreground" and _request_story(plan):
-            continue
         if not line.get("skipped") and stage in {"grade", "vignette"}:
-            continue
-        if stage == "gradient" and _request_story(plan) and str(plan.get("gradient_by") or "") != "user":
             continue
         visible.append(line)
     return visible

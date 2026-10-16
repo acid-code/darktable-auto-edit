@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 
 from PIL import Image
 
+from ai_dt.catalog import technical_brief
 from ai_dt.advisors.combine import combine_atmospheres
 from ai_dt.advisors.histogram import HistogramAdvisor, refine_for_subjects
 from ai_dt.advisors.mistral_vision import MistralVisionAdvisor
@@ -26,7 +28,7 @@ from ai_dt.masks_xmp import MASKS_REASON, ellipse_sidecar, masks_can_attach
 from ai_dt.modules_extra import append_extra_modules, retouch_decision
 from ai_dt.guides.decide import apply_steer_scene, decide_picture
 from ai_dt.guides.library import match_guide
-from ai_dt.reading import linear_falloff, read_frame
+from ai_dt.reading import _core_box, _luma, _mean, linear_falloff, read_frame
 from ai_dt.recipes.library import blend_look, match_vibe, scene_from_detections
 from ai_dt.recipes.reason import reason_about
 from ai_dt.recipes.recommend import recommend_looks
@@ -202,6 +204,7 @@ def _advise(
     choice: str,
     ollama_model: str,
     prompt_path: Path | None,
+    context: str = "",
 ) -> tuple[Atmosphere, Atmosphere | None, list[str]]:
     if choice not in ADVISORS:
         raise AdvisorUnavailable(f"Unknown advisor {choice!r}")
@@ -213,7 +216,7 @@ def _advise(
     # stay explicit: neither sends the picture to Mistral.
     if choice == "auto" and os.environ.get("MISTRAL_API_KEY", "").strip():
         try:
-            suggestion = MistralVisionAdvisor(prompt_path).advise(image, image_path)
+            suggestion = MistralVisionAdvisor(prompt_path).advise(image, image_path, context)
         except AdvisorUnavailable as exc:
             notes.append(str(exc))
     if suggestion is None and choice in ("auto", "ollama"):
@@ -234,6 +237,175 @@ def _atmosphere_from(data: object) -> Atmosphere | None:
         if name in data:
             kwargs[name] = data[name]
     return Atmosphere(**kwargs)
+
+
+def _stored_recipe(output_dir: Path | None) -> dict:
+    if output_dir is None:
+        return {}
+    path = Path(output_dir) / "output.json"
+    if not path.is_file():
+        return {}
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_IMPERATIVE = re.compile(
+    r"^(adjust|enhance|keep|keeping|maintain|focus|focusing|make|increase|decrease|"
+    r"reduce|lift|darken|brighten|preserve|ensure|add|remove|boost|soften|sharpen|"
+    r"hold|leave|avoid)\b",
+    re.IGNORECASE,
+)
+_INSTRUCTION = re.compile(
+    r"\b(should(?:\s+\w+){0,4}\s+(?:stand|be|stay|get|remain|look)|"
+    r"while keeping|maintain a|focusing on|minimal distraction|adjust the|enhance the)\b",
+    re.IGNORECASE,
+)
+
+
+def _sentence_is_instruction(sentence: str) -> bool:
+    text = sentence.strip()
+    if not text:
+        return False
+    return bool(_IMPERATIVE.match(text) or _INSTRUCTION.search(text))
+
+
+def _observations(text: str) -> str:
+    """Sentences that say what is in the picture. Edit orders are left out."""
+
+    parts = re.split(r"(?<=[.!?])\s+", " ".join(str(text or "").split()))
+    return " ".join(part for part in parts if part and not _sentence_is_instruction(part))
+
+
+def _vision_context(brief: str, scene_text: str, *, describe: bool) -> str:
+    parts = []
+    if brief.strip():
+        parts.append("Technical snapshot:\n" + brief.strip())
+    if describe:
+        parts.append(
+            "Describe what is already in the photograph: the subject, where it is, the light, "
+            "and the background. State what you see. Do not write an edit order such as adjust, "
+            "enhance, keep, or maintain. Put that in description and summary, and also return the numeric keys."
+        )
+    else:
+        if scene_text.strip():
+            parts.append(
+                "Photo description, already confirmed. Do not replace it:\n" + scene_text.strip()
+            )
+        parts.append(
+            "Return mood, rationale, and the numeric keys. Leave description and summary empty."
+        )
+    return "\n\n".join(parts)
+
+
+def _write_description(
+    output_dir: Path,
+    scene: dict,
+    brief: str,
+    picture_line: str,
+    analysis: dict,
+) -> dict:
+    """Store the photo description. An existing plan keeps its steps."""
+
+    import json
+
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "output.json"
+    existing: dict = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = {}
+        if isinstance(loaded, dict):
+            existing = loaded
+    has_plan = isinstance(existing.get("plan"), dict) and bool(existing.get("plan"))
+    if has_plan or existing.get("modules") or existing.get("features_next"):
+        existing["scene"] = scene
+        existing["technical_brief"] = brief
+        if picture_line and not existing.get("picture_backend"):
+            existing["picture_backend"] = picture_line
+        path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        return existing
+    recipe = {
+        "version": 1,
+        "scene": scene,
+        "technical_brief": brief,
+        "picture_backend": picture_line,
+        "offer_looks": False,
+        "choices": [],
+        "plan": {},
+        "analysis": analysis,
+        "status_text": (
+            (picture_line + "\n" if picture_line else "")
+            + "Description is ready. Edit it if the read is wrong, then press Propose looks."
+        ),
+    }
+    path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8")
+    return recipe
+
+
+def _scene_record(
+    suggestion: Atmosphere | None,
+    sentence: str,
+    user_text: str,
+    stored: dict,
+    *,
+    rewrite: bool,
+) -> dict:
+    user = " ".join(str(user_text or "").split())
+    saved = stored if isinstance(stored, dict) else {}
+    if user and not rewrite:
+        observed = _observations(user)
+        if observed:
+            description = _observations(str(saved.get("description") or "")) or observed
+            return {"description": description, "summary": observed, "source": "user"}
+    stored_summary = " ".join(str(saved.get("summary") or "").split())
+    stored_ok = _observations(stored_summary) if str(saved.get("source") or "") != "user" else stored_summary
+    if str(saved.get("source") or "") == "user" and stored_summary and not rewrite:
+        kept = _observations(stored_summary)
+        if kept:
+            description = _observations(str(saved.get("description") or "")) or kept
+            return {"description": description, "summary": kept, "source": "user"}
+    if stored_ok and stored_ok == stored_summary and not rewrite:
+        description = " ".join(str(saved.get("description") or "").split()) or stored_summary
+        description = _observations(description) or stored_summary
+        return {
+            "description": description,
+            "summary": stored_summary,
+            "source": str(saved.get("source") or "mistral"),
+        }
+    description = ""
+    summary = ""
+    if suggestion is not None:
+        description = _observations(suggestion.scene_description)
+        summary = _observations(suggestion.scene_summary)
+    saw_model = bool(summary or description)
+    lead = " ".join(str(sentence or "").split())
+    if not summary:
+        summary = description or lead
+    if not description:
+        description = summary
+    source = "mistral" if suggestion is not None and saw_model else "reading"
+    return {"description": description, "summary": summary, "source": source}
+
+
+def _frame_levels(pixels: object, picture: object) -> tuple[float | None, float | None]:
+    import numpy as np
+
+    array = np.asarray(pixels)
+    if array.ndim != 3 or array.shape[2] < 3:
+        return None, None
+    view = np.clip(array.astype(np.float32, copy=False), 0.0, 1.0)
+    frame = float(_luma(view).mean())
+    box = getattr(picture, "subject_box", None)
+    subject = _mean(view, None if box is None else _core_box(tuple(box)))
+    return subject, frame
 
 
 def _status(output_dir: Path | None, text: str) -> None:
@@ -274,6 +446,9 @@ def analyze(
     picture_only: bool = False,
     saved_advice: dict | None = None,
     proposal: dict | None = None,
+    scene_text: str = "",
+    rewrite_scene: bool = False,
+    describe_only: bool = False,
 ) -> dict:
     """Analyze one image and return the recipe written to ``output.json``.
 
@@ -290,14 +465,21 @@ def analyze(
     image = loaded.image
     detections, detector_notes = _detect(image, detector, yolo_model)
     detections = gate_faces(loaded.pixels, detections)
+    stored = _stored_recipe(output_dir)
+    stored_scene = stored.get("scene") if isinstance(stored.get("scene"), dict) else {}
+    stored_stages = [
+        str(item)
+        for item in ((stored.get("separation") or {}).get("stages_ran") or [])
+        if str(item).strip()
+    ]
     if saved_advice is not None:
         measured = HistogramAdvisor().advise(image)
         suggestion = _atmosphere_from(saved_advice.get("suggestion"))
         advisor_notes = [str(item) for item in (saved_advice.get("advisor_notes") or [])]
     else:
-        measured, suggestion, advisor_notes = _advise(
-            image, path, advisor, ollama_model, prompt_path
-        )
+        measured = HistogramAdvisor().advise(image)
+        suggestion = None
+        advisor_notes = []
     # The picture type picks the guide. A written description then joins the
     # recipes whose explanations belong: one grade on the frame, and the
     # others as masks on a subject or a line. Drop a false animal label
@@ -305,6 +487,31 @@ def analyze(
     picture = decide_picture(loaded.pixels, detections)
     picture, detections, subject_name, scene_override = apply_steer_scene(picture, detections, steer)
     measured = refine_for_subjects(image, measured, detections)
+    subject_level, frame_level = _frame_levels(loaded.pixels, picture)
+    measured_brief = technical_brief(
+        measured,
+        subject_brightness=subject_level,
+        frame_brightness=frame_level,
+        stages=stored_stages,
+    )
+    user_scene = " ".join(str(scene_text or "").split())
+    stored_summary = " ".join(str(stored_scene.get("summary") or "").split())
+    if str(stored_scene.get("source") or "") == "user":
+        stored_usable = bool(stored_summary)
+    else:
+        stored_usable = bool(stored_summary) and _observations(stored_summary) == stored_summary
+    describe = bool(rewrite_scene) or not (_observations(user_scene) or stored_usable)
+    held_scene = user_scene or str(stored_scene.get("summary") or "")
+    if saved_advice is None:
+        _measured, suggestion, advisor_notes = _advise(
+            image,
+            path,
+            advisor,
+            ollama_model,
+            prompt_path,
+            _vision_context(measured_brief, held_scene, describe=describe),
+        )
+        measured.source = _measured.source if suggestion is None else measured.source
     atmosphere = combine_atmospheres(measured, suggestion)
     guide_match = match_guide(picture.type, directory=guides_dir)
     reading = read_frame(loaded.pixels, picture, detections, subject_name=subject_name)
@@ -371,9 +578,54 @@ def analyze(
             "suggestion": suggestion.to_dict() if suggestion is not None else None,
             "advisor_notes": advisor_notes,
         }
+    scene = _scene_record(
+        suggestion,
+        reading.sentence,
+        scene_text,
+        stored_scene,
+        rewrite=rewrite_scene,
+    )
+    grade_brief = technical_brief(
+        atmosphere,
+        subject_brightness=subject_level,
+        frame_brightness=frame_level,
+        stages=stored_stages,
+    )
+    scene_for_model = "\n".join(
+        part for part in (scene.get("summary"), scene.get("description")) if str(part or "").strip()
+    )
+    if describe_only:
+        picture_line = picture_backend_line(str(atmosphere.source or ""), advisor_notes)
+        analysis = {
+            "mood": atmosphere.mood,
+            "rationale": atmosphere.rationale,
+            "atmosphere": atmosphere.to_dict(),
+            "measured": measured.to_dict(),
+            "llm": suggestion.to_dict() if suggestion is not None else None,
+        }
+        if output_dir is None:
+            return {
+                "scene": scene,
+                "technical_brief": grade_brief,
+                "picture_backend": picture_line,
+                "offer_looks": False,
+                "analysis": analysis,
+            }
+        return _write_description(output_dir, scene, grade_brief, picture_line, analysis)
     if proposal is None:
         _status(output_dir, "Asking Gemini…")
-    chosen = proposal if proposal is not None else propose_stages(reading.sentence, vibe, preset_name, steer)
+    chosen = (
+        proposal
+        if proposal is not None
+        else propose_stages(
+            reading.sentence,
+            vibe,
+            preset_name,
+            steer,
+            scene=scene_for_model,
+            brief=grade_brief,
+        )
+    )
     # User sentence, then locks from a found subject, then the model, then the guide.
     waiting_step = str(plan.get("features_next") or "")
     plan = resolve_plan(
@@ -385,6 +637,7 @@ def analyze(
         picture=picture,
         reading=reading,
         detections=detections,
+        scene=scene_for_model,
     )
     reasoning = reason_about(
         picture,
@@ -412,6 +665,11 @@ def analyze(
     caps_open = bool(bundle["caps_open"]) if steer.strip() else False
     intents = _finish_intents(bundle)
     include_vignette = "vignette" not in set(bundle["skip"])
+    history_skipped = {str(item) for item in (plan.get("history_skipped") or [])}
+    include_exposure = "exposure" not in history_skipped
+    include_color = "colorbalancergb" not in history_skipped
+    if "vignette" in history_skipped:
+        include_vignette = False
     atmosphere = apply_expert_requests(atmosphere, plan)
     recipe_id = match.recipe.id if match.recipe is not None else ""
     faithful = picked in {"", "faithful"} and (not recipe_id or "faithful" in recipe_id)
@@ -431,6 +689,8 @@ def analyze(
         vignette_strength=vignette_strength,
         picture=picture,
         include_vignette=include_vignette,
+        include_exposure=include_exposure,
+        include_color=include_color,
         opened=caps_open,
     )
     def _render(mask_features: list[str]) -> tuple[object, dict]:
@@ -579,6 +839,8 @@ def analyze(
         or (feature_title(next_feature) if next_feature else ""),
         "features_next_action": str(plan.get("features_next_action") or ""),
         "feature_note": feature_note,
+        "scene": scene,
+        "technical_brief": grade_brief,
         "subject_name": subject_name,
         "look_id": picked or "faithful",
         "run": assess_run(picture.type, separation),

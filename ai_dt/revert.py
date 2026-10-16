@@ -165,6 +165,14 @@ def strip_ai_history(document: str) -> tuple[str, int]:
             return tag
 
         cleaned = _HISTORY_ITEM.sub(drop_masks, cleaned)
+
+    def drop_named_masks(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if is_ai_editor_history_name(_attr(tag, "darktable:mask_name")):
+            return ""
+        return tag
+
+    cleaned = _HISTORY_ITEM.sub(drop_named_masks, cleaned)
     if removed_before_end:
 
         def move_end(match: re.Match[str]) -> str:
@@ -173,6 +181,46 @@ def strip_ai_history(document: str) -> tuple[str, int]:
 
         cleaned = re.sub(r'darktable:history_end="(\d+)"', move_end, cleaned, count=1)
     return cleaned, removed
+
+
+def move_history_cursor(document: str, direction: int) -> tuple[str, str, int]:
+    """Move ``history_end`` by one step and keep every history item.
+
+    ``direction`` -1 steps back. ``direction`` 1 steps forward into the
+    redo stack. The returned name is the module instance that crossed the
+    cursor. Masks stay where they are; the module that owns one simply
+    becomes active or inactive with the cursor. A cursor already at the
+    end of the stack does not write a new document.
+    """
+
+    history_tags = [
+        match.group(0)
+        for match in _HISTORY_ITEM.finditer(document)
+        if _attr(match.group(0), "darktable:operation")
+    ]
+    end_match = re.search(r'darktable:history_end="(\d+)"', document)
+    if not history_tags or end_match is None:
+        return document, "", 0
+    history_end = int(end_match.group(1))
+    if direction < 0:
+        if history_end <= 0:
+            return document, "", 0
+        crossed = history_tags[history_end - 1]
+        new_end = history_end - 1
+    elif direction > 0:
+        if history_end >= len(history_tags):
+            return document, "", 0
+        crossed = history_tags[history_end]
+        new_end = history_end + 1
+    else:
+        return document, "", 0
+    updated = re.sub(
+        r'darktable:history_end="\d+"',
+        f'darktable:history_end="{new_end}"',
+        document,
+        count=1,
+    )
+    return updated, _attr(crossed, "darktable:multi_name"), 1
 
 
 def collapse_history_to_cursor(document: str) -> tuple[str, int]:
@@ -245,7 +293,38 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Drop history after history_end instead of removing AI rows.",
     )
+    parser.add_argument(
+        "--step-xmp",
+        action="store_true",
+        help="Move history_end by one and keep every history item.",
+    )
+    parser.add_argument(
+        "--direction",
+        default="",
+        help="back or next. Used with --step-xmp.",
+    )
     args = parser.parse_args(argv)
+    if args.xmp and args.step_xmp:
+        source = Path(args.xmp)
+        if not source.is_file():
+            print(f"sidecar not found: {source}", file=sys.stderr)
+            return 1
+        if not args.xmp_out:
+            print("a stepped sidecar needs --xmp-out", file=sys.stderr)
+            return 1
+        direction = -1 if args.direction == "back" else 1 if args.direction == "next" else 0
+        if direction == 0:
+            print("direction must be back or next", file=sys.stderr)
+            return 1
+        updated, name, moved = move_history_cursor(source.read_text(encoding="utf-8"), direction)
+        if moved == 0:
+            print("moved 0")
+            return 0
+        destination = Path(args.xmp_out)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(updated, encoding="utf-8", newline="\n")
+        print(f"moved 1\nname {name}")
+        return 0
     if args.xmp and args.collapse_xmp:
         source = Path(args.xmp)
         if not source.is_file():

@@ -77,6 +77,15 @@
       color: var(--muted);
     }
     .pending[hidden], .sheet img[hidden] { display: none; }
+    #cancel {
+      font: inherit;
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 14px;
+      cursor: pointer;
+    }
     .sheet strong { display: block; font-weight: 600; }
     .sheet span { color: var(--muted); font-size: 0.95rem; }
     @media (max-width: 640px) {
@@ -88,8 +97,9 @@
 <body>
   <header>
     <h1>Looks</h1>
-    <p class="lede">Each picture is one edit. Choose it here or on the Darktable panel. Either choice opens the masked picture, and the original file stays unchanged.</p>
+    <p class="lede">Choose a look here. It is applied to the photo that is open. Cancel leaves that photo on its current plan.</p>
     <p class="status" id="status" role="status">Loading the looks…</p>
+    <p><button type="button" id="cancel">Cancel</button></p>
   </header>
   <div class="sheet" id="sheet" role="group" aria-label="Looks"></div>
   <script>
@@ -183,7 +193,7 @@
         return true;
       }
       paint(cards);
-      say("Choose a look. The same names are on the Darktable panel.");
+      say("Choose a look. Cancel keeps the current plan.");
       return true;
     }
 
@@ -206,7 +216,13 @@
         const response = await fetch("/api/pick?work=" + encodeURIComponent(work));
         if (!response.ok) return;
         const pick = await response.json();
-        if (!pick || !pick.id || pick.id === chosen) return;
+        if (!pick || !pick.id) return;
+        if (pick.id === "cancel" || pick.cancelled) {
+          say("Cancelled. The current plan stays.");
+          leave();
+          return;
+        }
+        if (pick.id === chosen) return;
         mark(pick.id);
         const card = cards.find((item) => item.id === pick.id);
         const name = (card && card.title) || pick.title || pick.id;
@@ -218,6 +234,21 @@
         return;
       }
     }
+
+    document.querySelector("#cancel").addEventListener("click", async () => {
+      say("Cancelling. The current plan stays.");
+      try {
+        await fetch("/api/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work, id: "cancel" }),
+        });
+      } catch (error) {
+        say(error.message || "Cancel was not saved", true);
+        return;
+      }
+      leave();
+    });
 
     async function start() {
       let ready = false;

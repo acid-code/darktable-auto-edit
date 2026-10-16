@@ -1,0 +1,20 @@
+---
+description: New editor actions turn on only when their state is ready, and turn off when that state ends
+alwaysApply: true
+---
+
+# Use a feature only when it is ready
+
+A new button, window, or plan step waits for the state that makes it valid. It does not run a different action on the way there.
+
+- **Propose** writes a plan. It does not open the looks window.
+- **Looks** opens only after that plan has choices (`offer_looks` and a real choice). It does not start another plan.
+- **Cancel** is on only while that window is waiting. It turns off after a choice, a cancel, or a photo change.
+- **Accept** and **Skip** are on only while a step is waiting.
+- **Back** is on when history can move back one step. **Next** is on only when a later step is still there.
+- **Revert AI edit** is on only when this photo's history contains an AI step.
+- **Copy** is on when a photo is open.
+
+One refresh owns whether each control is enabled. A busy flag must not turn a control back on if its state is gone. Switching photos clears a pending look.
+
+When adding a feature, name the state that enables it, the state that disables it, and the one action it performs. If that state is missing, leave the control off and do not invent a fallback that starts something else.

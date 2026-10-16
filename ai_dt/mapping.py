@@ -386,6 +386,8 @@ def build_modules(
     picture: object | None = None,
     *,
     include_vignette: bool = True,
+    include_exposure: bool = True,
+    include_color: bool = True,
     opened: bool = False,
 ) -> tuple[Atmosphere, list[dict], list[dict], list[dict]]:
     """Return the adjusted atmosphere, module records, local edits, and raw blobs.
@@ -413,31 +415,37 @@ def build_modules(
     color_values = _warmth_to_color(adjusted, night=night)
     exposure_blob = exposure_params(adjusted.exposure_ev, adjusted.black)
     color_blob = colorbalance_params(color_values)
-    modules = [
-        {
-            "operation": "exposure",
-            "modversion": EXPOSURE_VERSION,
-            "multi_name": "AI exposure",
-            "multi_priority": 1,
-            "enabled": True,
-            "params": {
-                "exposure": round(clamp(adjusted.exposure_ev, -3.0, 3.0), 4),
-                "black": round(clamp(adjusted.black, -1.0, 1.0), 4),
-            },
-        },
-        {
-            "operation": "colorbalancergb",
-            "modversion": COLORBALANCE_VERSION,
-            "multi_name": "AI color",
-            "multi_priority": 1,
-            "enabled": True,
-            "params": {key: round(float(value), 4) for key, value in color_values.items()},
-        },
-    ]
-    blobs = [
-        _plugin(0, "exposure", EXPOSURE_VERSION, exposure_blob, "AI exposure"),
-        _plugin(1, "colorbalancergb", COLORBALANCE_VERSION, color_blob, "AI color"),
-    ]
+    modules = []
+    blobs = []
+    if include_exposure:
+        modules.append(
+            {
+                "operation": "exposure",
+                "modversion": EXPOSURE_VERSION,
+                "multi_name": "AI exposure",
+                "multi_priority": 1,
+                "enabled": True,
+                "params": {
+                    "exposure": round(clamp(adjusted.exposure_ev, -3.0, 3.0), 4),
+                    "black": round(clamp(adjusted.black, -1.0, 1.0), 4),
+                },
+            }
+        )
+        blobs.append(_plugin(0, "exposure", EXPOSURE_VERSION, exposure_blob, "AI exposure"))
+    if include_color:
+        modules.append(
+            {
+                "operation": "colorbalancergb",
+                "modversion": COLORBALANCE_VERSION,
+                "multi_name": "AI color",
+                "multi_priority": 1,
+                "enabled": True,
+                "params": {key: round(float(value), 4) for key, value in color_values.items()},
+            }
+        )
+        blobs.append(
+            _plugin(len(blobs), "colorbalancergb", COLORBALANCE_VERSION, color_blob, "AI color")
+        )
 
     target = _choose_vignette_target(detections, picture) if include_vignette else None
     vignette = (
@@ -479,6 +487,33 @@ def build_modules(
     return adjusted, modules, local_edits, blobs
 
 
+def step_history_name(
+    feature_id: str,
+    *,
+    again: bool = False,
+    title: str = "",
+) -> str:
+    """The history instance name Darktable stores for one accepted step."""
+
+    name = str(feature_id or "").strip()
+    if name == "subject":
+        return "Shine the subject" if again else "Subject lift"
+    if name == "foreground":
+        return "Darken the foreground"
+    if name == "opening":
+        return "Darken the bright gap"
+    if name == "shafts":
+        return "Darken the shafts"
+    if name == "highlights":
+        return "Warm the highlights"
+    if name == "eyes":
+        label = " ".join(str(title or "").split()) or "Eyes"
+        if len(label) > 48:
+            label = label[:48].rstrip()
+        return label
+    return ""
+
+
 def step_style(
     feature_id: str,
     *,
@@ -499,29 +534,29 @@ def step_style(
         "shafts": ("Darken the shafts", -0.16),
     }
     if name in exposure_steps:
-        title, ev = exposure_steps[name]
+        _title, ev = exposure_steps[name]
+        label = step_history_name(name, again=again, title=title)
         priority = 3 if again and name == "subject" else 2
         plugins = [
-            _plugin(0, "exposure", EXPOSURE_VERSION, exposure_params(ev), title, multi_priority=priority)
+            _plugin(0, "exposure", EXPOSURE_VERSION, exposure_params(ev), label, multi_priority=priority)
         ]
-        return render_style("AI accepted step", f"Accepted step: {title}.", plugins)
+        return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
     if name == "highlights":
         values = {"brilliance_highlights": 0.18, "saturation_highlights": 0.12}
+        label = step_history_name(name, again=again, title=title)
         plugins = [
             _plugin(
                 0,
                 "colorbalancergb",
                 COLORBALANCE_VERSION,
                 colorbalance_params(values),
-                "Warm the highlights",
+                label,
                 multi_priority=2,
             )
         ]
-        return render_style("AI accepted step", "Accepted step: Warm the highlights.", plugins)
+        return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
     if name == "eyes":
-        label = " ".join(str(title or "").split()) or "Eyes"
-        if len(label) > 48:
-            label = label[:48].rstrip()
+        label = step_history_name(name, again=again, title=title)
         priority = 5 if again else 4
         if action == "darken":
             values = {"brilliance_midtones": -0.1, "saturation_midtones": -0.06}

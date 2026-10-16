@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import re
 
+from ai_dt.drawn_mask import eye_ellipse
 from ai_dt.features import feature_title
 from ai_dt.reasoner import plain_gemini_failure
+from ai_dt.steer import active_stages
 from ai_dt.versions import version_sentence
 
 _MISTRAL = re.compile(r"mistral:([^\s+]+)")
@@ -139,6 +141,42 @@ def panel_status(recipe: dict) -> str:
     paragraph = str(reasoning.get("paragraph") or "").strip()
     if paragraph:
         lines.append(paragraph)
+    chat = bool(recipe.get("chat"))
+    if chat:
+        done = [str(item) for item in (plan.get("features_done") or []) if str(item).strip()]
+        waiting = [
+            str(item)
+            for item in (plan.get("features_path") or [])
+            if str(item).strip() and str(item) not in done
+        ]
+        steps = done + waiting
+        if steps:
+            lines.append("Steps: " + ", ".join(steps) + ".")
+        held = [str(item) for item in (plan.get("not_history") or []) if str(item).strip()]
+        if held:
+            lines.append(
+                "Not a history step: "
+                + ", ".join(held)
+                + ". A mask cannot be stored on this run."
+            )
+        if "eyes" in steps:
+            if eye_ellipse(list(recipe.get("local_edits") or [])):
+                lines.append(
+                    "Eyes is exposure inside an ellipse on the eyes. "
+                    "Accept adds that shape to the history already on this photo."
+                )
+            else:
+                lines.append(
+                    "Eyes is color balance on the whole frame. "
+                    "A mask on the eyes cannot be stored in the history."
+                )
+    else:
+        survived = [stage for stage in active_stages(plan) if stage != "grade"]
+        if survived and (paragraph or plan.get("catalog_chosen") or plan.get("operations")):
+            lines.append("Stages: " + ", ".join(survived) + ".")
+    dropped = [str(item) for item in (plan.get("dropped") or []) if str(item).strip()]
+    if dropped:
+        lines.append("Dropped: " + ", ".join(dropped) + ".")
     subject = str(recipe.get("subject_name") or "").strip()
     if subject:
         lines.append(f"Subject: {subject}.")

@@ -49,6 +49,8 @@ class Atmosphere:
     mood: str = ""
     rationale: str = ""
     source: str = ""
+    scene_description: str = ""
+    scene_summary: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)

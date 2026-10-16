@@ -239,37 +239,160 @@ def _promote(plan: dict, recipe: dict, leaving: str) -> None:
     recipe["features_next_action"] = str(follow.get("action") or "")
 
 
+def _refresh_handoff(recipe: dict) -> None:
+    if recipe.get("features_next"):
+        sentence = "This plan starts from the photo you are viewing. Nothing is added until you press Accept."
+    else:
+        sentence = "This plan starts from the photo you are viewing."
+    recipe["handoff"] = {"sentence": sentence}
+
+
+def _drop_undone_steps(plan: dict) -> None:
+    plan["step_log"] = [
+        item
+        for item in (plan.get("step_log") or [])
+        if isinstance(item, dict) and item.get("active")
+    ]
+
+
+def _remember_applied_step(plan: dict, recipe: dict, feature_id: str, name: str) -> None:
+    if not feature_id or not name:
+        return
+    log = [item for item in (plan.get("step_log") or []) if isinstance(item, dict)]
+    log.append(
+        {
+            "id": feature_id,
+            "name": name,
+            "title": str(recipe.get("features_next_title") or feature_id),
+            "action": str(recipe.get("features_next_action") or "lift"),
+            "active": True,
+        }
+    )
+    plan["step_log"] = log
+
+
+def _queue_from_log(plan: dict, recipe: dict) -> None:
+    log = [item for item in (plan.get("step_log") or []) if isinstance(item, dict)]
+    done = [str(item.get("id") or "") for item in log if item.get("active") and str(item.get("id") or "")]
+    seen = set(done)
+    queue: list[dict] = []
+    for item in log:
+        ident = str(item.get("id") or "")
+        if item.get("active") or not ident or ident in seen:
+            continue
+        queue.append(
+            {
+                "id": ident,
+                "action": str(item.get("action") or "lift"),
+                "title": str(item.get("title") or ident),
+            }
+        )
+        seen.add(ident)
+    for item in plan.get("step_queue") or []:
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or "")
+        if not ident or ident in seen:
+            continue
+        queue.append(item)
+        seen.add(ident)
+    follow = queue[0] if queue else {}
+    plan["features_done"] = done
+    plan["step_queue"] = queue
+    plan["features_path"] = [str(item.get("id") or "") for item in queue if str(item.get("id") or "")]
+    plan["features_next"] = str(follow.get("id") or "")
+    recipe["features_next"] = str(follow.get("id") or "")
+    recipe["features_next_title"] = str(follow.get("title") or "")
+    recipe["features_next_action"] = str(follow.get("action") or "")
+
+
+def align_plan_to_history(output_dir, name: str, direction: str) -> dict:
+    """Move the plan with the history cursor.
+
+    Back past a step this editor applied makes that step the waiting one.
+    Next puts it back among the done steps. A module the photographer
+    added does not change the plan.
+    """
+
+    _directory, path, recipe, plan = _load_recipe(output_dir)
+    log = [item for item in (plan.get("step_log") or []) if isinstance(item, dict)]
+    plan["step_log"] = log
+    matched = None
+    if direction == "back":
+        for item in reversed(log):
+            if item.get("active") and item.get("name") == name:
+                item["active"] = False
+                matched = item
+                break
+    elif direction == "next":
+        for item in log:
+            if not item.get("active") and item.get("name") == name:
+                item["active"] = True
+                matched = item
+                break
+    if matched is None:
+        return recipe
+    _queue_from_log(plan, recipe)
+    title = str(matched.get("title") or matched.get("id") or "This step")
+    if direction == "back":
+        recipe["feature_note"] = (
+            f"Back moved off {title}. Next puts that step back. "
+            "Accept writes it again and drops the later history."
+        )
+    else:
+        recipe["feature_note"] = f"Next put {title} back on this photo."
+    _refresh_handoff(recipe)
+    _save_recipe(path, recipe)
+    return recipe
+
+
 def commit_waiting_step(output_dir) -> dict:
     """Write one history module for the waiting step. Do not rebuild the look."""
 
-    from ai_dt.mapping import step_style
+    from ai_dt.drawn_mask import eye_ellipse
+    from ai_dt.mapping import step_history_name, step_style
 
     directory, path, recipe, plan = _load_recipe(output_dir)
     nxt = str(recipe.get("features_next") or "").strip()
-    again = "Another" in str(recipe.get("feature_note") or "")
-    xml = (
-        step_style(
-            nxt,
-            again=again,
-            title=str(recipe.get("features_next_title") or ""),
-            action=str(recipe.get("features_next_action") or "lift"),
-        )
-        if nxt
-        else None
-    )
     step_path = directory / "step.dtstyle"
-    if not xml:
+    again = "Another" in str(recipe.get("feature_note") or "")
+    mask = eye_ellipse(list(recipe.get("local_edits") or [])) if nxt == "eyes" else None
+    history_name = "AI eyes" if mask else step_history_name(
+        nxt,
+        again=again,
+        title=str(recipe.get("features_next_title") or ""),
+    )
+    if mask:
         if step_path.is_file():
             step_path.unlink()
         recipe.pop("step_style", None)
-        _save_recipe(path, recipe)
-        return recipe
-    step_path.write_text(xml, encoding="utf-8")
-    recipe["step_style"] = {
-        "name": "AI accepted step",
-        "file": str(step_path),
-        "feature": nxt,
-    }
+        recipe["step_mask"] = mask
+    else:
+        recipe.pop("step_mask", None)
+        xml = (
+            step_style(
+                nxt,
+                again=again,
+                title=str(recipe.get("features_next_title") or ""),
+                action=str(recipe.get("features_next_action") or "lift"),
+            )
+            if nxt
+            else None
+        )
+        if not xml:
+            if step_path.is_file():
+                step_path.unlink()
+            recipe.pop("step_style", None)
+            _save_recipe(path, recipe)
+            return recipe
+        step_path.write_text(xml, encoding="utf-8")
+        recipe["step_style"] = {
+            "name": "AI accepted step",
+            "file": str(step_path),
+            "feature": nxt,
+        }
+    _drop_undone_steps(plan)
+    _remember_applied_step(plan, recipe, nxt, history_name)
     done = [str(item) for item in (plan.get("features_done") or []) if str(item).strip()]
     if nxt not in done:
         done.append(nxt)
@@ -282,6 +405,7 @@ def commit_waiting_step(output_dir) -> dict:
             "This step is on this photo. The plan is finished. "
             "Type another change and press Ask."
         )
+    _refresh_handoff(recipe)
     _save_recipe(path, recipe)
     return recipe
 
@@ -302,17 +426,19 @@ def skip_waiting_step(output_dir) -> dict:
         plan["features_skipped"] = skipped
         _promote(plan, recipe, nxt)
     recipe["feature_note"] = "Skipped. The look was left as it is."
+    _refresh_handoff(recipe)
     _save_recipe(path, recipe)
     return recipe
 
 
-def plan_chat(output_dir, steer: str) -> dict:
+def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
     """Turn one sentence into the next steps. Do not grade the photo again."""
 
     import json
 
+    from ai_dt.catalog import apply_operations, operation_features, technical_brief
     from ai_dt.reasoner import propose_gemini, propose_ollama
-    from ai_dt.status_text import plan_backend_line
+    from ai_dt.status_text import panel_status, plan_backend_line
     from ai_dt.steer import apply_proposal, revise_plan
 
     directory, path, recipe, plan = _load_recipe(output_dir)
@@ -332,7 +458,30 @@ def plan_chat(output_dir, steer: str) -> dict:
         if isinstance(stage, dict):
             vibe = str(stage.get("vibe") or "")
             preset = str(stage.get("preset") or "")
-    asked = propose_gemini(sentence, vibe, preset, steer)
+    scene = recipe.get("scene") if isinstance(recipe.get("scene"), dict) else {}
+    typed = " ".join(str(scene_text or "").split())
+    if typed:
+        scene = {
+            "description": " ".join(str(scene.get("description") or "").split()) or typed,
+            "summary": typed,
+            "source": "user",
+        }
+        recipe["scene"] = scene
+    scene_for_model = "\n".join(
+        part
+        for part in (scene.get("summary"), scene.get("description"))
+        if str(part or "").strip()
+    )
+    analysis = recipe.get("analysis") if isinstance(recipe.get("analysis"), dict) else {}
+    atmosphere = analysis.get("atmosphere") if isinstance(analysis.get("atmosphere"), dict) else {}
+    ran = [
+        str(item)
+        for item in ((recipe.get("separation") or {}).get("stages_ran") or [])
+        if str(item).strip()
+    ]
+    brief = technical_brief(atmosphere, stages=ran)
+    recipe["technical_brief"] = brief
+    asked = propose_gemini(sentence, vibe, preset, steer, scene=scene_for_model, brief=brief)
     proposal = asked.get("proposal") if isinstance(asked.get("proposal"), dict) else None
     if asked.get("ask_ollama"):
         asked = propose_ollama(
@@ -342,6 +491,8 @@ def plan_chat(output_dir, steer: str) -> dict:
             steer,
             failure=str(asked.get("failure") or ""),
             gemini_tried=bool(asked.get("gemini_tried")),
+            scene=scene_for_model,
+            brief=brief,
         )
         proposal = asked.get("proposal") if isinstance(asked.get("proposal"), dict) else None
     (directory / "proposal.json").write_text(json.dumps(asked, indent=2) + "\n", encoding="utf-8")
@@ -351,7 +502,15 @@ def plan_chat(output_dir, steer: str) -> dict:
         plan = apply_proposal(plan, proposal)
     if str(steer or "").strip():
         plan = revise_plan(plan, steer)
-    plan = select_mask_features(plan, proposal if isinstance(proposal, dict) else {}, [], steer, sentence, "")
+    operations = [item for item in ((proposal or {}).get("operations") or []) if isinstance(item, dict)]
+    plan = apply_operations(plan, operations, list((proposal or {}).get("dropped") or []))
+    grounded = f"{sentence} {scene_for_model}".strip()
+    merged = dict(proposal) if isinstance(proposal, dict) else {}
+    extra = operation_features(operations)
+    if extra:
+        merged["features"] = [item for item in (merged.get("features") or []) if isinstance(item, dict)] + extra
+    plan = select_mask_features(plan, merged, [], steer, grounded, "")
+    plan = _install_history_steps(plan, operations)
     recipe["plan"] = plan
     nxt = str(plan.get("features_next") or "")
     recipe["features_next"] = nxt
@@ -371,6 +530,7 @@ def plan_chat(output_dir, steer: str) -> dict:
     if step_path.is_file():
         step_path.unlink()
     recipe.pop("step_style", None)
+    recipe["status_text"] = panel_status(recipe)
     _save_recipe(path, recipe)
     return recipe
 
@@ -380,6 +540,84 @@ def _step_title(reason: str, step: str) -> str:
     if len(title) > 80:
         title = title[:80].rstrip()
     return title or feature_title(step)
+
+
+_HISTORY_STEP = {
+    "subject": "subject",
+    "eyes": "eyes",
+    "eye": "eyes",
+    "foreground": "foreground",
+    "surround": "foreground",
+    "opening": "opening",
+    "shafts": "shafts",
+    "highlights": "highlights",
+}
+_NOT_HISTORY = frozenset({"reflection", "background", "skin", "sky"})
+
+
+def history_steps(operations: list[dict] | None) -> tuple[list[dict], list[str]]:
+    """Accept steps a history module can hold, in the model's order.
+
+    A reflection or a background stays out. Those grades are painted into
+    the preview, and a style cannot store the mask.
+    """
+
+    from ai_dt.mapping import step_style
+
+    found: list[dict] = []
+    seen: set[str] = set()
+    held: list[str] = []
+    for item in operations or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("id") or "").strip().lower()
+        action = str(item.get("action") or "include").strip().lower()
+        if not name or action == "skip":
+            continue
+        step = _HISTORY_STEP.get(name)
+        if step is None:
+            if name in _NOT_HISTORY and name not in held:
+                held.append(name)
+            continue
+        if step in seen or step_style(step) is None:
+            if name in _NOT_HISTORY and name not in held:
+                held.append(name)
+            continue
+        seen.add(step)
+        reason = " ".join(str(item.get("reason") or "").split())
+        verb = action if action in {"lift", "darken", "hold"} else "lift"
+        found.append({"id": step, "action": verb, "title": reason or feature_title(step)})
+    return found, held
+
+
+def _install_history_steps(plan: dict, operations: list[dict]) -> dict:
+    """Put the model's history steps on the accept queue, ahead of leftovers."""
+
+    chosen, held = history_steps(operations)
+    if held:
+        plan["not_history"] = held
+    if not chosen:
+        return plan
+    queue = [dict(item) for item in chosen]
+    seen = {str(item.get("id") or "") for item in queue}
+    for item in plan.get("step_queue") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("id") or "")
+        if name and name not in seen:
+            queue.append(dict(item))
+            seen.add(name)
+    done = [name for name in (plan.get("features_done") or []) if name not in seen]
+    current = queue[0]
+    plan["step_queue"] = queue
+    plan["features_path"] = [str(item.get("id") or "") for item in queue]
+    plan["features_done"] = done
+    plan["features_next"] = str(current.get("id") or "")
+    plan["features_next_title"] = str(current.get("title") or "")
+    plan["features_next_action"] = str(current.get("action") or "")
+    if str(plan.get("feature_note") or "").startswith("This sentence could not"):
+        plan["feature_note"] = ""
+    return plan
 
 
 def _steps_from_proposal(proposal: dict | None, steer: str, reading_sentence: str) -> list[dict]:

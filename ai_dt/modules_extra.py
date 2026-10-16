@@ -15,7 +15,7 @@ from __future__ import annotations
 import struct
 
 from ai_dt.guides.library import Guide
-from ai_dt.history_ops import choose_display
+from ai_dt.history_ops import DISPLAY_TRANSFORMS, choose_display
 from ai_dt.mapping import _plugin, exposure_params
 from ai_dt.masks_xmp import masks_can_attach
 from ai_dt.schema import Atmosphere, Detection
@@ -511,8 +511,14 @@ def append_extra_modules(
     problems = _problem_kinds(reading)
     blown = "blown-highlights" in problems
     hold = bool(plan.get("highlight_hold")) or blown
+    catalog = bool(plan.get("catalog_chosen"))
+    allowed = {str(item) for item in (plan.get("history_chosen") or [])}
+    skipped_history = {str(item) for item in (plan.get("history_skipped") or [])}
 
-    tone = tone_equalizer_params(atmosphere.shadows, atmosphere.highlights, hold=hold)
+    def _wanted(operation: str) -> bool:
+        return operation not in skipped_history
+
+    tone = tone_equalizer_params(atmosphere.shadows, atmosphere.highlights, hold=hold) if _wanted("toneequal") else None
     if tone is not None:
         _add(
             modules,
@@ -528,13 +534,21 @@ def append_extra_modules(
             multi_name="AI tone equalizer",
         )
 
-    display = choose_display(
-        history_ops,
-        look=look,
-        vibe=vibe,
-        picture_type=picture_type,
-        problems=problems,
-    )
+    already = bool(history_ops) and bool(DISPLAY_TRANSFORMS & set(history_ops))
+    if catalog and not already and "sigmoid" in allowed and "sigmoid" not in skipped_history:
+        display = "sigmoid"
+    elif catalog and not already and "filmicrgb" in allowed and "filmicrgb" not in skipped_history:
+        display = "filmicrgb"
+    else:
+        display = choose_display(
+            history_ops,
+            look=look,
+            vibe=vibe,
+            picture_type=picture_type,
+            problems=problems,
+        )
+        if display in skipped_history:
+            display = None
     if display == "filmicrgb":
         _add(
             modules,
@@ -556,7 +570,7 @@ def append_extra_modules(
             multi_name="AI sigmoid",
         )
 
-    zones = colorzones_params(atmosphere.saturation)
+    zones = colorzones_params(atmosphere.saturation) if _wanted("colorzones") else None
     if zones is not None:
         _add(
             modules,
@@ -568,7 +582,11 @@ def append_extra_modules(
             multi_name="AI color zones",
         )
 
-    crop = crop_params(_horizon_box(reading), force=bool(plan.get("crop_horizon")))
+    crop = (
+        crop_params(_horizon_box(reading), force=bool(plan.get("crop_horizon")))
+        if _wanted("crop")
+        else None
+    )
     if crop is not None:
         left, top, right, bottom = struct.unpack_from("<4f", crop, 0)
         _add(
@@ -586,7 +604,11 @@ def append_extra_modules(
             multi_name="AI crop",
         )
 
-    calibration = channelmixer_params(atmosphere.temperature_shift, atmosphere.tint)
+    calibration = (
+        channelmixer_params(atmosphere.temperature_shift, atmosphere.tint)
+        if _wanted("channelmixerrgb")
+        else None
+    )
     if calibration is not None:
         _add(
             modules,
@@ -601,8 +623,8 @@ def append_extra_modules(
             multi_name="AI color calibration",
         )
 
-    placement = gradient_placement(plan, separation, reading)
-    if plan.get("gradient") and placement is None:
+    placement = gradient_placement(plan, separation, reading) if _wanted("graduatednd") else None
+    if plan.get("gradient") and placement is None and _wanted("graduatednd"):
         plan["gradient_note"] = (
             "Graduated density was left out. There is no measured direction to place the line."
         )

@@ -7,6 +7,7 @@ after that. The guide supplied the starting list.
 
 from __future__ import annotations
 
+from ai_dt.catalog import apply_operations, operation_features
 from ai_dt.choices import apply_named_look
 from ai_dt.features import select_mask_features
 from ai_dt.review import review_plan
@@ -24,6 +25,7 @@ def resolve_plan(
     picture: object,
     reading: object,
     detections: list,
+    scene: str = "",
 ) -> dict:
     """Return the plan the renderer should paint."""
 
@@ -33,9 +35,19 @@ def resolve_plan(
         resolved = revise_plan(resolved, steer)
     if str(look or "").strip():
         resolved = apply_named_look(resolved, look)
-    resolved = review_plan(resolved, picture, reading, steer)
+    resolved = review_plan(resolved, picture, reading, steer, scene)
+    operations = [item for item in (chosen.get("operations") or []) if isinstance(item, dict)]
+    resolved = apply_operations(resolved, operations, list(chosen.get("dropped") or []))
     resolved = lock_found_stages(resolved, picture, detections)
     sentence = str(getattr(reading, "sentence", "") or "")
+    if str(scene or "").strip():
+        sentence = f"{sentence} {scene}".strip()
+    features = operation_features(operations)
+    if features:
+        merged = dict(chosen)
+        existing = [item for item in (merged.get("features") or []) if isinstance(item, dict)]
+        merged["features"] = existing + features
+        chosen = merged
     return select_mask_features(
         resolved,
         chosen,

@@ -33,9 +33,10 @@ def _mentions(text: str, words: tuple[str, ...]) -> bool:
     return any(word in found for word in words)
 
 
-def _evidence(picture: object, reading: object, steer: str) -> str:
+def _evidence(picture: object, reading: object, steer: str, scene: str = "") -> str:
     chunks = [
         steer or "",
+        scene or "",
         str(getattr(picture, "reason", "") or ""),
         str(getattr(picture, "type", "") or ""),
     ]
@@ -54,10 +55,12 @@ def _evidence(picture: object, reading: object, steer: str) -> str:
     return " ".join(chunks)
 
 
-def ungrounded_words(picture: object, reading: object, steer: str) -> tuple[str, ...]:
-    """Claim words that neither the picture reading nor the steer contains."""
+def ungrounded_words(
+    picture: object, reading: object, steer: str, scene: str = ""
+) -> tuple[str, ...]:
+    """Claim words that the picture reading, the steer, or the scene description lacks."""
 
-    have = _tokens(_evidence(picture, reading, steer))
+    have = _tokens(_evidence(picture, reading, steer, scene))
     banned: list[str] = []
     for group in _CLAIMS:
         if any(word in have for word in group):
@@ -91,14 +94,14 @@ def _strip_text(text: str, banned: tuple[str, ...]) -> str:
     return " ".join(kept).strip()
 
 
-def review_plan(plan: dict, picture: object, reading: object, steer: str) -> dict:
+def review_plan(plan: dict, picture: object, reading: object, steer: str, scene: str = "") -> dict:
     """Remove invented water, reflection, eye, and animal claims.
 
     Asks the user wrote, including a look they picked, stay. Caps stay as
     the steer left them: this function never opens them.
     """
 
-    banned = ungrounded_words(picture, reading, steer)
+    banned = ungrounded_words(picture, reading, steer, scene)
     reasoning = dict(plan.get("reasoning") or {})
     paragraph = _strip_text(str(reasoning.get("paragraph") or ""), banned)
     if paragraph != str(reasoning.get("paragraph") or "").strip():

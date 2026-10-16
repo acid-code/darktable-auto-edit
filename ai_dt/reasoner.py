@@ -20,6 +20,7 @@ import re
 import urllib.error
 import urllib.request
 
+from ai_dt.catalog import catalog_text, validate_operations
 from ai_dt.ollama_host import ollama_base_url, ollama_reachable
 
 # Skip targets the renderer already knows. ``surround`` is the user's word.
@@ -89,6 +90,10 @@ highlights warms the bright range and adds a little local contrast, leaving a pe
 eyes is only the eyes of a person or animal the request already named. Do not use it for the whole subject.
 Use an id only when the request or the picture description supports it. The reason must point at those words. Do not invent an id outside this list. The id itself does not have to appear in the request.
 Return every stage the request needs, in the order they should be accepted. Several stages are allowed. Do not collapse them into one.
+
+Also return the operations you choose, in the order they should run, using only ids from the supported list that follows:
+{"operations": [{"id": "subject", "action": "lift", "reason": "why"}]}
+Actions are lift, darken, hold, skip, or include. include means the operation runs. skip leaves it out.
 
 Picture: {description}
 Vibe: {vibe}
@@ -207,13 +212,31 @@ def _parse_json(text: str) -> dict | None:
     return payload
 
 
-def _fill(description: str, vibe: str, preset: str, steer: str = "") -> str:
-    return (
+def _fill(
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str = "",
+    *,
+    scene: str = "",
+    brief: str = "",
+) -> str:
+    text = (
         _PROMPT.replace("{description}", description or "No description.")
         .replace("{vibe}", vibe or "faithful")
         .replace("{preset}", preset or "none")
         .replace("{steer}", steer.strip() or "none")
     )
+    parts = [text, catalog_text()]
+    if str(scene or "").strip():
+        parts.append("Photo description:\n" + str(scene).strip())
+    if str(brief or "").strip():
+        parts.append("Technical brief:\n" + str(brief).strip())
+    parts.append(
+        "Run state: include an operation only when this photo still needs it. "
+        "Caps stay closed unless the request itself says strong or epic."
+    )
+    return "\n\n".join(parts)
 
 
 def _prose_paragraph(text: str) -> str:
@@ -257,10 +280,13 @@ def interpret_reply(text: str) -> dict:
     paragraph = ""
     stages: list[dict] = []
     features: list[dict] = []
+    operations: list[dict] = []
+    dropped: list[str] = []
     if payload is not None:
         paragraph = _usable_paragraph(str(payload.get("reasoning") or payload.get("paragraph") or ""))
         stages = validate_proposal(payload)
         features = validate_features(payload)
+        operations, dropped = validate_operations(payload)
     if not paragraph:
         paragraph = _prose_paragraph(text)
     if not stages:
@@ -268,6 +294,10 @@ def interpret_reply(text: str) -> dict:
     reply = {"paragraph": paragraph, "stages": stages}
     if features:
         reply["features"] = features
+    if operations:
+        reply["operations"] = operations
+    if dropped:
+        reply["dropped"] = dropped
     return reply
 
 
@@ -379,7 +409,15 @@ def _post_json(url: str, body: dict, timeout: float) -> dict | None:
     return payload
 
 
-def _ask_ollama(description: str, vibe: str, preset: str, steer: str = "") -> dict | None:
+def _ask_ollama(
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str = "",
+    *,
+    scene: str = "",
+    brief: str = "",
+) -> dict | None:
     """One text chat. No image is sent."""
 
     if not ollama_reachable():
@@ -389,7 +427,12 @@ def _ask_ollama(description: str, vibe: str, preset: str, steer: str = "") -> di
         {
             "model": _text_model(),
             "stream": False,
-            "messages": [{"role": "user", "content": _fill(description, vibe, preset, steer)}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": _fill(description, vibe, preset, steer, scene=scene, brief=brief),
+                }
+            ],
         },
         timeout=30.0,
     )
@@ -442,6 +485,9 @@ def _ask_gemini_model(
     preset: str,
     steer: str,
     key: str,
+    *,
+    scene: str = "",
+    brief: str = "",
 ) -> dict:
     """One generateContent call. ``model`` is set when the reply has a plan."""
 
@@ -451,7 +497,19 @@ def _ask_gemini_model(
         + ":generateContent?key="
         + key
     )
-    body = {"contents": [{"parts": [{"text": _fill(description, vibe, preset, steer)}]}]}
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": _fill(
+                            description, vibe, preset, steer, scene=scene, brief=brief
+                        )
+                    }
+                ]
+            }
+        ]
+    }
     payload = _post_json(url, body, timeout=GEMINI_TIMEOUT_SECONDS)
     if payload is None:
         return {"paragraph": "", "stages": [], "error": "no reply"}
@@ -484,15 +542,30 @@ def _ask_gemini_model(
     return parsed
 
 
-def _ask_gemini(description: str, vibe: str, preset: str, steer: str = "") -> dict | None:
+def _ask_gemini(
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str = "",
+    *,
+    scene: str = "",
+    brief: str = "",
+) -> dict | None:
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
         return None
     tried: list[str] = []
     for model in _reason_models():
-        reply = _ask_gemini_model(model, description, vibe, preset, steer, key)
+        reply = _ask_gemini_model(
+            model, description, vibe, preset, steer, key, scene=scene, brief=brief
+        )
         error = str(reply.get("error") or "").strip()
-        if not error and (reply.get("paragraph") or reply.get("stages") or reply.get("features")):
+        if not error and (
+            reply.get("paragraph")
+            or reply.get("stages")
+            or reply.get("features")
+            or reply.get("operations")
+        ):
             return reply
         reason = plain_gemini_failure(error or "no reply")
         tried.append(f"{model}: {reason}")
@@ -508,18 +581,22 @@ def _from_reply(reply: dict | None, *, status: str, backend: str, note: str) -> 
     paragraph = str(reply.get("paragraph") or "")
     stages = list(reply.get("stages") or [])
     features = list(reply.get("features") or [])
-    if not paragraph and not stages and not features:
+    if not paragraph and not stages and not features and not reply.get("operations"):
         # The model answered, but only with a placeholder. The steer still applies.
         return {"status": status, "backend": backend, "note": "", "paragraph": "", "stages": []}
     plan = {
         "status": status,
         "backend": backend,
-        "note": note if stages or paragraph or features else "",
+        "note": note if stages or paragraph or features or reply.get("operations") else "",
         "paragraph": paragraph,
         "stages": stages,
     }
     if features:
         plan["features"] = features
+    if reply.get("operations"):
+        plan["operations"] = list(reply["operations"])
+    if reply.get("dropped"):
+        plan["dropped"] = list(reply["dropped"])
     return plan
 
 
@@ -542,7 +619,15 @@ def _note_gemini_failure(result: dict, gemini_failed: bool, detail: str = "") ->
     return updated
 
 
-def propose_gemini(description: str, vibe: str, preset: str, steer: str = "") -> dict:
+def propose_gemini(
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str = "",
+    *,
+    scene: str = "",
+    brief: str = "",
+) -> dict:
     """Ask only Gemini. Ollama is a later stage when ``ask_ollama`` is set."""
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
@@ -554,7 +639,7 @@ def propose_gemini(description: str, vibe: str, preset: str, steer: str = "") ->
         }
     if not os.environ.get("GEMINI_API_KEY", "").strip():
         return {"ask_ollama": True, "gemini_tried": False, "failure": "", "proposal": None}
-    reply = _ask_gemini(description, vibe, preset, steer)
+    reply = _ask_gemini(description, vibe, preset, steer, scene=scene, brief=brief)
     error = str(reply.get("error") or "").strip() if isinstance(reply, dict) else "no reply"
     model = str(reply.get("model") or "").strip() if isinstance(reply, dict) else ""
     plan = _from_reply(
@@ -563,7 +648,9 @@ def propose_gemini(description: str, vibe: str, preset: str, steer: str = "") ->
         backend=model or _reason_model(),
         note="Stages proposed by Gemini.",
     )
-    if plan and (plan.get("paragraph") or plan.get("stages") or plan.get("features")):
+    if plan and (
+        plan.get("paragraph") or plan.get("stages") or plan.get("features") or plan.get("operations")
+    ):
         return {"ask_ollama": False, "gemini_tried": True, "failure": "", "proposal": plan}
     reason = plain_gemini_failure(error)
     return {"ask_ollama": True, "gemini_tried": True, "failure": reason, "proposal": None}
@@ -577,12 +664,14 @@ def propose_ollama(
     *,
     failure: str = "",
     gemini_tried: bool = False,
+    scene: str = "",
+    brief: str = "",
 ) -> dict:
     """Ask only Ollama. A Gemini failure is copied onto the plan."""
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
         return {"ask_ollama": False, "proposal": skipped("Reasoning was skipped.")}
-    reply = _ask_ollama(description, vibe, preset, steer)
+    reply = _ask_ollama(description, vibe, preset, steer, scene=scene, brief=brief)
     if reply is not None:
         result = _from_reply(
             reply,
@@ -610,7 +699,15 @@ def propose_ollama(
     }
 
 
-def propose_stages(description: str, vibe: str, preset: str, steer: str = "") -> dict:
+def propose_stages(
+    description: str,
+    vibe: str,
+    preset: str,
+    steer: str = "",
+    *,
+    scene: str = "",
+    brief: str = "",
+) -> dict:
     """Ask Gemini when a key is set, then Ollama. Skip when neither answers.
 
     The returned dict never opens caps. It has ``status``, ``backend``,
@@ -620,7 +717,7 @@ def propose_stages(description: str, vibe: str, preset: str, steer: str = "") ->
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
         return skipped("Reasoning was skipped.")
-    gemini = propose_gemini(description, vibe, preset, steer)
+    gemini = propose_gemini(description, vibe, preset, steer, scene=scene, brief=brief)
     if not gemini.get("ask_ollama") and isinstance(gemini.get("proposal"), dict):
         return gemini["proposal"]
     ollama = propose_ollama(
@@ -630,6 +727,8 @@ def propose_stages(description: str, vibe: str, preset: str, steer: str = "") ->
         steer,
         failure=str(gemini.get("failure") or ""),
         gemini_tried=bool(gemini.get("gemini_tried")),
+        scene=scene,
+        brief=brief,
     )
     proposal = ollama.get("proposal")
     if isinstance(proposal, dict):

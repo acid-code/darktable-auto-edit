@@ -36,6 +36,8 @@ def _reply(**overrides) -> dict:
         "shadows": 0.1,
         "highlights": -0.1,
         "vibrance": 0.0,
+        "description": "A dark frame with no distinct subject. The light is flat.",
+        "summary": "The frame is dark and has no clear subject.",
         "caps_open": True,
         "strong": True,
         "epic": True,
@@ -105,7 +107,8 @@ class MistralVisionTests(unittest.TestCase):
         body = json.loads(request.data.decode("utf-8"))
         self.assertEqual(body["model"], DEFAULT_MODEL)
         content = body["messages"][0]["content"]
-        self.assertEqual(content[0]["text"], PROMPT)
+        self.assertTrue(content[0]["text"].startswith(PROMPT))
+        self.assertIn("Technical snapshot", content[0]["text"])
         self.assertEqual(content[1]["type"], "image_url")
         image_url = content[1]["image_url"]
         self.assertIsInstance(image_url, dict)
@@ -117,9 +120,38 @@ class MistralVisionTests(unittest.TestCase):
         self.assertIn("histogram", recipe["backends"]["advisor"])
         self.assertEqual(recipe["analysis"]["llm"]["exposure_ev"], 0.4)
         self.assertEqual(recipe["analysis"]["llm"]["mood"], "epic strong light")
+        self.assertEqual(recipe["scene"]["summary"], "The frame is dark and has no clear subject.")
+        self.assertIn("dark frame", recipe["scene"]["description"])
+        self.assertEqual(recipe["scene"]["source"], "mistral")
+        self.assertIn("exposure", recipe["technical_brief"])
         self.assertFalse(recipe["plan"]["caps_open"])
         self.assertFalse(recipe["plan"]["strong"])
         self.assertFalse(recipe["plan"].get("strong_word"))
+
+    def test_an_edit_instruction_is_not_stored_as_the_photo_description(self) -> None:
+        command = (
+            "Adjust the image to subtly enhance the soft, warm light on the cat and wooden railing "
+            "while keeping the background muted. The cat's fur and the texture of the wood should "
+            "stand out, with minimal distraction from the urban elements in the background. "
+            "Maintain a natural look, focusing on the gentle interplay of light and texture."
+        )
+        os.environ["MISTRAL_API_KEY"] = "test-key"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plain.png"
+            Image.new("RGB", (32, 24), (40, 40, 40)).save(path)
+            with (
+                patch(
+                    "ai_dt.advisors.mistral_vision.urllib.request.urlopen",
+                    self._urlopen(_reply(description=command, summary=command), []),
+                ),
+                patch("ai_dt.pipeline.OllamaLLaVAAdvisor"),
+            ):
+                recipe = analyze(path, detector="heuristic", advisor="auto")
+        summary = recipe["scene"]["summary"]
+        self.assertNotIn("Adjust the image", summary)
+        self.assertNotIn("should stand out", summary)
+        self.assertNotIn("Maintain a natural look", summary)
+        self.assertNotEqual(recipe["scene"]["source"], "mistral")
 
     def test_missing_key_does_not_call_mistral(self) -> None:
         calls: list = []

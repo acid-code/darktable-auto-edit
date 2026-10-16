@@ -53,10 +53,14 @@ def combine_atmospheres(
 
     mood = suggestion.mood.strip() or measured.mood
     rationale_parts = [part for part in (measured.rationale, suggestion.rationale) if part]
+    description = suggestion.scene_description.strip() or measured.scene_description
+    summary = suggestion.scene_summary.strip() or measured.scene_summary
     return Atmosphere(
         black=measured.black,
         mood=mood,
         rationale=" ".join(rationale_parts),
         source=f"{measured.source}+{suggestion.source}",
+        scene_description=description,
+        scene_summary=summary,
         **values,
     )

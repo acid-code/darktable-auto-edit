@@ -321,6 +321,17 @@ class Handler(BaseHTTPRequestHandler):
             if not work_is_gallery(work):
                 self._send(404, b'{"error":"That folder is not an editor work folder"}\n', "application/json")
                 return
+            if look == "cancel":
+                record = write_pick(
+                    work,
+                    "cancel",
+                    source="preview",
+                    title="Cancel",
+                    applied=False,
+                    cancelled=True,
+                )
+                self._send(200, json.dumps(record).encode("utf-8"), "application/json")
+                return
             cards = load_cards(work)
             match = next((item for item in cards if item["id"] == look), None)
             if match is None:

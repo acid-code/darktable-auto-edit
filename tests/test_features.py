@@ -17,7 +17,13 @@ if str(ROOT) not in sys.path:
 
 from PIL import Image
 
-from ai_dt.features import body_found, commit_waiting_step, plan_chat, select_mask_features
+from ai_dt.features import (
+    align_plan_to_history,
+    body_found,
+    commit_waiting_step,
+    plan_chat,
+    select_mask_features,
+)
 from ai_dt.mapping import _choose_vignette_target, _vignette_for, step_style
 from ai_dt.status_text import panel_status
 from ai_dt.guides.decide import Picture
@@ -346,6 +352,56 @@ class PanelTests(unittest.TestCase):
             self.assertEqual((directory / "edit.dtstyle").read_text(encoding="utf-8"), "<style/>")
             self.assertIn("photo you are viewing", saved["handoff"]["sentence"])
 
+    def test_a_follow_up_keeps_the_next_history_step_and_hides_stages_it_cannot_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = {
+                "features_next": "",
+                "reading": {"sentence": "A cat on a wooden railing."},
+                "scene": {"summary": "A cat on a wooden railing.", "source": "mistral"},
+                "analysis": {"atmosphere": {}},
+                "separation": {"stages_ran": ["grade"]},
+                "plan": {
+                    "guide_stages": ["grade", "subject", "eyes", "reflection", "background"],
+                    "skip": [],
+                    "features_done": [],
+                    "features_path": [],
+                    "reasoning": {},
+                    "asks": [],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            reply = {
+                "ask_ollama": False,
+                "proposal": {
+                    "status": "gemini",
+                    "backend": "gemini-test",
+                    "paragraph": "Highlight the eyes and leave the rest of the scene untouched.",
+                    "stages": [],
+                    "operations": [
+                        {"id": "eyes", "action": "lift", "reason": "highlight the eyes"},
+                        {"id": "subject", "action": "lift", "reason": "lift the cat"},
+                        {"id": "reflection", "action": "lift", "reason": "the water"},
+                        {"id": "background", "action": "hold", "reason": "the city"},
+                    ],
+                    "features": [],
+                },
+            }
+            with patch("ai_dt.reasoner.propose_gemini", return_value=reply):
+                plan_chat(directory, "highlight the eyes and make them pop")
+            saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["features_next"], "eyes")
+            self.assertEqual(saved["plan"]["features_path"], ["eyes", "subject"])
+            self.assertNotIn("Stages: eyes, subject, reflection, background.", saved["status_text"])
+            self.assertIn("Steps: eyes, subject.", saved["status_text"])
+            self.assertIn("Not a history step: reflection, background.", saved["status_text"])
+            self.assertIn("color balance", saved["status_text"])
+            commit_waiting_step(directory)
+            accepted = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertEqual(accepted["features_next"], "subject")
+            self.assertNotIn("plan is finished", accepted["feature_note"])
+            self.assertIn("press Accept", accepted["handoff"]["sentence"])
+
 
 class SeparateTests(unittest.TestCase):
     def test_a_person_in_a_landscape_is_separated_and_a_frame_without_one_is_not(self) -> None:
@@ -504,6 +560,64 @@ class PreviewTests(unittest.TestCase):
         ignored = select_mask_features(ignored, {"stages": []}, [], "less on the eyes", "", "")
         self.assertEqual(ignored["scales"], {})
         self.assertIn("could not be mapped", ignored["feature_note"])
+
+
+class PlanCursorTests(unittest.TestCase):
+    def _recipe(self) -> dict:
+        return {
+            "chat": True,
+            "features_next": "subject",
+            "features_next_title": "Lift the subject",
+            "features_next_action": "lift",
+            "plan": {
+                "features_done": ["eyes"],
+                "features_path": ["subject"],
+                "step_queue": [{"id": "subject", "action": "lift", "title": "Lift the subject"}],
+                "step_log": [
+                    {
+                        "id": "eyes",
+                        "name": "AI eyes",
+                        "title": "Eyes",
+                        "action": "lift",
+                        "active": True,
+                    }
+                ],
+            },
+        }
+
+    def test_back_past_an_editor_step_makes_it_the_waiting_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "output.json").write_text(json.dumps(self._recipe()), encoding="utf-8")
+            saved = align_plan_to_history(directory, "AI eyes", "back")
+            self.assertEqual(saved["features_next"], "eyes")
+            self.assertEqual(saved["plan"]["features_path"], ["eyes", "subject"])
+            self.assertFalse(saved["plan"]["step_log"][0]["active"])
+            self.assertIn("Next puts that step back", saved["feature_note"])
+            restored = align_plan_to_history(directory, "AI eyes", "next")
+            self.assertEqual(restored["features_next"], "subject")
+            self.assertEqual(restored["plan"]["features_done"], ["eyes"])
+            self.assertTrue(restored["plan"]["step_log"][0]["active"])
+
+    def test_a_photographer_module_does_not_change_the_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "output.json").write_text(json.dumps(self._recipe()), encoding="utf-8")
+            saved = align_plan_to_history(directory, "portrait", "back")
+            self.assertEqual(saved["features_next"], "subject")
+            self.assertTrue(saved["plan"]["step_log"][0]["active"])
+
+    def test_accept_after_back_drops_the_undone_step_and_writes_it_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = self._recipe()
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            align_plan_to_history(directory, "AI eyes", "back")
+            saved = commit_waiting_step(directory)
+            names = [item["name"] for item in saved["plan"]["step_log"]]
+            self.assertEqual(names, ["Eyes"])
+            self.assertTrue(saved["plan"]["step_log"][0]["active"])
+            self.assertEqual(saved["features_next"], "subject")
 
 
 if __name__ == "__main__":

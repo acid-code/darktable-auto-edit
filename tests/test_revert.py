@@ -18,6 +18,7 @@ from ai_dt.revert import (
     collapse_history_to_cursor,
     is_ai_editor_history_name,
     main,
+    move_history_cursor,
     revert_image_history,
     strip_ai_history,
 )
@@ -380,6 +381,67 @@ class SidecarRevertTests(unittest.TestCase):
                 code = main(["--xmp", str(destination), "--xmp-out", str(destination)])
             self.assertEqual(code, 0)
             self.assertIn("removed 0", second.getvalue())
+
+
+class HistoryCursorTests(unittest.TestCase):
+    def _stack(self) -> str:
+        return (
+            '<rdf:Description darktable:history_end="3">'
+            '<rdf:li darktable:num="0" darktable:operation="exposure" darktable:multi_name=""/>'
+            '<rdf:li darktable:num="1" darktable:operation="colorbalancergb" darktable:multi_name="portrait"/>'
+            '<rdf:li darktable:num="2" darktable:operation="exposure" darktable:multi_name="AI eyes"/>'
+            '<rdf:li darktable:mask_num="1" darktable:mask_name="window" darktable:mask_id="7"/>'
+            "</rdf:Description>"
+        )
+
+    def test_back_and_next_keep_every_item_and_the_mask(self) -> None:
+        original = self._stack()
+        backed, name, moved = move_history_cursor(original, -1)
+        self.assertEqual(moved, 1)
+        self.assertEqual(name, "AI eyes")
+        self.assertIn('darktable:history_end="2"', backed)
+        self.assertIn('darktable:multi_name="portrait"', backed)
+        self.assertIn('darktable:multi_name="AI eyes"', backed)
+        self.assertIn('darktable:mask_name="window"', backed)
+        restored, forward_name, forward = move_history_cursor(backed, 1)
+        self.assertEqual(forward, 1)
+        self.assertEqual(forward_name, "AI eyes")
+        self.assertIn('darktable:history_end="3"', restored)
+        self.assertEqual(restored.count("rdf:li"), original.count("rdf:li"))
+
+    def test_back_at_the_start_and_next_at_the_end_write_nothing(self) -> None:
+        start = self._stack().replace('history_end="3"', 'history_end="0"', 1)
+        same, name, moved = move_history_cursor(start, -1)
+        self.assertEqual(moved, 0)
+        self.assertEqual(name, "")
+        self.assertEqual(same, start)
+        end = self._stack()
+        same, name, moved = move_history_cursor(end, 1)
+        self.assertEqual(moved, 0)
+        self.assertEqual(same, end)
+
+    def test_a_step_that_cannot_move_does_not_write_the_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "photo.xmp"
+            destination = Path(directory) / "out.xmp"
+            source.write_text(self._stack(), encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "--step-xmp",
+                        "--direction",
+                        "next",
+                        "--xmp",
+                        str(source),
+                        "--xmp-out",
+                        str(destination),
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertIn("moved 0", output.getvalue())
+            self.assertFalse(destination.exists())
+            self.assertIn('history_end="3"', source.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

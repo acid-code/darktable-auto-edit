@@ -29,6 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="RAW file (NEF, CR2, ARW, DNG, …) or a JPEG, PNG, TIFF, or WebP",
     )
     parser.add_argument(
+        "--align-history",
+        action="store_true",
+        help="Move the plan with one history step. Use --direction back or next.",
+    )
+    parser.add_argument("--history-name", default="", help="History instance name that crossed the cursor.")
+    parser.add_argument("--direction", default="", help="back or next, with --align-history.")
+    parser.add_argument(
         "--commit-step",
         action="store_true",
         help="Write the waiting step only. Do not rebuild the look.",
@@ -77,6 +84,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit clauses: strong or epic, darken/lift/hold a target, gradient, revert or skip a stage.",
     )
     parser.add_argument(
+        "--scene",
+        default="",
+        help="The photo description the user confirmed. Empty keeps the stored description.",
+    )
+    parser.add_argument(
+        "--rewrite-scene",
+        action="store_true",
+        help="Ask the picture model to write the photo description again.",
+    )
+    parser.add_argument(
         "--look",
         default="",
         help="A choice id to apply: faithful, a recommendation, or a recipe id. Empty proposes the measured grade.",
@@ -104,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--stage",
-        choices=("all", "picture", "gemini", "ollama", "finish", "chat"),
+        choices=("all", "picture", "describe", "gemini", "ollama", "finish", "chat"),
         default="all",
         help="Run one visible step. all is the single-process path.",
     )
@@ -134,6 +151,9 @@ def _analyze_kwargs(args) -> dict:
         "output_dir": args.output_dir,
         "vibe": args.vibe,
         "steer": args.steer,
+        "scene_text": args.scene,
+        "rewrite_scene": args.rewrite_scene,
+        "describe_only": args.stage == "describe",
         "look": args.look,
         "image_id": args.image_id,
         "duplicate_index": args.duplicate_index,
@@ -148,6 +168,16 @@ def _analyze_kwargs(args) -> dict:
 def main(argv: list[str] | None = None) -> int:
     load_project_env()
     args = build_parser().parse_args(argv)
+    if args.align_history:
+        from ai_dt.features import align_plan_to_history
+
+        try:
+            align_plan_to_history(Path(args.output_dir), args.history_name, args.direction)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Analysis failed: {exc}", file=sys.stderr)
+            return 3
+        print("Plan aligned.")
+        return 0
     if args.commit_step or args.skip_step or args.stage == "chat":
         from ai_dt.features import commit_waiting_step, plan_chat, skip_waiting_step
 
@@ -156,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_waiting_step(Path(args.output_dir))
                 print("Step skipped.")
             elif args.stage == "chat":
-                plan_chat(Path(args.output_dir), args.steer)
+                plan_chat(Path(args.output_dir), args.steer, args.scene)
                 print("Plan ready.")
             else:
                 commit_waiting_step(Path(args.output_dir))
@@ -174,6 +204,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         kwargs = _analyze_kwargs(args)
+        if args.stage == "describe":
+            recipe = analyze(image, **kwargs)
+            summary = str((recipe.get("scene") or {}).get("summary") or "").strip()
+            print(summary or "Description ready.")
+            return 0
         if args.stage == "picture":
             record = analyze(image, picture_only=True, **kwargs)
             _write_json(Path(args.output_dir) / "stage.json", record)
@@ -186,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
             vibe = str(saved.get("vibe") or args.vibe)
             steer = str(saved.get("steer") or args.steer)
             if args.stage == "gemini":
-                payload = propose_gemini(sentence, vibe, preset, steer)
+                payload = propose_gemini(sentence, vibe, preset, steer, scene=str(saved.get("scene") or args.scene))
             else:
                 previous: dict = {}
                 proposal_path = Path(args.output_dir) / "proposal.json"
@@ -199,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
                     steer,
                     failure=str(previous.get("failure") or ""),
                     gemini_tried=bool(previous.get("gemini_tried")),
+                    scene=str(saved.get("scene") or args.scene),
                 )
             _write_json(Path(args.output_dir) / "proposal.json", payload)
             print(f"{args.stage} stage finished.")

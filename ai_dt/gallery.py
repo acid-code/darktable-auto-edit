@@ -84,6 +84,7 @@ def write_pick(
     source: str,
     title: str = "",
     applied: bool = False,
+    cancelled: bool = False,
 ) -> dict:
     """Write the shared pick. A later write replaces an earlier one."""
 
@@ -96,6 +97,7 @@ def write_pick(
         "title": str(title or identity)[:80],
         "source": origin,
         "applied": bool(applied),
+        "cancelled": bool(cancelled),
         "at": time.time_ns(),
     }
     folder = Path(work)
