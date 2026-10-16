@@ -626,7 +626,9 @@ local looks_pending = false
 local history_back = false
 local history_next = false
 local can_revert = false
+local can_remove = false
 local has_photo = false
+local remove_button
 local shown_recipe = nil
 local panel_is_busy = false
 local sync_waiting_step
@@ -1083,6 +1085,43 @@ local function is_original(image)
   return duplicate_index_of(image) == 0
 end
 
+local function original_of(image)
+  local path = tostring(image.path or "")
+  local filename = tostring(image.filename or "")
+  local function is_root(candidate)
+    if candidate == nil or duplicate_index_of(candidate) ~= 0 then
+      return false
+    end
+    return tostring(candidate.path or "") == path and tostring(candidate.filename or "") == filename
+  end
+  local leader_ok, leader = pcall(function()
+    return image.group_leader
+  end)
+  if leader_ok and is_root(leader) then
+    return leader
+  end
+  if type(image.get_group_members) == "function" then
+    local members_ok, members = pcall(function()
+      return image:get_group_members()
+    end)
+    if members_ok and type(members) == "table" then
+      for _, candidate in ipairs(members) do
+        if is_root(candidate) then
+          return candidate
+        end
+      end
+    end
+  end
+  if type(dt.database) == "table" then
+    for _, candidate in ipairs(dt.database) do
+      if is_root(candidate) then
+        return candidate
+      end
+    end
+  end
+  return nil
+end
+
 -- A duplicate starts with an empty folder, so a later Propose would read the
 -- photo as new and paint the whole look again. The cache remembers which
 -- copy already has the grade.
@@ -1468,8 +1507,13 @@ local function history_flags(image)
   history_back = false
   history_next = false
   can_revert = false
+  can_remove = false
   has_photo = image ~= nil
-  if image == nil or type(sidecar_file) ~= "function" then
+  if image == nil then
+    return
+  end
+  can_remove = not is_original(image)
+  if type(sidecar_file) ~= "function" then
     return
   end
   local xmp = sidecar_file(image)
@@ -1502,6 +1546,9 @@ local function refresh_controls(recipe)
   end
   if copy_button then
     copy_button.sensitive = (not panel_is_busy) and has_photo
+  end
+  if remove_button then
+    remove_button.sensitive = (not panel_is_busy) and can_remove
   end
   if back_button then
     back_button.sensitive = (not panel_is_busy) and history_back
@@ -2554,6 +2601,46 @@ local function duplicate_current()
   dt.print("Working on a copy")
 end
 
+local function remove_duplicate()
+  local images = target_images()
+  local image = images[1]
+  if image == nil or is_original(image) then
+    can_remove = false
+    refresh_controls(shown_recipe)
+    status_label.text = "Remove is only for a duplicate. The original stays."
+    return
+  end
+  if type(image.delete) ~= "function" then
+    status_label.text = "This Darktable build cannot remove a duplicate. The original was left as it is."
+    return
+  end
+  local original = original_of(image)
+  if original == nil or tonumber(original.id) == tonumber(image.id) then
+    status_label.text = "The original could not be found, so this duplicate was left in place."
+    return
+  end
+  if in_darkroom() then
+    leave_darkroom()
+    if current_view_name() == "darkroom" then
+      status_label.text = "Could not close the darkroom, so the duplicate was left in place."
+      return
+    end
+  end
+  local removed, remove_error = pcall(function()
+    image:delete()
+  end)
+  if not removed then
+    show_in_darkroom(original)
+    status_label.text = "The duplicate was not removed.\n" .. tostring(remove_error)
+    return
+  end
+  show_in_darkroom(original)
+  history_flags(original)
+  refresh_controls(read_recipe(edit_work_dir(original)))
+  status_label.text = "Duplicate removed. You are on the original."
+  dt.print("Back on the original")
+end
+
 local function move_history(direction)
   local images = target_images()
   local image = images[1]
@@ -2946,12 +3033,29 @@ revert_button = dt.new_widget("button") {
   clicked_callback = on_revert_click,
 }
 
+remove_button = dt.new_widget("button") {
+  label = "Remove",
+  sensitive = false,
+  tooltip = "Remove this duplicate from the library and open the original. The camera file stays. Off on the original.",
+  clicked_callback = function()
+    set_panel_busy(true)
+    local ok, failure = pcall(remove_duplicate)
+    close_progress()
+    set_panel_busy(false)
+    if not ok then
+      status_label.text = "Failed: " .. tostring(failure)
+      dt.print("Remove failed")
+    end
+  end,
+}
+
 local action_row = dt.new_widget("box") {
   orientation = "horizontal",
   run_button,
   looks_button,
   cancel_button,
   copy_button,
+  remove_button,
 }
 
 back_button = dt.new_widget("button") {
