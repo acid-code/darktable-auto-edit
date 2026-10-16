@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Looks</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12110f;
+      --panel: #1c1b17;
+      --panel-2: #26231d;
+      --line: #3a342c;
+      --text: #f3ecdf;
+      --muted: #b3a794;
+      --brass: #d7a56a;
+      --brass-ink: #2a1c0e;
+      --danger: #e7b2a4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 17px/1.5 "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+    }
+    header, .sheet {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+    header { padding: 32px 0 8px; }
+    h1 {
+      font-weight: 500;
+      font-size: 2.4rem;
+      letter-spacing: -0.03em;
+      margin: 0 0 8px;
+    }
+    .lede { max-width: 62ch; color: var(--muted); margin: 0 0 8px; }
+    .status { min-height: 1.5em; margin: 0 0 8px; }
+    .status.error { color: var(--danger); }
+    .sheet {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 16px;
+      padding: 12px 0 64px;
+    }
+    .sheet button {
+      font: inherit;
+      text-align: left;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px;
+      cursor: pointer;
+    }
+    .sheet button[aria-pressed="true"] {
+      border-color: var(--brass);
+      background: var(--panel-2);
+    }
+    .sheet button:focus-visible {
+      outline: 2px solid var(--brass);
+      outline-offset: 3px;
+    }
+    .sheet img, .pending {
+      width: 100%;
+      aspect-ratio: 11 / 8;
+      object-fit: cover;
+      background: #0c0b09;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      display: block;
+    }
+    .pending {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+    }
+    .pending[hidden], .sheet img[hidden] { display: none; }
+    .sheet strong { display: block; font-weight: 600; }
+    .sheet span { color: var(--muted); font-size: 0.95rem; }
+    @media (max-width: 640px) {
+      header { padding-top: 20px; }
+      h1 { font-size: 2rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Looks</h1>
+    <p class="lede">Each picture is one edit. Choose it here or on the Darktable panel. Either choice opens the masked picture, and the original file stays unchanged.</p>
+    <p class="status" id="status" role="status">Loading the looks…</p>
+  </header>
+  <div class="sheet" id="sheet" role="group" aria-label="Looks"></div>
+  <script>
+    const status = document.querySelector("#status");
+    const sheet = document.querySelector("#sheet");
+    const params = new URLSearchParams(location.search);
+    const work = params.get("work") || "";
+    let chosen = "";
+    let cards = [];
+
+    function leave() {
+      window.close();
+    }
+
+    function say(text, failed) {
+      status.className = failed ? "status error" : "status";
+      status.textContent = text;
+    }
+
+    function mark(id) {
+      chosen = id || "";
+      sheet.querySelectorAll("button").forEach((button) => {
+        button.setAttribute("aria-pressed", button.dataset.id === chosen ? "true" : "false");
+      });
+    }
+
+    function paint(items) {
+      sheet.replaceChildren();
+      items.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.id = item.id;
+        button.setAttribute("aria-pressed", item.applied ? "true" : "false");
+        if (item.applied) chosen = item.id;
+        const picture = document.createElement("img");
+        picture.alt = "";
+        const waiting = document.createElement("div");
+        waiting.className = "pending";
+        waiting.textContent = "Painting…";
+        picture.hidden = true;
+        const showPicture = () => {
+          picture.hidden = false;
+          waiting.remove();
+        };
+        picture.addEventListener("load", showPicture);
+        picture.addEventListener("error", () => {
+          waiting.textContent = "This look could not be painted.";
+        });
+        const query = new URLSearchParams({ work, id: item.id });
+        picture.src = "/api/option.jpg?" + query.toString();
+        if (picture.complete && picture.naturalWidth > 0) showPicture();
+        const name = document.createElement("strong");
+        name.textContent = item.title || item.id;
+        const why = document.createElement("span");
+        why.textContent = item.why || "";
+        button.append(waiting, picture, name, why);
+        button.addEventListener("click", () => choose(item));
+        sheet.append(button);
+      });
+    }
+
+    async function choose(item) {
+      mark(item.id);
+      say("Chosen. Darktable is applying this look.");
+      try {
+        const response = await fetch("/api/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work, id: item.id }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "The choice was not saved");
+        leave();
+      } catch (error) {
+        say(error.message || "The choice was not saved", true);
+      }
+    }
+
+    async function loadCards() {
+      if (!work) {
+        say("Propose a picture in Darktable first. This window opens from that panel.", true);
+        return false;
+      }
+      const response = await fetch("/api/options?work=" + encodeURIComponent(work));
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "The looks could not be read");
+      cards = payload.cards || [];
+      if (!cards.length) {
+        say("This picture has no looks to choose yet.", true);
+        sheet.replaceChildren();
+        return true;
+      }
+      paint(cards);
+      say("Choose a look. The same names are on the Darktable panel.");
+      return true;
+    }
+
+    function cardKey(items) {
+      return items.map((item) => item.id + ":" + item.title).join("|");
+    }
+
+    async function refreshPick() {
+      if (!work || !cards.length) return;
+      try {
+        const options = await fetch("/api/options?work=" + encodeURIComponent(work));
+        if (options.ok) {
+          const payload = await options.json();
+          const next = payload.cards || [];
+          if (next.length && cardKey(next) !== cardKey(cards)) {
+            cards = next;
+            paint(cards);
+          }
+        }
+        const response = await fetch("/api/pick?work=" + encodeURIComponent(work));
+        if (!response.ok) return;
+        const pick = await response.json();
+        if (!pick || !pick.id || pick.id === chosen) return;
+        mark(pick.id);
+        const card = cards.find((item) => item.id === pick.id);
+        const name = (card && card.title) || pick.title || pick.id;
+        if (pick.source === "editor" || pick.applied) {
+          say(name + " was chosen. This window can close.");
+          leave();
+        }
+      } catch (error) {
+        return;
+      }
+    }
+
+    async function start() {
+      let ready = false;
+      for (let attempt = 0; attempt < 20 && !ready; attempt += 1) {
+        try {
+          ready = await loadCards();
+        } catch (error) {
+          if (attempt === 19) say(error.message || "The looks could not be read", true);
+          else await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
+      if (ready) setInterval(refreshPick, 1000);
+    }
+
+    start();
+  </script>
+</body>
+</html>

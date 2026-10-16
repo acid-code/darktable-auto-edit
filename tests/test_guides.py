@@ -870,7 +870,7 @@ class FaceGateTests(unittest.TestCase):
 
 
 class LookbackTests(unittest.TestCase):
-    def test_an_eye_hotter_than_the_face_stops_the_stage(self) -> None:
+    def test_an_eye_hotter_than_the_face_rolls_back_only_that_stage(self) -> None:
         pixels = np.full((160, 160, 3), 0.18, dtype=np.float32)
         pixels[30:140, 40:120] = (0.55, 0.40, 0.32)
         pixels[50:70, 55:75] = (0.92, 0.90, 0.88)
@@ -906,7 +906,7 @@ class LookbackTests(unittest.TestCase):
         )
         self.assertIn("eye", info["stop_reason"].lower())
         self.assertNotIn("eyes", info["stages_ran"])
-        self.assertNotIn("background", info["stages_ran"])
+        self.assertIn("background", info["stages_ran"])
         self.assertGreaterEqual(len(info["measurements"]), 2)
         self.assertTrue(any(item["stage"] == "eyes" and item["kept"] is False for item in info["measurements"]))
 

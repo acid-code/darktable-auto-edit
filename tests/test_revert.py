@@ -14,7 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ai_dt.revert import is_ai_editor_history_name, main, revert_image_history, strip_ai_history
+from ai_dt.revert import (
+    collapse_history_to_cursor,
+    is_ai_editor_history_name,
+    main,
+    revert_image_history,
+    strip_ai_history,
+)
 
 
 def _library() -> sqlite3.Connection:
@@ -252,6 +258,22 @@ class SidecarRevertTests(unittest.TestCase):
         self.assertIn('darktable:multi_name=""', cleaned)
         self.assertNotIn('darktable:num="2"', cleaned)
         self.assertIn('darktable:history_end="2"', cleaned)
+
+    def test_history_after_the_viewed_step_is_dropped(self) -> None:
+        document = """
+        <rdf:Description darktable:history_end="2">
+          <rdf:li darktable:num="0" darktable:operation="exposure" darktable:multi_name=""/>
+          <rdf:li darktable:num="1" darktable:operation="colorbalancergb" darktable:multi_name="AI color"/>
+          <rdf:li darktable:num="2" darktable:operation="exposure" darktable:multi_name="Subject lift"/>
+          <rdf:li darktable:num="3" darktable:operation="vignette" darktable:multi_name="AI animal"/>
+        </rdf:Description>
+        """
+        cleaned, removed = collapse_history_to_cursor(document)
+        self.assertEqual(removed, 2)
+        self.assertIn('darktable:history_end="2"', cleaned)
+        self.assertIn('darktable:num="1"', cleaned)
+        self.assertNotIn("Subject lift", cleaned)
+        self.assertNotIn("AI animal", cleaned)
 
     def test_undone_ai_steps_do_not_pull_history_end_back(self) -> None:
         document = """

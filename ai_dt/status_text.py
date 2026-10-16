@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+from ai_dt.features import feature_title
 from ai_dt.reasoner import plain_gemini_failure
 from ai_dt.versions import version_sentence
 
@@ -91,6 +92,40 @@ def plan_backend_line(reasoning: dict | None) -> str:
     return "Plan: not used"
 
 
+def _plan_sheet(recipe: dict) -> str:
+    """The steps still ahead, and how a typed sentence rewrites them."""
+
+    plan = recipe.get("plan") if isinstance(recipe.get("plan"), dict) else {}
+    done = [str(item) for item in (plan.get("features_done") or []) if str(item).strip()]
+    path = [str(item) for item in (plan.get("features_path") or []) if str(item).strip()]
+    queue = [item for item in (plan.get("step_queue") or []) if isinstance(item, dict)]
+    nxt = str(recipe.get("features_next") or "").strip()
+    if not done and not path and not nxt and not queue:
+        return ""
+    rows = ["Plan"]
+    for item in done:
+        rows.append(f"done — {feature_title(item)}")
+    if queue:
+        rows.append(f"now — {str(queue[0].get('title') or '').strip() or feature_title(str(queue[0].get('id') or ''))}")
+        for item in queue[1:]:
+            label = str(item.get("title") or "").strip() or feature_title(str(item.get("id") or ""))
+            rows.append(f"later — {label}")
+    elif nxt:
+        rows.append(f"now — {str(recipe.get('features_next_title') or '').strip() or feature_title(nxt)}")
+        for item in path:
+            if item != nxt and item not in done:
+                rows.append(f"later — {feature_title(item)}")
+    ask = "Ask" if recipe.get("chat") else "Propose looks"
+    if nxt:
+        rows.append(
+            "Accept applies this step. Skip leaves it out. "
+            f"Type a change and press {ask} to make a new plan from this photo."
+        )
+    else:
+        rows.append(f"Type a change and press {ask} to make a new plan from this photo.")
+    return "\n".join(rows)
+
+
 def panel_status(recipe: dict) -> str:
     """The full panel text. It is not cut to a character limit."""
 
@@ -99,15 +134,41 @@ def panel_status(recipe: dict) -> str:
         text = str(recipe.get(key) or "").strip()
         if text:
             lines.append(text)
+    plan = recipe.get("plan") if isinstance(recipe.get("plan"), dict) else {}
+    reasoning = plan.get("reasoning") if isinstance(plan.get("reasoning"), dict) else {}
+    paragraph = str(reasoning.get("paragraph") or "").strip()
+    if paragraph:
+        lines.append(paragraph)
     subject = str(recipe.get("subject_name") or "").strip()
     if subject:
         lines.append(f"Subject: {subject}.")
-    sentence = version_sentence(recipe)
-    if sentence:
-        lines.append(sentence)
-    plan = recipe.get("plan") if isinstance(recipe.get("plan"), dict) else {}
+    nxt = str(recipe.get("features_next_title") or recipe.get("features_next") or "").strip()
+    plan_sheet = _plan_sheet(recipe)
+    if plan_sheet:
+        lines.append(plan_sheet)
+    elif nxt:
+        lines.append(
+            f"I would try {nxt} next. Accept applies it to this photo. "
+            "Type a change in the steer box and press Propose looks to rewrite the plan."
+        )
+    elif not paragraph:
+        sentence = version_sentence(recipe)
+        if sentence:
+            lines.append(sentence)
+    handoff = recipe.get("handoff") if isinstance(recipe.get("handoff"), dict) else {}
+    handoff_sentence = str(handoff.get("sentence") or "").strip()
+    if handoff_sentence:
+        lines.append(handoff_sentence)
+    elif not nxt:
+        lines.append(
+            "Type a change in the steer box, then press Propose looks. "
+            "Gemini rewrites the plan from that sentence."
+        )
     for key in ("warmth_note", "shadow_note", "gradient_note"):
         note = str(plan.get(key) or "").strip()
         if note and note not in lines:
             lines.append(note)
+    feature_note = str(recipe.get("feature_note") or "").strip()
+    if feature_note and feature_note not in lines:
+        lines.append(feature_note)
     return "\n".join(lines)

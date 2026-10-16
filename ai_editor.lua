@@ -1,10 +1,11 @@
 --[[
 AI editor for Darktable.
 
-Propose looks for the lighttable selection or the darkroom image, then
-apply the one you pick onto a new duplicate. The script reads the original
-RAW when Python can open it, writes edited.tif, and appends the style to
-that duplicate's history. Revert AI edit removes only those appended steps.
+Propose looks for the lighttable selection or the darkroom image. A preview
+window shows every look. Picking a look there or on this panel duplicates
+the photo and applies the style on that copy. The TIFF stays out of the
+library. Accept and Skip stay on the copy that is already open. Revert AI
+edit still removes AI steps from a RAW that has them.
 
 Load it from luarc with:  require "ai_editor/ai_editor"
 The ai_processor.py file and the ai_dt package must stay next to this script.
@@ -15,7 +16,7 @@ local script_data = {}
 
 script_data.metadata = {
   name = "AI editor",
-  purpose = "Analyze a selected image locally and append exposure, color, and subject edits",
+  purpose = "Duplicate the photo, apply the look there, and leave the original unchanged",
   author = "ai_editor",
 }
 
@@ -68,12 +69,42 @@ local function shell_quote(value)
   return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
+-- os.execute("mkdir") opens a cmd window. The lighttable calls this on every
+-- filmstrip move, so an existing folder must not start a process.
+local lfs_ok, lfs = pcall(require, "lfs")
+local made_dirs = {}
+
 local function mkdir_p(path)
+  if type(path) ~= "string" or path == "" or made_dirs[path] then
+    return nil
+  end
+  if lfs_ok and lfs.attributes and lfs.attributes(path, "mode") == "directory" then
+    made_dirs[path] = true
+    return nil
+  end
+  if lfs_ok and lfs.mkdir then
+    local parent = path:match("^(.*[/\\])[^/\\]+$")
+    if parent then
+      parent = parent:gsub("[/\\]+$", "")
+      if parent ~= "" and parent ~= path then
+        local err = mkdir_p(parent)
+        if err then
+          return err
+        end
+      end
+    end
+    lfs.mkdir(path)
+    if lfs.attributes(path, "mode") == "directory" then
+      made_dirs[path] = true
+      return nil
+    end
+  end
   if on_windows() then
     os.execute('mkdir "' .. path:gsub("/", "\\") .. '"')
   else
     os.execute("mkdir -p " .. shell_quote(path))
   end
+  made_dirs[path] = true
   return nil
 end
 
@@ -406,7 +437,12 @@ local function run_processor(preview, work_dir, original, vibe, steer, options)
   return output
 end
 
+-- A style cannot carry drawn masks. It still carries the global grade,
+-- and that grade is what lands on the duplicate.
 local function apply_recipe(image, work_dir)
+  if continue_from_viewed_history then
+    continue_from_viewed_history(image)
+  end
   local recipe_path = join_path(work_dir, "output.json")
   local contents, read_error = read_file(recipe_path)
   if not contents then
@@ -562,6 +598,11 @@ local preset_ids = {}
 local preset_queries = {}
 local choice_buttons = {}
 local choice_ids = {}
+local accept_button
+local skip_button
+local feature_waiting = false
+local sync_waiting_step
+local continue_from_viewed_history
 
 local function duplicate_index_of(image)
   local index = tonumber(image.duplicate_index)
@@ -580,6 +621,24 @@ local function work_dir_for(image)
   local root = join_path(dt.configuration.config_dir, "ai-editor-work")
   local folder = join_path(root, tostring(image.id))
   return join_path(folder, "v" .. tostring(duplicate_index_of(image)))
+end
+
+-- An opened TIFF lives in the work folder that already holds output.json.
+-- Follow-up steers write there, so the camera file is read again.
+local function edit_work_dir(image)
+  local path = image_source_path(image)
+  local lower = path:lower()
+  local parent = path:match("^(.*)[/\\][^/\\]+$")
+  if parent and lower:find("[/\\]opened[/\\][^/\\]+%.tif$") then
+    local work = parent:match("^(.*)[/\\]opened$")
+    if work and work ~= "" then
+      return work
+    end
+  end
+  if parent and lower:find("edited%.tif$") then
+    return parent
+  end
+  return work_dir_for(image)
 end
 
 -- current_view() pushes a module entry. view.id is the module name
@@ -634,24 +693,6 @@ local function darkroom_image()
   return nil
 end
 
-local function fork_version(image)
-  if type(image.duplicate_with_history) == "function" then
-    local ok, copy = pcall(function()
-      return image:duplicate_with_history()
-    end)
-    if ok and copy then
-      return copy
-    end
-  end
-  if dt.database and type(dt.database.duplicate_with_history) == "function" then
-    local ok, copy = pcall(dt.database.duplicate_with_history, image)
-    if ok and copy then
-      return copy
-    end
-  end
-  return nil, "Darktable could not duplicate this image"
-end
-
 local LOOK_TITLES = {
   faithful = "Faithful",
   ["shadow-lift"] = "Open shadows",
@@ -682,7 +723,7 @@ local function read_version_record(image)
   if image == nil then
     return nil
   end
-  local contents = read_file(join_path(work_dir_for(image), "version.json"))
+  local contents = read_file(join_path(edit_work_dir(image), "version.json"))
   if not contents then
     return nil
   end
@@ -730,10 +771,57 @@ set_version_name = function(image, sentence)
   end)
 end
 
-local function open_darkroom(image)
+local function fork_version(image)
+  local function different(copy)
+    return copy and tonumber(copy.id) ~= tonumber(image.id)
+  end
+  if type(image.duplicate_with_history) == "function" then
+    local ok, copy = pcall(function()
+      return image:duplicate_with_history()
+    end)
+    if ok and different(copy) then
+      return copy
+    end
+  end
+  if dt.database and type(dt.database.duplicate_with_history) == "function" then
+    local ok, copy = pcall(dt.database.duplicate_with_history, image)
+    if ok and different(copy) then
+      return copy
+    end
+  end
+  return nil, "Darktable could not duplicate this image"
+end
+
+-- Select the new duplicate and open it. Reading a missing field on a
+-- Darktable view throws, so center_on stays inside pcall. A throw here
+-- used to leave the darkroom on the original and apply the look again.
+local function show_in_darkroom(image)
+  pcall(function()
+    if type(dt.gui.selection) == "function" then
+      dt.gui.selection({ image })
+    end
+  end)
+  pcall(function()
+    dt.gui.views.lighttable.center_on(image)
+  end)
+  pcall(function()
+    if type(dt.gui.current_view) == "function" and dt.gui.views and dt.gui.views.darkroom then
+      dt.gui.current_view(dt.gui.views.darkroom)
+    end
+  end)
+  yield_ui()
   pcall(function()
     dt.gui.views.darkroom.display_image(image)
   end)
+  yield_ui()
+  local shown_ok, shown = pcall(function()
+    return dt.gui.views.darkroom.display_image()
+  end)
+  if (not shown_ok) or shown == nil or shown.id ~= image.id then
+    pcall(function()
+      dt.gui.views.darkroom.display_image(image)
+    end)
+  end
 end
 
 local function read_recipe(work_dir)
@@ -747,6 +835,40 @@ local function read_recipe(work_dir)
     return nil, "Could not read output.json: " .. tostring(recipe)
   end
   return recipe
+end
+
+local function apply_step(image, work_dir)
+  -- One history module for the step just accepted. Skip writes no file.
+  if continue_from_viewed_history then
+    continue_from_viewed_history(image)
+  end
+  local recipe = read_recipe(work_dir)
+  if type(recipe) ~= "table" then
+    return nil
+  end
+  local info = recipe.step_style
+  if type(info) ~= "table" or type(info.file) ~= "string" or type(info.name) ~= "string" then
+    return nil
+  end
+  if file_size(info.file) < 32 then
+    return nil
+  end
+  local imported, import_error = pcall(dt.styles.import, info.file)
+  if not imported then
+    return nil, "Darktable could not import the step: " .. tostring(import_error)
+  end
+  local style = find_style(info.name)
+  if not style then
+    return nil, "Imported step was not found: " .. info.name
+  end
+  local applied, apply_error = pcall(function()
+    dt.styles.apply(style, image)
+  end)
+  if not applied then
+    return nil, "Could not apply the step: " .. tostring(apply_error)
+  end
+  pcall(dt.styles.delete, style)
+  return true
 end
 
 local function version_sentence_of(recipe)
@@ -871,40 +993,132 @@ local function read_json_file(path)
   return data
 end
 
+local function copy_file(source, destination, overwrite)
+  if file_size(source) < 2 then
+    return false
+  end
+  if not overwrite and file_size(destination) > 2 then
+    return false
+  end
+  local contents = read_file(source)
+  if not contents then
+    return false
+  end
+  return write_file(destination, contents) == nil
+end
+
+local function json_string(value)
+  return (tostring(value or ""):gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\r", "\\r"):gsub("\n", "\\n"))
+end
+
+local function picture_key(path)
+  local text = tostring(path or ""):gsub("/", "\\"):lower()
+  local hash = 5381
+  for index = 1, #text do
+    hash = math.floor((hash * 33 + text:byte(index)) % 4294967296)
+  end
+  return string.format("%08x", hash)
+end
+
+local function picture_cache_path(source)
+  local root = join_path(dt.configuration.config_dir, "ai-editor-work")
+  local folder = join_path(root, "cache")
+  mkdir_p(folder)
+  return join_path(folder, picture_key(source) .. ".json")
+end
+
+local function picture_has_look(work)
+  local context = read_json_file(join_path(work, "context.json"))
+  return type(context) == "table" and context.look_applied == true
+end
+
+local function is_original(image)
+  return duplicate_index_of(image) == 0
+end
+
+-- A duplicate starts with an empty folder, so a later Propose would read the
+-- photo as new and paint the whole look again. The cache remembers which
+-- copy already has the grade.
+local function restore_picture_context(image, work)
+  if picture_has_look(work) then
+    return true
+  end
+  local source = image_source_path(image)
+  if source == "" then
+    return false
+  end
+  local cached = read_json_file(picture_cache_path(source))
+  if type(cached) ~= "table" or cached.look_applied ~= true then
+    return false
+  end
+  if tonumber(cached.applied_image_id) ~= tonumber(image.id) then
+    return false
+  end
+  local from = cached.work
+  if type(from) ~= "string" or from == "" then
+    return false
+  end
+  mkdir_p(work)
+  for _, name in ipairs({ "output.json", "proposal.json", "stage.json", "preview.jpg", "edit.dtstyle" }) do
+    copy_file(join_path(from, name), join_path(work, name))
+  end
+  if file_size(join_path(work, "output.json")) < 2 then
+    return false
+  end
+  write_file(
+    join_path(work, "context.json"),
+    string.format(
+      '{"look_applied":true,"look_id":"%s","source":"%s"}\n',
+      json_string(cached.look_id),
+      json_string(source)
+    )
+  )
+  return true
+end
+
+local function remember_applied_look(source_image, copy, work, look)
+  local copy_work = work_dir_for(copy)
+  local mkdir_error = mkdir_p(copy_work)
+  if mkdir_error then
+    return
+  end
+  for _, name in ipairs({ "output.json", "proposal.json", "stage.json", "preview.jpg", "edit.dtstyle" }) do
+    -- The copy may already have an older plan with no waiting step.
+    -- Replace it with the plan just written, or Accept stays off.
+    copy_file(join_path(work, name), join_path(copy_work, name), true)
+  end
+  local source = image_source_path(source_image)
+  write_file(
+    join_path(copy_work, "context.json"),
+    string.format(
+      '{"look_applied":true,"look_id":"%s","source":"%s"}\n',
+      json_string(look),
+      json_string(source)
+    )
+  )
+  if source == "" then
+    return
+  end
+  write_file(
+    picture_cache_path(source),
+    string.format(
+      '{"look_applied":true,"look_id":"%s","source":"%s","applied_image_id":%d,"work":"%s","plan_work":"%s"}\n',
+      json_string(look),
+      json_string(source),
+      tonumber(copy.id) or 0,
+      json_string(copy_work),
+      json_string(work)
+    )
+  )
+end
+
 local function run_staged(preview, work, original, vibe, steer, options)
+  -- One Python process. Picture, Gemini, and the looks used to be separate
+  -- launches, and each one paid interpreter startup again.
   options = type(options) == "table" and options or {}
-  local function step(stage)
-    local step_options = {}
-    for key, value in pairs(options) do
-      step_options[key] = value
-    end
-    step_options.stage = stage
-    return run_processor(preview, work, original, vibe, steer, step_options)
-  end
-  show_progress("Reading the picture with Mistral…", 0.15)
-  local _, run_error = step("picture")
-  if run_error then
-    return nil, run_error
-  end
-  show_progress("Asking Gemini…", 0.45)
-  _, run_error = step("gemini")
-  if run_error then
-    return nil, run_error
-  end
-  local proposal = read_json_file(join_path(work, "proposal.json"))
-  if type(proposal) == "table" and proposal.ask_ollama then
-    if proposal.gemini_tried then
-      show_progress("Gemini did not answer, asking Ollama…", 0.7)
-    else
-      show_progress("Asking Ollama…", 0.7)
-    end
-    _, run_error = step("ollama")
-    if run_error then
-      return nil, run_error
-    end
-  end
-  show_progress("Writing the looks…", 0.9)
-  return step("finish")
+  options.stage = "all"
+  show_progress("Starting the edit…", 0.12)
+  return run_processor(preview, work, original, vibe, steer, options)
 end
 
 local function propose_image(image, index, total, vibe, steer)
@@ -914,10 +1128,21 @@ local function propose_image(image, index, total, vibe, steer)
   elseif edge > 2048 then
     edge = 2048
   end
-  local work = work_dir_for(image)
+  local work = edit_work_dir(image)
   local mkdir_error = mkdir_p(work)
   if mkdir_error then
     return nil, mkdir_error
+  end
+  local steered = tostring(steer or ""):gsub("%s", "") ~= ""
+  -- The camera XMP lists every copy, so it cannot say that this original already has the grade.
+  local already = (not is_original(image)) and restore_picture_context(image, work)
+  if already and not steered then
+    local recipe = read_recipe(work)
+    if recipe then
+      recipe.chat = true
+      recipe.choices = {}
+      return recipe, nil, true
+    end
   end
   local preview = join_path(work, "preview.jpg")
   status_label.text = string.format("Exporting %s (%d of %d)…", image.filename or "image", index, total)
@@ -927,6 +1152,22 @@ local function propose_image(image, index, total, vibe, steer)
     return nil, export_error
   end
   local options = processor_options(image, nil)
+  if already then
+    -- The open photo is the baseline. Ask for steps. Do not build looks.
+    show_progress("Asking for the steps…", 0.45)
+    options.stage = "chat"
+    local _, run_error = run_processor(preview, work, image_source_path(image), vibe, steer, options)
+    close_progress()
+    if run_error then
+      return nil, failure_text(work, run_error)
+    end
+    local recipe = read_recipe(work)
+    if recipe then
+      recipe.chat = true
+      recipe.choices = {}
+    end
+    return recipe, nil, true
+  end
   local _, run_error = run_staged(preview, work, image_source_path(image), vibe, steer, options)
   if run_error then
     return nil, failure_text(work, run_error)
@@ -934,78 +1175,142 @@ local function propose_image(image, index, total, vibe, steer)
   return read_recipe(work)
 end
 
--- The new duplicate has an empty work folder. Copy the plan just proposed
--- on the source so this steer turn continues that duplicate's skips and asks.
-local function carry_plan(source_dir, dest_dir)
-  if source_dir == dest_dir then
-    return
-  end
-  local contents = read_file(join_path(source_dir, "output.json"))
-  if not contents then
-    return
-  end
-  write_file(join_path(dest_dir, "output.json"), contents)
-end
-
-local function copy_work_file(source_dir, dest_dir, name)
-  if source_dir == dest_dir then
-    return file_size(join_path(dest_dir, name)) > 2
-  end
-  local contents = read_file(join_path(source_dir, name))
-  if not contents or contents == "" then
-    return false
-  end
-  return write_file(join_path(dest_dir, name), contents) == nil
-end
-
 local function apply_image(image, vibe, steer, look)
-  local copy, fork_error = fork_version(image)
-  if not copy then
-    return nil, fork_error
-  end
+  -- The original stays put. Accept, Skip, and a picked look all repaint
+  -- edited.tif in the work folder, then open a new copy of that TIFF.
+  local feature_turn = look == "accept-feature" or look == "skip-feature"
   local edge = tonumber(preference("preview", "integer")) or DEFAULTS.preview
   if edge < 256 then
     edge = 256
   elseif edge > 2048 then
     edge = 2048
   end
-  local work = work_dir_for(copy)
+  local work = edit_work_dir(image)
   local mkdir_error = mkdir_p(work)
   if mkdir_error then
     return nil, mkdir_error
   end
-  local source = work_dir_for(image)
-  carry_plan(source, work)
+  local already = (not is_original(image)) and restore_picture_context(image, work)
+  if feature_turn and not already then
+    local flag = look == "accept-feature" and "--commit-step" or "--skip-step"
+    show_progress(look == "accept-feature" and "Copying this photo…" or "Skipping this step…", 0.7)
+    local processor = join_path(script_directory(), "ai_processor.py")
+    local command = table.concat({
+      shell_quote(preference("python", "string")),
+      " ",
+      shell_quote(processor),
+      " ",
+      flag,
+      " --output-dir ",
+      shell_quote(work),
+    })
+    local output, exit_code = run_captured(command, work)
+    if not output or exit_code ~= 0 then
+      close_progress()
+      return nil, output or "The step could not be updated."
+    end
+    if look == "skip-feature" then
+      close_progress()
+      local recipe = read_recipe(work)
+      local body = recipe and panel_body(recipe) or ""
+      return body ~= "" and body or "The plan is updated."
+    end
+    local recipe_before = read_recipe(work)
+    local waiting = type(recipe_before) == "table" and recipe_before.step_style or nil
+    if type(waiting) ~= "table" then
+      close_progress()
+      local body = recipe_before and panel_body(recipe_before) or ""
+      return "This sentence did not become a step, so the original was left as it is.\n" .. body
+    end
+    local copy, fork_error = fork_version(image)
+    if not copy then
+      close_progress()
+      return nil, fork_error
+    end
+    local stepped, step_error = apply_step(copy, work)
+    if not stepped then
+      close_progress()
+      return nil, step_error or "The step was not applied."
+    end
+    remember_applied_look(image, copy, work, look)
+    close_progress()
+    show_in_darkroom(copy)
+    local recipe = read_recipe(work)
+    local body = recipe and panel_body(recipe) or ""
+    return "This step is on a new copy. The original was left as it is.\n" .. body
+  end
+  if feature_turn and already then
+    local flag = look == "accept-feature" and "--commit-step" or "--skip-step"
+    show_progress(look == "accept-feature" and "Applying this step…" or "Skipping this step…", 0.7)
+    local processor = join_path(script_directory(), "ai_processor.py")
+    local command = table.concat({
+      shell_quote(preference("python", "string")),
+      " ",
+      shell_quote(processor),
+      " ",
+      flag,
+      " --output-dir ",
+      shell_quote(work),
+    })
+    local output, exit_code = run_captured(command, work)
+    if not output or exit_code ~= 0 then
+      close_progress()
+      return nil, output or "The step could not be updated."
+    end
+    if look == "accept-feature" then
+      local stepped, step_error = apply_step(image, work)
+      if not stepped and step_error then
+        close_progress()
+        return nil, step_error
+      end
+    end
+    close_progress()
+    local recipe = read_recipe(work)
+    local body = recipe and panel_body(recipe) or ""
+    return body ~= "" and body or "The plan is updated."
+  end
+  if not feature_turn and already then
+    local recipe = read_recipe(work)
+    local body = ""
+    if recipe then
+      body = panel_body(recipe)
+    end
+    if body == "" then
+      body = "The grade already on this photo stays as it is."
+    end
+    return "This photo already has its look. Type what should change, then press Ask.\n" .. body
+  end
   -- Propose already read the picture and wrote the plan. Applying a look
   -- only rebuilds the grade. Another Mistral and Gemini round, and another
   -- preview export, were the long wait after the button.
   local preview = join_path(work, "preview.jpg")
-  local reused = copy_work_file(source, work, "stage.json") and copy_work_file(source, work, "proposal.json")
-  if reused then
-    copy_work_file(source, work, "preview.jpg")
-  end
-  local options = processor_options(copy, image)
+  local reused = file_size(join_path(work, "stage.json")) > 2 and file_size(join_path(work, "proposal.json")) > 2
+  local options = processor_options(image, nil)
   options.look = look
   local run_error
   if reused and file_size(preview) > 32 then
-    show_progress("Applying the look…", 0.55)
+    if feature_turn then
+      show_progress(look == "accept-feature" and "Applying this step…" or "Skipping this step…", 0.55)
+    else
+      show_progress("Applying the look…", 0.55)
+    end
     options.stage = "finish"
-    _, run_error = run_processor(preview, work, image_source_path(copy), vibe, steer, options)
+    _, run_error = run_processor(preview, work, image_source_path(image), vibe, steer, options)
   else
-    status_label.text = string.format("Exporting %s…", copy.filename or "duplicate")
+    status_label.text = string.format("Exporting %s…", image.filename or "image")
     yield_ui()
-    local export_error = export_preview(copy, preview, edge)
+    local export_error = export_preview(image, preview, edge)
     if export_error then
       return nil, export_error
     end
-    _, run_error = run_staged(preview, work, image_source_path(copy), vibe, steer, options)
+    _, run_error = run_staged(preview, work, image_source_path(image), vibe, steer, options)
   end
   if run_error then
     return nil, run_error
   end
-  local recipe, apply_error = apply_recipe(copy, work)
+  local recipe = read_recipe(work)
   if not recipe then
-    return nil, apply_error
+    return nil, "The masked picture was written, but output.json could not be read."
   end
   local sentence = version_sentence_of(recipe)
   local record = type(recipe.version_record) == "table" and recipe.version_record or nil
@@ -1013,16 +1318,33 @@ local function apply_image(image, vibe, steer, look)
   if label == "" then
     label = sentence
   end
-  set_version_name(copy, label)
+  if feature_turn then
+    close_progress()
+    return nil, "The step was not applied, so this photo was left as it is."
+  end
+  do
+    show_progress("Duplicating this photo…", 0.9)
+    local copy, fork_error = fork_version(image)
+    if not copy then
+      return nil, fork_error
+    end
+    local applied, apply_error = apply_recipe(copy, work)
+    if not applied then
+      return nil, apply_error
+    end
+    set_version_name(copy, label)
+    remember_applied_look(image, copy, work, look)
+    close_progress()
+    show_in_darkroom(copy)
+  end
   if look_name_label ~= nil and label ~= "" and #label < 40 then
     look_name_label.label = "Look: " .. label
   end
-  open_darkroom(copy)
   local body = panel_body(recipe)
   if body ~= "" then
     return body
   end
-  return sentence ~= "" and sentence or summary(recipe, copy)
+  return sentence ~= "" and sentence or summary(recipe, image)
 end
 
 local function remember_vibe()
@@ -1035,7 +1357,9 @@ local function remember_vibe()
   return text
 end
 
-local function remember_steer()
+local shown_work = nil
+
+local function steer_text()
   local text = ""
   if steer_entry then
     text = tostring(steer_entry.text or "")
@@ -1044,6 +1368,31 @@ local function remember_steer()
   if #text > 400 then
     text = text:sub(1, 400)
   end
+  return text
+end
+
+local function save_photo_steer(work)
+  if type(work) ~= "string" or work == "" then
+    return
+  end
+  write_file(join_path(work, "steer.txt"), steer_text())
+end
+
+local function load_photo_steer(work)
+  if not steer_entry then
+    return
+  end
+  local text = ""
+  if type(work) == "string" and work ~= "" then
+    text = read_file(join_path(work, "steer.txt")) or ""
+    text = text:gsub("%s+$", "")
+  end
+  steer_entry.text = text
+end
+
+local function remember_steer()
+  local text = steer_text()
+  save_photo_steer(shown_work)
   pcall(dt.preferences.write, PREFERENCE, "steer", "string", text)
   return text
 end
@@ -1086,11 +1435,59 @@ local function target_images()
   return images, truncated
 end
 
+local function show_feature_pair(title)
+  feature_waiting = type(title) == "string" and title ~= ""
+  local accept_tip = ""
+  local skip_tip = ""
+  if feature_waiting then
+    accept_tip = "Accept " .. title .. ". Paint this onto the edit."
+    skip_tip = "Skip " .. title .. ". Leave it off and show the one after it."
+  end
+  if accept_button then
+    accept_button.sensitive = feature_waiting
+    pcall(function()
+      accept_button.tooltip = accept_tip
+    end)
+  end
+  if skip_button then
+    skip_button.sensitive = feature_waiting
+    pcall(function()
+      skip_button.tooltip = skip_tip
+    end)
+  end
+end
+
 local function show_choices(recipe)
-  local choices = type(recipe) == "table" and recipe.choices or nil
+  local chatting = type(recipe) == "table" and (recipe.chat == true or recipe._continued == true)
+  local offer = type(recipe) == "table" and recipe.offer_looks == true and not chatting
+  local choices = offer and recipe.choices or nil
+  local slots = {}
+  local next_id = type(recipe) == "table" and recipe.features_next or ""
+  local next_title = type(recipe) == "table" and recipe.features_next_title or next_id
+  if run_button then
+    run_button.label = chatting and "Ask" or "Propose looks"
+  end
+  if steer_entry then
+    pcall(function()
+      steer_entry.placeholder = chatting and "what should change on this photo?" or "rewrite the plan, then Propose looks"
+    end)
+  end
+  if type(choices) == "table" then
+    for _, item in ipairs(choices) do
+      if #slots >= 6 then
+        break
+      end
+      table.insert(slots, item)
+    end
+  end
+  local waiting = ""
+  if type(next_id) == "string" and next_id ~= "" then
+    waiting = type(next_title) == "string" and next_title ~= "" and next_title or next_id
+  end
+  show_feature_pair(waiting)
   for index = 1, 6 do
     local button = choice_buttons[index]
-    local item = type(choices) == "table" and choices[index] or nil
+    local item = slots[index]
     if button and type(item) == "table" and type(item.id) == "string" and item.id ~= "" then
       button.label = tostring(item.title or item.id)
       button.sensitive = true
@@ -1109,7 +1506,43 @@ local function show_choices(recipe)
   end
 end
 
+local preview_image = nil
+local preview_applying = false
+local preview_watch = 0
+local panel_is_busy = false
+local pick_serial = 0
+local open_options_window
+
+local function url_encode(value)
+  return (tostring(value):gsub("([^%w%-%.%_%~])", function(char)
+    return string.format("%%%02X", string.byte(char))
+  end))
+end
+
+local function remember_pick(work, look, source, applied)
+  if type(work) ~= "string" or work == "" then
+    return
+  end
+  local safe = tostring(look or ""):gsub("[^%w%-]", "")
+  if safe == "" then
+    return
+  end
+  local origin = source == "editor" and "editor" or "preview"
+  local flag = applied and "true" or "false"
+  pick_serial = pick_serial + 1
+  local payload = string.format(
+    '{"id":"%s","title":"%s","source":"%s","applied":%s,"at":%d}\n',
+    safe,
+    safe,
+    origin,
+    flag,
+    os.time() * 1000 + pick_serial
+  )
+  write_file(join_path(work, "picked.json"), payload)
+end
+
 local function run_analysis()
+  preview_image = nil
   local vibe = vibe_to_send()
   local steer = remember_steer()
   local images, truncated = target_images()
@@ -1125,7 +1558,7 @@ local function run_analysis()
   local last = ""
   local shown = nil
   for index, image in ipairs(images) do
-    local recipe, failure = propose_image(image, index, #images, vibe, steer)
+    local recipe, failure, continued = propose_image(image, index, #images, vibe, steer)
     if not recipe then
       status_label.text = string.format("%s failed.\n%s", image.filename or "Image", failure or "unknown error")
       dt.print("AI analysis failed")
@@ -1133,6 +1566,7 @@ local function run_analysis()
     end
     if shown == nil then
       shown = recipe
+      shown._continued = continued and true or false
     end
     last = panel_body(recipe)
     if last == "" then
@@ -1140,16 +1574,40 @@ local function run_analysis()
     end
   end
   show_choices(shown)
+  local continued = type(shown) == "table" and shown._continued == true
+  local where = "The buttons on this panel duplicate this photo and apply the look there."
+  if continued then
+    where = "Type what should change, then press Ask. Accept and Skip walk the steps. A new sentence starts a new plan from this photo."
+  elseif images[1] ~= nil then
+    local work = edit_work_dir(images[1])
+    os.remove(join_path(work, "picked.json"))
+    preview_image = images[1]
+    local sheet_ok, sheet_opened = pcall(open_options_window, work)
+    if sheet_ok and sheet_opened ~= false then
+      where = "A choice in the preview window or on this panel duplicates this photo and applies the look there."
+      if #images > 1 then
+        where = where .. " The window shows the first picture."
+      end
+    else
+      where = "The preview window did not open. " .. where
+    end
+  end
   if truncated then
     last = last .. string.format("\nOnly the first %d selected images were proposed.", MAX_IMAGES)
   end
-  last = last .. "\nPick a look. Nothing is on the history until you do."
+  if continued then
+    last = last .. "\n" .. where
+  elseif type(shown) == "table" and type(shown.features_next) == "string" and shown.features_next ~= "" then
+    last = last .. "\nAccept or skip the next feature, or pick a look. " .. where
+  elseif type(shown) ~= "table" or shown.offer_looks ~= false then
+    last = last .. "\n" .. where
+  end
   status_label.text = last
-  dt.print("Looks are ready")
+  dt.print(continued and "Continuing this photo" or "Looks are ready")
 end
 
-local function apply_choice(index)
-  local look = choice_ids[index]
+local function apply_choice(index, forced_look)
+  local look = forced_look or choice_ids[index]
   if type(look) ~= "string" or look == "" then
     status_label.text = "Propose looks first."
     return
@@ -1162,7 +1620,9 @@ local function apply_choice(index)
     return
   end
   local last = ""
+  local feature_turn = look == "accept-feature" or look == "skip-feature"
   for _, image in ipairs(images) do
+    remember_pick(edit_work_dir(image), look, "editor", true)
     local text, failure = apply_image(image, vibe, steer, look)
     if not text then
       status_label.text = string.format("%s failed.\n%s", image.filename or "Image", failure or "unknown error")
@@ -1170,18 +1630,47 @@ local function apply_choice(index)
       return
     end
     last = text
+    local recipe = read_recipe(edit_work_dir(image))
+    if recipe and not feature_turn then
+      recipe.chat = true
+      recipe.choices = {}
+    end
+    if recipe then
+      show_choices(recipe)
+    end
   end
   if truncated then
     last = last .. string.format("\nOnly the first %d selected images were duplicated.", MAX_IMAGES)
   end
   status_label.text = last
-  dt.print("AI edit applied")
+  if look == "accept-feature" then
+    dt.print("Applied this step")
+  elseif look == "skip-feature" then
+    dt.print("Skipped this step")
+  elseif type(last) == "string" and last:find("already has its look", 1, true) then
+    dt.print("Already on this photo")
+  elseif type(last) == "string" and last:find("added as one step", 1, true) then
+    dt.print("Applied this step")
+  elseif type(last) == "string" and last:find("did not become a step", 1, true) then
+    dt.print("No step for this sentence")
+  elseif type(last) == "string" and last:find("added on this photo", 1, true) then
+    dt.print("Look added on this photo")
+  else
+    dt.print("Look applied on a new duplicate")
+  end
 end
 
 local function set_panel_busy(busy)
+  panel_is_busy = busy and true or false
   run_button.sensitive = not busy
   if revert_button then
     revert_button.sensitive = not busy
+  end
+  if accept_button then
+    accept_button.sensitive = (not busy) and feature_waiting
+  end
+  if skip_button then
+    skip_button.sensitive = (not busy) and feature_waiting
   end
   for index, button in ipairs(choice_buttons) do
     if busy then
@@ -1220,9 +1709,34 @@ local function run_blocking(command)
   return os.execute(command)
 end
 
+-- The exit file appears when wscript finishes. Sleep releases the Lua
+-- lock, so the panel can paint. A missing file stops after ten minutes
+-- instead of waiting forever.
+local function wait_for_exit(exit_path, folder)
+  local seen = ""
+  local tries = 0
+  while file_size(exit_path) < 1 do
+    if not (dt.control and type(dt.control.sleep) == "function") then
+      return false
+    end
+    dt.control.sleep(200)
+    tries = tries + 1
+    local status = read_file(join_path(folder, "status.txt")) or ""
+    status = status:gsub("%s+$", "")
+    if status ~= "" and status ~= seen then
+      seen = status
+      show_progress(status, 0.45)
+    end
+    if tries >= 3000 then
+      return false
+    end
+  end
+  return true
+end
+
 -- Windows io.popen keeps a cmd window on screen for the whole run.
--- wscript starts that same command with the window hidden and waits
--- until it exits, then writes run.exit.
+-- The starter script returns at once, so that window does not stay up
+-- while Python loads. The hidden script runs the command and writes run.exit.
 local function run_hidden(command, work_dir)
   local folder = work_dir
   if type(folder) ~= "string" or folder == "" then
@@ -1243,16 +1757,37 @@ local function run_hidden(command, work_dir)
   if file_size(vbs) < 10 then
     return run_popen('"' .. command .. '" < NUL 2>&1')
   end
-  run_blocking(table.concat({
-    "wscript //nologo ",
-    shell_quote(vbs),
-    " ",
-    shell_quote(cmd_path),
-    " ",
-    shell_quote(log_path),
-    " ",
-    shell_quote(exit_path),
-  }))
+  os.remove(join_path(folder, "status.txt"))
+  local starter = join_path(script_directory(), "windows-start-hidden.vbs")
+  local can_wait = dt.control and type(dt.control.sleep) == "function" and file_size(starter) > 10
+  if can_wait then
+    run_blocking(table.concat({
+      "wscript //nologo //b ",
+      shell_quote(starter),
+      " ",
+      shell_quote(vbs),
+      " ",
+      shell_quote(cmd_path),
+      " ",
+      shell_quote(log_path),
+      " ",
+      shell_quote(exit_path),
+    }))
+    if not wait_for_exit(exit_path, folder) and file_size(exit_path) < 1 then
+      return nil, "The edit took too long and was stopped."
+    end
+  else
+    run_blocking(table.concat({
+      "wscript //nologo ",
+      shell_quote(vbs),
+      " ",
+      shell_quote(cmd_path),
+      " ",
+      shell_quote(log_path),
+      " ",
+      shell_quote(exit_path),
+    }))
+  end
   if file_size(exit_path) < 1 then
     return nil, "The edit did not finish. No exit code was written."
   end
@@ -1266,6 +1801,189 @@ function run_captured(command, work_dir)
     return run_hidden(command, work_dir)
   end
   return run_popen(command .. " 2>&1")
+end
+
+local function browser_app()
+  local roots = {
+    os.getenv("PROGRAMFILES"),
+    os.getenv("PROGRAMFILES(X86)"),
+    os.getenv("LOCALAPPDATA"),
+  }
+  local names = {
+    "Microsoft\\Edge\\Application\\msedge.exe",
+    "Google\\Chrome\\Application\\chrome.exe",
+  }
+  for _, root in ipairs(roots) do
+    if type(root) == "string" and root ~= "" then
+      for _, name in ipairs(names) do
+        local path = join_path(root, name)
+        if file_size(path) > 10 then
+          return path
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function start_detached(command)
+  local folder = join_path(script_directory(), "ai-editor-work")
+  mkdir_p(folder)
+  local vbs_path = join_path(folder, "launch-once.vbs")
+  local body = 'CreateObject("Wscript.Shell").Run "' .. command:gsub('"', '""') .. '", 0, False\r\n'
+  if not on_windows() then
+    return os.execute(command .. " >/dev/null 2>&1 &")
+  end
+  write_file(vbs_path, body)
+  return os.execute("wscript //nologo //b " .. shell_quote(vbs_path))
+end
+
+local function preview_server_command()
+  local server = join_path(script_directory(), "preview_server.py")
+  if file_size(server) < 10 then
+    return nil
+  end
+  return table.concat({
+    shell_quote(preference("python", "string")),
+    " ",
+    shell_quote(server),
+    " --ensure",
+  })
+end
+
+local function preview_responds()
+  local probe = table.concat({
+    shell_quote(preference("python", "string")),
+    " -c ",
+    shell_quote("import urllib.request; urllib.request.urlopen('http://127.0.0.1:8741/api/health', timeout=0.5)"),
+  })
+  local _, code = run_hidden(probe, join_path(script_directory(), "ai-editor-work"))
+  return code == 0
+end
+
+local function ensure_preview_server()
+  local command = preview_server_command()
+  if not command then
+    return false
+  end
+  if preview_responds() then
+    return true
+  end
+  -- The page is opened only after this returns. A start that has not
+  -- answered yet used to open a browser onto a dead port.
+  show_progress("Starting the preview…", 0.85)
+  local _, code = run_hidden(command, join_path(script_directory(), "ai-editor-work"))
+  close_progress()
+  return code == 0
+end
+
+function open_options_window(work)
+  if type(work) ~= "string" or work == "" then
+    return false
+  end
+  if not ensure_preview_server() then
+    return false
+  end
+  local url = "http://127.0.0.1:8741/options?work=" .. url_encode(work)
+  if on_windows() then
+    -- An app window can close itself after a choice. A normal browser tab cannot.
+    local browser = browser_app()
+    if browser then
+      start_detached(shell_quote(browser) .. " --app=" .. shell_quote(url))
+    else
+      start_detached('cmd /c start "" "' .. url .. '"')
+    end
+  else
+    start_detached("xdg-open " .. shell_quote(url))
+  end
+  return true
+end
+
+local function maybe_apply_preview_pick()
+  if panel_is_busy or preview_applying or preview_image == nil then
+    return
+  end
+  local work = edit_work_dir(preview_image)
+  local pick = read_json_file(join_path(work, "picked.json"))
+  if type(pick) ~= "table" or pick.source ~= "preview" or pick.applied == true then
+    return
+  end
+  local look = pick.id
+  if type(look) ~= "string" or look == "" then
+    return
+  end
+  preview_applying = true
+  set_panel_busy(true)
+  remember_pick(work, look, "preview", true)
+  local ok_apply, text, failure = pcall(apply_image, preview_image, vibe_to_send(), remember_steer(), look)
+  close_progress()
+  if not ok_apply then
+    failure = text
+    text = nil
+  end
+  if text then
+    local recipe = read_recipe(work)
+    if recipe then
+      show_choices(recipe)
+    end
+    status_label.text = text
+    if look == "accept-feature" then
+      dt.print("Applied this step")
+    elseif look == "skip-feature" then
+      dt.print("Skipped this step")
+    elseif type(text) == "string" and text:find("already has its look", 1, true) then
+      dt.print("Already on this photo")
+    elseif type(text) == "string" and text:find("added as one step", 1, true) then
+      dt.print("Applied this step")
+    elseif type(text) == "string" and text:find("did not become a step", 1, true) then
+      dt.print("No step for this sentence")
+    elseif type(text) == "string" and text:find("added on this photo", 1, true) then
+      dt.print("Look added on this photo")
+    else
+      dt.print("Look applied on a new duplicate")
+    end
+  else
+    -- Leave the pick applied. Clearing it made the next mouse move
+    -- duplicate the photo again.
+    status_label.text = string.format(
+      "%s failed.\n%s",
+      preview_image.filename or "Image",
+      failure or "unknown error"
+    )
+    dt.print("AI edit failed")
+  end
+  set_panel_busy(false)
+  preview_applying = false
+  if sync_waiting_step then
+    sync_waiting_step(darkroom_image())
+  end
+end
+
+-- The looks page writes the choice and closes. Nothing in Darktable
+-- moves until the filmstrip is hovered, so the click used to sit there.
+-- This wait runs after Propose looks and starts the edit when the file appears.
+local function watch_preview_pick()
+  if preview_image == nil then
+    return
+  end
+  if not (dt.control and type(dt.control.sleep) == "function") then
+    return
+  end
+  preview_watch = preview_watch + 1
+  local token = preview_watch
+  for _ = 1, 450 do
+    if token ~= preview_watch or preview_image == nil then
+      return
+    end
+    local work = edit_work_dir(preview_image)
+    local pick = read_json_file(join_path(work, "picked.json"))
+    if type(pick) == "table" and pick.source == "preview" and pick.applied ~= true
+      and not panel_is_busy and not preview_applying then
+      maybe_apply_preview_pick()
+      return
+    end
+    dt.control.sleep(200)
+  end
 end
 
 local function history_steps(count)
@@ -1366,6 +2084,52 @@ local function sidecar_file(image)
     return source .. ".xmp"
   end
   return nil
+end
+
+-- History items after the one on screen are the redo stack. Drop them
+-- before a new module, so the edit continues from the step being viewed.
+function continue_from_viewed_history(image)
+  local xmp = sidecar_file(image)
+  if not xmp then
+    return
+  end
+  local script = join_path(script_directory(), join_path("ai_dt", "revert.py"))
+  if file_size(script) < 10 or type(image.apply_sidecar) ~= "function" then
+    return
+  end
+  local work = work_dir_for(image)
+  mkdir_p(work)
+  local cleaned = join_path(work, "history.xmp")
+  local command = table.concat({
+    shell_quote(preference("python", "string")),
+    " ",
+    shell_quote(script),
+    " --collapse-xmp --xmp ",
+    shell_quote(xmp),
+    " --xmp-out ",
+    shell_quote(cleaned),
+  })
+  local output, exit_code = run_captured(command, work)
+  if not output or exit_code ~= 0 then
+    return
+  end
+  local removed = tonumber(output:match("removed%s+(%d+)"))
+  if not removed or removed == 0 then
+    return
+  end
+  local was_darkroom = in_darkroom()
+  if was_darkroom then
+    leave_darkroom()
+    if current_view_name() == "darkroom" then
+      return
+    end
+  end
+  pcall(function()
+    image:apply_sidecar(cleaned)
+  end)
+  if was_darkroom then
+    return_to_darkroom(image)
+  end
 end
 
 -- Recount after a view switch. Leaving the darkroom writes the sidecar from
@@ -1558,7 +2322,9 @@ local function on_click()
   if not ok then
     status_label.text = "Failed: " .. tostring(failure)
     dt.print("AI analysis failed")
+    return
   end
+  watch_preview_pick()
 end
 
 local function on_revert_click()
@@ -1710,9 +2476,9 @@ local look_row = dt.new_widget("box")(look_row_spec)
 
 steer_entry = dt.new_widget("entry") {
   text = stored_string("steer"),
-  placeholder = "lift the shadows, warmer, more color",
+  placeholder = "what should change on this photo?",
   editable = true,
-  tooltip = "Say it directly, separated by commas or the word and. lift the shadows, hold the highlights, warmer, cooler, more color, mute, more contrast, gradient, crop. epic or strong opens the caps. darken, lift, or hold a subject, foreground, rock, sky, behind, or reflection. revert or skip a stage.",
+  tooltip = "The first time, Propose looks picks the basic grade. After that, type a change and press Ask. Gemini turns it into one or more steps. Accept and Skip walk them. A new sentence starts again from the photo you are viewing.",
 }
 
 -- text_view wraps at word and character breaks. A vertical box gives each
@@ -1737,6 +2503,18 @@ run_button = dt.new_widget("button") {
   clicked_callback = on_click,
 }
 
+revert_button = dt.new_widget("button") {
+  label = "Revert AI edit",
+  tooltip = "Remove the AI exposure, AI color, and AI vignette history steps from the selected images. Your other history stays. A module you renamed by hand is left in place.",
+  clicked_callback = on_revert_click,
+}
+
+local action_row = dt.new_widget("box") {
+  orientation = "horizontal",
+  run_button,
+  revert_button,
+}
+
 for index = 1, 6 do
   choice_buttons[index] = dt.new_widget("button") {
     label = " ",
@@ -1747,6 +2525,9 @@ for index = 1, 6 do
       local ok, failure = pcall(apply_choice, index)
       close_progress()
       set_panel_busy(false)
+      if sync_waiting_step then
+        sync_waiting_step(darkroom_image())
+      end
       if not ok then
         status_label.text = "Failed: " .. tostring(failure)
         dt.print("AI edit failed")
@@ -1755,10 +2536,42 @@ for index = 1, 6 do
   }
 end
 
-revert_button = dt.new_widget("button") {
-  label = "Revert AI edit",
-  tooltip = "Remove the AI exposure, AI color, and AI vignette history steps from the selected images. Your other history stays. A module you renamed by hand is left in place.",
-  clicked_callback = on_revert_click,
+local function on_feature_click(look)
+  set_panel_busy(true)
+  local ok, failure = pcall(apply_choice, nil, look)
+  close_progress()
+  set_panel_busy(false)
+  if sync_waiting_step then
+    sync_waiting_step(darkroom_image())
+  end
+  if not ok then
+    status_label.text = "Failed: " .. tostring(failure)
+    dt.print("AI edit failed")
+  end
+end
+
+accept_button = dt.new_widget("button") {
+  label = "Accept",
+  sensitive = false,
+  tooltip = "",
+  clicked_callback = function()
+    on_feature_click("accept-feature")
+  end,
+}
+
+skip_button = dt.new_widget("button") {
+  label = "Skip",
+  sensitive = false,
+  tooltip = "",
+  clicked_callback = function()
+    on_feature_click("skip-feature")
+  end,
+}
+
+local feature_row = dt.new_widget("box") {
+  orientation = "horizontal",
+  accept_button,
+  skip_button,
 }
 
 local panel = dt.new_widget("box") {
@@ -1766,14 +2579,14 @@ local panel = dt.new_widget("box") {
   vibe_label,
   look_row,
   steer_entry,
-  run_button,
+  action_row,
   choice_buttons[1],
   choice_buttons[2],
   choice_buttons[3],
   choice_buttons[4],
   choice_buttons[5],
   choice_buttons[6],
-  revert_button,
+  feature_row,
   dt.new_widget("separator") {},
   look_name_label,
   status_row,
@@ -1797,6 +2610,41 @@ if not registered then
   print("AI editor could not register its panel: " .. tostring(register_error))
 end
 
+local function recipe_for_image(image)
+  if image == nil then
+    return nil
+  end
+  return read_recipe(edit_work_dir(image))
+end
+
+-- Accept and Skip start off. A darkroom reload, including after a module
+-- is moved, keeps the plan on disk but does not turn the buttons back on.
+function sync_waiting_step(image)
+  if panel_is_busy or preview_applying or image == nil then
+    return
+  end
+  local work = edit_work_dir(image)
+  if shown_work ~= work then
+    save_photo_steer(shown_work)
+    shown_work = work
+    load_photo_steer(work)
+  end
+  local recipe = read_recipe(work)
+  if type(recipe) == "table" and picture_has_look(work) then
+    recipe.chat = true
+    recipe.choices = {}
+    recipe.offer_looks = false
+  end
+  if type(recipe) ~= "table" then
+    show_choices({})
+    status_label.text = "No plan on this photo yet."
+    return
+  end
+  show_choices(recipe)
+  local body = panel_body(recipe)
+  status_label.text = body ~= "" and body or "No plan on this photo yet."
+end
+
 local function image_from_event(...)
   for index = 1, select("#", ...) do
     local value = select(index, ...)
@@ -1808,19 +2656,30 @@ local function image_from_event(...)
 end
 
 pcall(dt.register_event, script_data, "darkroom-image-loaded", function(...)
-  show_loaded_look(image_from_event(...))
+  local image = image_from_event(...)
+  show_loaded_look(image)
+  sync_waiting_step(image)
+  maybe_apply_preview_pick()
 end)
 pcall(dt.register_event, script_data, "mouse-over-image-changed", function(...)
   local image = image_from_event(...)
   if image ~= nil then
     show_loaded_look(image)
+    sync_waiting_step(image)
   end
+  maybe_apply_preview_pick()
 end)
 if type(dt.gui.action_images) == "function" then
   local ok, images = pcall(dt.gui.action_images)
   if ok and type(images) == "table" then
     show_loaded_look(images[1])
+    sync_waiting_step(images[1])
   end
+end
+
+local warm_preview = preview_server_command()
+if warm_preview then
+  start_detached(warm_preview)
 end
 
 script_data.destroy = function()

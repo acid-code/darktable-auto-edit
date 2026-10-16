@@ -236,10 +236,21 @@ def _vignette_for(
     area = w * h
     if area < 0.01 or area > 0.72:
         return None
+    # A wide band is the ground under the body, not the body. The hole
+    # sits just above that band and only as wide as a subject.
+    if detection.category in {"face", "person", "animal"} and w > 0.5 and h < w:
+        side = min(max(h * 0.9, 0.22), 0.36)
+        cx = x + w * 0.5
+        cy = max(side * 0.5, y - side * 0.15)
+        x = cx - side * 0.5
+        y = cy - side * 0.5
+        w = side
+        h = side
     width, height = image.size
     longest = float(max(width, height))
-    radius_px = 0.5 * max(w * width, h * height)
-    scale = clamp(100.0 * radius_px / longest, 10.0, 85.0)
+    radius_px = 0.5 * min(w * width, h * height)
+    cap = 24.0 if detection.category in {"face", "person", "animal"} else 85.0
+    scale = clamp(100.0 * radius_px / longest, 10.0, cap)
     aspect = (w * width) / max(h * height, 1e-6)
     if aspect <= 1.0:
         whratio = clamp(aspect, 0.2, 1.0)
@@ -250,7 +261,7 @@ def _vignette_for(
     brightness = clamp(base * strength, floor, 0.0)
     return {
         "scale": round(scale, 3),
-        "falloff_scale": round(clamp(scale * 0.85, 12.0, 90.0), 3),
+        "falloff_scale": round(clamp(scale * 0.42, 6.0, 28.0), 3),
         "brightness": brightness,
         "saturation": 0.0,
         "center_x": round(clamp((x + w / 2.0) * 2.0 - 1.0, -1.0, 1.0), 4),
@@ -290,7 +301,17 @@ def _choose_vignette_target(
         picture_type = str(getattr(picture, "type", "") or "")
         subject_box = getattr(picture, "subject_box", None)
         if picture_type in {"landscape", "night", "architecture"}:
-            return None
+            # A window is not a subject. A person or an animal that was
+            # actually found, including in a landscape, is the vignette.
+            bodies = [item for item in items if item.category in {"face", "person", "animal"}]
+            if subject_box is not None:
+                near = [item for item in bodies if _near_box(item.bbox, subject_box)]
+                if near:
+                    bodies = near
+            if not bodies:
+                return None
+            bodies.sort(key=lambda item: (_VIGNETTE_PRIORITY.get(item.category, 8), -item.confidence))
+            return bodies[0]
         if picture_type == "general" and subject_box is None:
             return None
         if picture_type not in {"portrait", "group", "street"}:
@@ -456,6 +477,70 @@ def build_modules(
             "measured only; the ellipse is stored for a future drawn-mask encoder",
         )
     return adjusted, modules, local_edits, blobs
+
+
+def step_style(
+    feature_id: str,
+    *,
+    again: bool = False,
+    title: str = "",
+    action: str = "lift",
+) -> str | None:
+    """One history module for an accepted step. None when the id is unknown.
+
+    ``again`` stacks a second subject lift instead of replacing the first.
+    """
+
+    name = str(feature_id or "").strip()
+    exposure_steps = {
+        "subject": ("Shine the subject" if again else "Subject lift", 0.22),
+        "foreground": ("Darken the foreground", -0.18),
+        "opening": ("Darken the bright gap", -0.18),
+        "shafts": ("Darken the shafts", -0.16),
+    }
+    if name in exposure_steps:
+        title, ev = exposure_steps[name]
+        priority = 3 if again and name == "subject" else 2
+        plugins = [
+            _plugin(0, "exposure", EXPOSURE_VERSION, exposure_params(ev), title, multi_priority=priority)
+        ]
+        return render_style("AI accepted step", f"Accepted step: {title}.", plugins)
+    if name == "highlights":
+        values = {"brilliance_highlights": 0.18, "saturation_highlights": 0.12}
+        plugins = [
+            _plugin(
+                0,
+                "colorbalancergb",
+                COLORBALANCE_VERSION,
+                colorbalance_params(values),
+                "Warm the highlights",
+                multi_priority=2,
+            )
+        ]
+        return render_style("AI accepted step", "Accepted step: Warm the highlights.", plugins)
+    if name == "eyes":
+        label = " ".join(str(title or "").split()) or "Eyes"
+        if len(label) > 48:
+            label = label[:48].rstrip()
+        priority = 5 if again else 4
+        if action == "darken":
+            values = {"brilliance_midtones": -0.1, "saturation_midtones": -0.06}
+        elif action == "hold":
+            values = {"brilliance_midtones": 0.04, "saturation_midtones": 0.06}
+        else:
+            values = {"brilliance_midtones": 0.16, "saturation_midtones": 0.2}
+        plugins = [
+            _plugin(
+                0,
+                "colorbalancergb",
+                COLORBALANCE_VERSION,
+                colorbalance_params(values),
+                label,
+                multi_priority=priority,
+            )
+        ]
+        return render_style("AI accepted step", f"Accepted step: {title}.", plugins)
+    return None
 
 
 def render_style(name: str, description: str, plugins: list[dict]) -> str:

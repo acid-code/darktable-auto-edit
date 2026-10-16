@@ -153,6 +153,48 @@ def guard_faithful_grade(
     return atmosphere
 
 
+_FEATURE_IDS = frozenset({"separate", "foreground", "opening", "shafts", "highlights", "eyes"})
+_FEATURE_STOP = frozenset(
+    """
+    a an the and or of to in on for with is are was be it this that them their
+    too very little just actually into from than then
+    """.split()
+)
+
+
+def review_feature_path(features: object, steer: str, reading_sentence: str) -> list[str]:
+    """Keep a catalog id whose reason rests on the user's sentence.
+
+    The id itself does not have to appear in the sentence. "The gap in the
+    trees is too bright" can keep ``opening``. When the user wrote nothing,
+    the reason has to rest on the picture reading instead. A feature the
+    sentence did not ask for, and the reading does not support, is dropped.
+    """
+
+    if not isinstance(features, list):
+        return []
+    source = str(steer or "").strip() or str(reading_sentence or "")
+    evidence = _content_words(source)
+    if not evidence:
+        return []
+    kept: list[str] = []
+    for item in features:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("id") or item.get("feature") or "").strip().lower()
+        if name not in _FEATURE_IDS or name in kept or name == "separate":
+            continue
+        reason = _content_words(str(item.get("reason") or ""))
+        if reason & evidence:
+            kept.append(name)
+    return kept
+
+
+def _content_words(text: str) -> set[str]:
+    words = set(re.findall(r"[a-z]{3,}", str(text or "").lower()))
+    return {word for word in words if word not in _FEATURE_STOP}
+
+
 def guard_warm_grade(atmosphere: Atmosphere, picture: object, plan: dict, *, faithful: bool) -> Atmosphere:
     """Hold a Warmer look to a small gain on the pipeline white.
 

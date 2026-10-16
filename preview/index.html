@@ -83,10 +83,11 @@
     .hint { color: var(--muted); font-size: 0.92rem; }
     .frames {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
       padding: 12px;
     }
+    figure[hidden] { display: none; }
     figure { margin: 0; }
     figcaption { color: var(--muted); font-size: 0.85rem; margin-bottom: 6px; }
     img, .placeholder {
@@ -202,9 +203,14 @@
           <img id="before" alt="Preview before the recipe" hidden>
         </figure>
         <figure>
-          <figcaption>Approximate result</figcaption>
+          <figcaption>Committed edit</figcaption>
           <div class="placeholder" id="after-empty">The matched look appears here.</div>
-          <img id="after" alt="Approximate result after the matched recipe" hidden>
+          <img id="after" alt="Committed edit" hidden>
+        </figure>
+        <figure id="next-figure" hidden>
+          <figcaption id="next-caption">Next suggestion</figcaption>
+          <div class="placeholder" id="next-empty">The next feature appears here before it is accepted.</div>
+          <img id="next" alt="Next suggested feature" hidden>
         </figure>
       </div>
       <div id="choices" class="choices"></div>
@@ -251,8 +257,12 @@
     const report = document.querySelector("#report");
     const before = document.querySelector("#before");
     const after = document.querySelector("#after");
+    const next = document.querySelector("#next");
     const beforeEmpty = document.querySelector("#before-empty");
     const afterEmpty = document.querySelector("#after-empty");
+    const nextEmpty = document.querySelector("#next-empty");
+    const nextFigure = document.querySelector("#next-figure");
+    const nextCaption = document.querySelector("#next-caption");
     const upload = document.querySelector("#upload");
     let sample = "portrait";
     let uploadData = "";
@@ -298,6 +308,15 @@
     function render(payload) {
       showImage(before, beforeEmpty, payload.before_png);
       showImage(after, afterEmpty, payload.after_png);
+      if (payload.next_png) {
+        nextFigure.hidden = false;
+        nextCaption.textContent = payload.next_title || "Next suggestion";
+        showImage(next, nextEmpty, payload.next_png);
+      } else {
+        nextFigure.hidden = true;
+        next.hidden = true;
+        nextEmpty.hidden = false;
+      }
       const match = payload.match || {};
       const reading = payload.reading || {};
       document.querySelector("#reading").textContent = reading.sentence || "";

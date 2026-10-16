@@ -23,8 +23,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "image",
+        nargs="?",
         type=Path,
+        default=None,
         help="RAW file (NEF, CR2, ARW, DNG, …) or a JPEG, PNG, TIFF, or WebP",
+    )
+    parser.add_argument(
+        "--commit-step",
+        action="store_true",
+        help="Write the waiting step only. Do not rebuild the look.",
+    )
+    parser.add_argument(
+        "--skip-step",
+        action="store_true",
+        help="Leave the waiting step out and show the one after it.",
     )
     parser.add_argument(
         "--output-dir",
@@ -92,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--stage",
-        choices=("all", "picture", "gemini", "ollama", "finish"),
+        choices=("all", "picture", "gemini", "ollama", "finish", "chat"),
         default="all",
         help="Run one visible step. all is the single-process path.",
     )
@@ -136,6 +148,26 @@ def _analyze_kwargs(args) -> dict:
 def main(argv: list[str] | None = None) -> int:
     load_project_env()
     args = build_parser().parse_args(argv)
+    if args.commit_step or args.skip_step or args.stage == "chat":
+        from ai_dt.features import commit_waiting_step, plan_chat, skip_waiting_step
+
+        try:
+            if args.skip_step:
+                skip_waiting_step(Path(args.output_dir))
+                print("Step skipped.")
+            elif args.stage == "chat":
+                plan_chat(Path(args.output_dir), args.steer)
+                print("Plan ready.")
+            else:
+                commit_waiting_step(Path(args.output_dir))
+                print("Step written.")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Analysis failed: {exc}", file=sys.stderr)
+            return 3
+        return 0
+    if args.image is None:
+        print("An image file is required.", file=sys.stderr)
+        return 2
     image = args.image.expanduser()
     if not image.is_file():
         print(f"Not an image file: {image}", file=sys.stderr)

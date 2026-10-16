@@ -175,6 +175,43 @@ def strip_ai_history(document: str) -> tuple[str, int]:
     return cleaned, removed
 
 
+def collapse_history_to_cursor(document: str) -> tuple[str, int]:
+    """Drop history items after the one the photographer is viewing.
+
+    ``history_end`` counts active items from the start of the stack. Later
+    items are still stored. A new edit starts from the viewed item, so those
+    later items are removed and ``history_end`` stays where it is.
+    """
+
+    history_tags = [
+        match.group(0)
+        for match in _HISTORY_ITEM.finditer(document)
+        if _attr(match.group(0), "darktable:operation")
+    ]
+    end_match = re.search(r'darktable:history_end="(\d+)"', document)
+    history_end = int(end_match.group(1)) if end_match else len(history_tags)
+    if history_end >= len(history_tags):
+        return document, 0
+    drop_nums: set[str] = set()
+    for index, tag in enumerate(history_tags):
+        if index < history_end:
+            continue
+        number = _attr(tag, "darktable:num")
+        if number:
+            drop_nums.add(number)
+    if not drop_nums:
+        return document, 0
+
+    def drop(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if _attr(tag, "darktable:num") in drop_nums:
+            return ""
+        return tag
+
+    cleaned = _HISTORY_ITEM.sub(drop, document)
+    return cleaned, len(drop_nums)
+
+
 def revert_library_image(library_path: str, image_id: int, stage: str | None = None) -> int:
     """Open the library, remove this plugin's rows, and commit."""
 
@@ -203,7 +240,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stage", default="", help="One stage to drop, such as vignette. Empty removes every AI row.")
     parser.add_argument("--xmp", default="", help="Sidecar to strip when the library is locked.")
     parser.add_argument("--xmp-out", default="", help="Where to write the stripped sidecar.")
+    parser.add_argument(
+        "--collapse-xmp",
+        action="store_true",
+        help="Drop history after history_end instead of removing AI rows.",
+    )
     args = parser.parse_args(argv)
+    if args.xmp and args.collapse_xmp:
+        source = Path(args.xmp)
+        if not source.is_file():
+            print(f"sidecar not found: {source}", file=sys.stderr)
+            return 1
+        if not args.xmp_out:
+            print("a collapsed sidecar needs --xmp-out", file=sys.stderr)
+            return 1
+        cleaned, removed = collapse_history_to_cursor(source.read_text(encoding="utf-8"))
+        destination = Path(args.xmp_out)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(cleaned, encoding="utf-8", newline="\n")
+        print(f"removed {removed}")
+        return 0
     if args.xmp:
         source = Path(args.xmp)
         if not source.is_file():

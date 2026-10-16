@@ -11,6 +11,26 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+
+def _note_starting() -> None:
+    """Tell the panel that Python is up, before the heavy imports."""
+
+    argv = sys.argv
+    if "--output-dir" not in argv:
+        return
+    index = argv.index("--output-dir")
+    if index + 1 >= len(argv):
+        return
+    folder = Path(argv[index + 1])
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "status.txt").write_text("Starting…\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+_note_starting()
+
 from ai_dt.env import load_project_env
 
 load_project_env()

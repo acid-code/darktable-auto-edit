@@ -27,6 +27,8 @@ from ai_dt.guides.decide import (
     warm_subject_box,
 )
 from ai_dt.guides.library import Guide, GuideMatch, MaskPlan, clamp_grades, match_guide
+from ai_dt.runbook import FALLOFF_TYPES
+from ai_dt.matte import seeded_matte
 from ai_dt.guides.support import (
     _components,
     _feather,
@@ -64,12 +66,13 @@ def render_finish(
     strong: bool = False,
     caps_open: bool = False,
     intents: list | None = None,
+    mask_features: list[str] | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Return float RGB and a description of the type, guide, and masks used.
 
     ``stages`` is the order to run. When it is omitted the guide's own
     list is used. A measurement is kept after each stage. A stage that
-    overshoots is put back, and the stages after it do not run.
+    overshoots is put back. The stages after it still run.
 
     ``caps_open`` raises the exposure ceiling past about ±0.35 EV. It
     defaults closed. ``strong`` is the same switch. ``intents`` is a list
@@ -160,6 +163,7 @@ def render_finish(
     background = "unchanged"
     saw_subject = False
     measurements: list[dict] = []
+    rollbacks: list[str] = []
     stop_reason = ""
     if do_grade:
         measurements.append(_measurement("grade", current, subject, None, True, ""))
@@ -316,23 +320,29 @@ def render_finish(
         reason_stop = _overshot(
             picture, stage, before, proposed, subject, eye_mask, allow_dark_surround=allow_dark_surround
         )
+        if reason_stop and stage == "eyes" and eye_now is not None and float(plan.exposure) > 0.0:
+            # Keep the clarity. Drop only the lift that made the eye hotter than the face.
+            softer = replace(plan, exposure=0.0)
+            retried = _grade_region(before, eye_now, softer)
+            if not _overshot(
+                picture, stage, before, retried, subject, eye_now, allow_dark_surround=allow_dark_surround
+            ):
+                proposed = retried
+                reason_stop = ""
         if reason_stop:
             measurements.append(_measurement(stage, proposed, subject, eye_mask, False, reason_stop))
-            current = before
             if stage == "eyes":
                 eyes = 0
+                eye_mask = None
             if stage == "subject":
                 saw_subject = False
                 subject_ev = 0.0
             if stage == "background":
                 background = "unchanged"
-            stop_reason = reason_stop
+            rollbacks.append(reason_stop)
             if stage not in skipped and stage != "grade":
                 skipped.append(stage)
-            for later in order[index + 1 :]:
-                if later not in skipped and later != "grade":
-                    skipped.append(later)
-            break
+            continue
         current = proposed
         ran.append(stage)
         measurements.append(_measurement(stage, current, subject, eye_mask, True, ""))
@@ -342,7 +352,6 @@ def render_finish(
         skipped.append("theme")
     elif (
         paint_theme
-        and not stop_reason
         and theme_mask is not None
         and not (theme_kind == "horizon" and "horizon" in ran)
     ):
@@ -350,10 +359,10 @@ def render_finish(
             MaskPlan(
                 build="subject",
                 skip="",
-                exposure=0.0 if theme_kind == "window" else 0.05,
+                exposure=0.0 if theme_kind == "window" else 0.12,
                 contrast=0.0,
                 saturation=0.0,
-                clarity=0.04 if theme_kind != "window" else 0.0,
+                clarity=0.0 if theme_kind == "window" else 0.12,
                 defocus=0.0,
                 mute=0.0,
             )
@@ -364,29 +373,28 @@ def render_finish(
         measurements.append(_measurement("theme", current, subject, eye_mask, True, ""))
 
     gradient_note: dict = {}
-    if not stop_reason:
-        current, gradient_note, ran, skipped = _apply_gradient(
-            current,
-            pixels,
-            subject,
-            picture,
-            ask_list,
-            intentions,
-            omitted,
-            opened,
-            ran,
-            skipped,
-        )
-        current, ran = _apply_rock(
-            current,
-            pixels,
-            subject,
-            ask_list,
-            omitted,
-            opened,
-            ran,
-        )
-        current = _apply_behind(current, subject, ask_list, opened)
+    current, gradient_note, ran, skipped = _apply_gradient(
+        current,
+        pixels,
+        subject,
+        picture,
+        ask_list,
+        intentions,
+        omitted,
+        opened,
+        ran,
+        skipped,
+    )
+    current, ran = _apply_rock(
+        current,
+        pixels,
+        subject,
+        ask_list,
+        omitted,
+        opened,
+        ran,
+    )
+    current = _apply_behind(current, subject, ask_list, opened)
 
     if (
         reflection is not None
@@ -407,13 +415,38 @@ def render_finish(
             reflection_failure = ""
             reflection_intention = "lift"
 
+    cover = sharp if sharp is not None else subject
+    if (
+        cover is not None
+        and picture.type in FALLOFF_TYPES
+        and "falloff" not in omitted
+        and "vignette" not in omitted
+    ):
+        current = _subject_falloff(current, cover)
+        ran.append("falloff")
+        measurements.append(_measurement("falloff", current, subject, eye_mask, True, ""))
+
+    current, feature_notes, extra_ran = _apply_catalog(
+        current,
+        pixels,
+        picture,
+        detections,
+        subject,
+        mask_features,
+        scale_of,
+    )
+    for name in extra_ran:
+        if name not in ran:
+            ran.append(name)
+
+    stop_reason = " ".join(rollbacks)
     reason = guide.reason
     if guide_match is not None and guide_match.fallback:
         reason = guide_match.reason
     if stop_reason:
         reason = f"{reason} {stop_reason}".strip()
     features = _kept_features(guide, picture, ran, saw_subject, kept_now)
-    return np.clip(current, 0.0, 1.0), _info(
+    info = _info(
         picture,
         guide,
         applied=saw_subject,
@@ -435,6 +468,9 @@ def render_finish(
         vignette="vignette" not in omitted,
         strong=opened,
     )
+    if feature_notes:
+        info["feature_notes"] = feature_notes
+    return np.clip(current, 0.0, 1.0), info
 
 
 def _info(
@@ -599,7 +635,7 @@ def _build_subject(
     height, width = pixels.shape[:2]
     subject = np.zeros((height, width), dtype=np.float32)
     for box in boxes:
-        subject = np.maximum(subject, _ellipse(height, width, box, expand=1.35, inner=0.62, feather=0.7))
+        subject = np.maximum(subject, seeded_matte(pixels, box))
     if build == "animal":
         subject = extend_animal(pixels, subject)
     return subject, len(boxes)
@@ -963,6 +999,212 @@ def _grade_reflection(
     out = np.clip(out, 0.0, 1.0)
     weight = mask[..., None]
     return np.clip(out * weight + pixels * (1.0 - weight), 0.0, 1.0)
+
+
+def _subject_falloff(pixels: np.ndarray, mask: np.ndarray, exposure: float = -0.16) -> np.ndarray:
+    """Darken outside the keep-mask. The mask's own feather is the falloff."""
+
+    outside = 1.0 - np.clip(mask, 0.0, 1.0)
+    gain = np.float32(2.0 ** exposure)
+    factor = (1.0 - outside) + outside * gain
+    return np.clip(pixels * factor[..., None], 0.0, 1.0)
+
+
+def _feature_scale(scales: dict, name: str) -> float:
+    try:
+        value = float(scales.get(name) or 1.0)
+    except (TypeError, ValueError):
+        value = 1.0
+    return min(1.5, max(0.25, value))
+
+
+def _mix_mask(pixels: np.ndarray, altered: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    weight = np.clip(mask, 0.0, 1.0)[..., None]
+    return np.clip(altered * weight + pixels * (1.0 - weight), 0.0, 1.0)
+
+
+def _darken_mask(pixels: np.ndarray, mask: np.ndarray, exposure: float) -> np.ndarray:
+    gain = np.float32(2.0 ** exposure)
+    altered = np.clip(pixels * gain, 0.0, 1.0)
+    return _mix_mask(pixels, altered, mask)
+
+
+def _apply_catalog(
+    current: np.ndarray,
+    source: np.ndarray,
+    picture: Picture,
+    detections: list[Detection],
+    subject: np.ndarray | None,
+    names: list[str] | None,
+    scales: dict,
+) -> tuple[np.ndarray, list[str], list[str]]:
+    """Paint committed mask features. A missing region is reported, not invented."""
+
+    chosen = [str(name) for name in (names or [])]
+    if not chosen:
+        return current, [], []
+    notes: list[str] = []
+    ran: list[str] = []
+    height, width = int(current.shape[0]), int(current.shape[1])
+    if "separate" in chosen and picture.type not in FALLOFF_TYPES:
+        current, separated, body = _paint_separate(
+            current, detections, height, width, _feature_scale(scales, "separate")
+        )
+        if separated:
+            ran.append("separate")
+            if body is not None:
+                subject = body
+        else:
+            notes.append("Separate has nothing to attach to.")
+    painters = (
+        ("foreground", _catalog_foreground_mask, "The foreground has nothing to attach to.", -0.28),
+        ("opening", _catalog_opening_mask, "The opening has nothing to attach to.", -0.45),
+        ("shafts", _catalog_shaft_mask, "The shafts have nothing to attach to.", -0.32),
+    )
+    for name, builder, missing, exposure in painters:
+        if name not in chosen:
+            continue
+        mask = builder(source, subject, height, width)
+        if mask is None:
+            notes.append(missing)
+            continue
+        current = _darken_mask(current, mask, exposure * _feature_scale(scales, name))
+        ran.append(name)
+    if "highlights" in chosen:
+        mask = _highlight_mask(source, subject)
+        if mask is None:
+            notes.append("The highlights have nothing to attach to.")
+        else:
+            current = _warm_highlights(current, mask, _feature_scale(scales, "highlights"))
+            ran.append("highlights")
+    return current, notes, ran
+
+
+def _paint_separate(
+    pixels: np.ndarray,
+    detections: list[Detection],
+    height: int,
+    width: int,
+    scale: float,
+) -> tuple[np.ndarray, bool, np.ndarray | None]:
+    """Lift a found body and darken outside it. Whole-frame color is untouched."""
+
+    bodies = [item for item in detections if item.category in {"face", "person", "animal"}]
+    if not bodies:
+        return pixels, False, None
+    mask = np.zeros((height, width), dtype=np.float32)
+    for item in bodies:
+        mask = np.maximum(mask, _ellipse(height, width, item.bbox, expand=1.35, inner=0.62, feather=0.55))
+    if float(mask.max()) <= 0.0:
+        return pixels, False, None
+    lift = MaskPlan("box", "", 0.32 * scale, 0.04, 0.0, 0.16 * scale, 0.0, 0.0)
+    current = _grade_region(pixels, mask, lift)
+    current = _subject_falloff(current, mask, exposure=-0.42 * scale)
+    eyes = [item for item in detections if item.category == "eye"]
+    if eyes:
+        eye_mask = np.zeros((height, width), dtype=np.float32)
+        for item in eyes:
+            eye_mask = np.maximum(
+                eye_mask, _ellipse(height, width, item.bbox, expand=1.15, inner=0.55, feather=0.4)
+            )
+        clarify = MaskPlan("box", "", 0.04 * scale, 0.0, 0.0, 0.45 * scale, 0.0, 0.0)
+        current = _grade_region(current, eye_mask, clarify)
+    return current, True, mask
+
+
+def _catalog_foreground_mask(
+    source: np.ndarray,
+    subject: np.ndarray | None,
+    height: int,
+    width: int,
+) -> np.ndarray | None:
+    del source
+    start = int(height * 0.62)
+    if start >= height:
+        return None
+    mask = np.zeros((height, width), dtype=np.float32)
+    ramp = np.linspace(0.2, 1.0, height - start, dtype=np.float32)
+    mask[start:, :] = ramp[:, None]
+    if subject is not None and subject.shape == mask.shape:
+        mask = mask * (1.0 - np.clip(subject, 0.0, 1.0))
+    if float(mask.mean()) < 0.02:
+        return None
+    return mask
+
+
+def _catalog_opening_mask(
+    source: np.ndarray,
+    subject: np.ndarray | None,
+    height: int,
+    width: int,
+) -> np.ndarray | None:
+    """One bright compact gap. A band across the top is the sky, not a gap."""
+
+    luma = _luma(source)
+    bright = luma > np.float32(0.72)
+    bright[int(height * 0.55) :, :] = False
+    if subject is not None and subject.shape == bright.shape:
+        bright = bright & (subject < np.float32(0.35))
+    top = bright[: max(1, height // 12), :]
+    if float(top.mean()) > 0.4:
+        return None
+    ys, xs = np.nonzero(bright)
+    if len(xs) < 12:
+        return None
+    area = len(xs) / float(height * width)
+    if area < 0.008 or area > 0.22:
+        return None
+    box_h = int(ys.max() - ys.min() + 1)
+    box_w = int(xs.max() - xs.min() + 1)
+    if box_w > width * 0.7 or box_h * box_w <= 0:
+        return None
+    if len(xs) / float(box_h * box_w) < 0.25:
+        return None
+    mask = np.zeros((height, width), dtype=np.float32)
+    mask[ys, xs] = 1.0
+    return mask
+
+
+def _catalog_shaft_mask(
+    source: np.ndarray,
+    subject: np.ndarray | None,
+    height: int,
+    width: int,
+) -> np.ndarray | None:
+    """Tall dark columns. A dark lower band is not a shaft."""
+
+    del subject
+    luma = _luma(source)
+    dark = luma < np.float32(0.32)
+    columns = dark.mean(axis=0)
+    selected = columns > np.float32(0.45)
+    share = float(selected.mean())
+    if share < 0.02 or share > 0.4:
+        return None
+    mask = np.zeros((height, width), dtype=np.float32)
+    mask[:, selected] = dark[:, selected].astype(np.float32)
+    if float(mask.mean()) < 0.015:
+        return None
+    return mask
+
+
+def _highlight_mask(source: np.ndarray, subject: np.ndarray | None) -> np.ndarray | None:
+    luma = _luma(source)
+    weight = np.clip((luma - np.float32(0.62)) / np.float32(0.25), 0.0, 1.0).astype(np.float32)
+    if subject is not None and subject.shape[:2] == weight.shape:
+        weight = weight * (1.0 - np.clip(subject, 0.0, 1.0))
+    if float(weight.mean()) < 0.015:
+        return None
+    return weight
+
+
+def _warm_highlights(pixels: np.ndarray, mask: np.ndarray, scale: float) -> np.ndarray:
+    warm = pixels.copy()
+    warm[..., 0] = np.clip(pixels[..., 0] * np.float32(1.0 + 0.08 * scale) + np.float32(0.02 * scale), 0.0, 1.0)
+    warm[..., 2] = np.clip(pixels[..., 2] * np.float32(1.0 - 0.06 * scale), 0.0, 1.0)
+    soft = _blur_rgb(np.clip(warm, 0.0, 1.0), 1.6)
+    warm = np.clip(warm + (warm - soft) * np.float32(0.28 * scale), 0.0, 1.0)
+    return _mix_mask(pixels, warm, mask)
 
 
 def _grade_region(pixels: np.ndarray, mask: np.ndarray, plan: MaskPlan) -> np.ndarray:

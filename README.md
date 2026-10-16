@@ -31,9 +31,9 @@ Supported RAW types include DNG, CR2, CR3, NEF, NRW, ARW, RAF, ORF, RW2, PEF, an
 
 1. The Lua panel exports a JPEG of the current rendering, longest edge 1280 pixels, into the Darktable config directory. That JPEG is the fallback.
 2. It runs `ai_processor.py` with the original file path. When that file is a RAW, Python decodes the RAW.
-3. The pipeline measures the picture, names the picture type, finds the matching guide, and writes the masked TIFF from that guide's stages.
-4. It also writes `output.json` and `edit.dtstyle`.
-5. Lua imports that style, applies it to the RAW, and deletes the style entry so the styles list stays clean. The history step remains and can be undone.
+3. The pipeline measures the picture, names the picture type, finds the matching guide, and writes the masked TIFF from that guide's stages. Accepted features are painted into that TIFF.
+4. It also writes `output.json` and `edit.dtstyle`. The style is the global grade only.
+5. A preview window opens with a picture of every look, including Accept and Skip when a feature is waiting. Choosing one there, or the same choice on the panel, imports a copy of the masked TIFF and opens it. The original file is not changed, and the style is not applied to it.
 
 Work files are kept in:
 
@@ -220,7 +220,7 @@ From Darktable, set **AI editor: vibe** in the Lua options. From the command lin
 
 ## Preview without Darktable
 
-The preview page is a sketch of the global grade on synthetic pictures. It is not the RAW render and it is not `edited.tif`. Use the command in "Run it on RAW files" for the picture.
+The preview page is a sketch of the global grade on synthetic pictures. It is not the RAW render and it is not `edited.tif`. After Propose, Darktable also opens http://127.0.0.1:8741/options with a picture of every look for that photo. A choice on that page and a choice on the panel write the same pick. Use the command in "Run it on RAW files" for a picture outside Darktable.
 
 ```bash
 python3 preview_server.py
@@ -399,8 +399,8 @@ The tests build synthetic pictures, write a style, and check that the exposure b
 
 ## Limits
 
-- Each click appends another AI step. Undo that history step before running again if you do not want both.
+- Picking a look or accepting a feature opens a new copy of the masked picture. The original file stays unchanged.
 - The first eight selected images are processed. A large selection is cut short on purpose. Use `python3 -m ai_dt.batch` for a folder.
 - The panel blocks until Python returns. A RAW decode plus the background blur takes longer than the old preview pass. `run.log` in the work folder has the output.
-- The style still has no drawn mask. The masks are in `edited.tif`.
-- The TIFF is developed with the camera white balance, at half resolution unless you pass `--full-res`. The style does not touch Darktable's white balance module. Warmth there is a color-balance move on the history.
+- The style still has no drawn mask. The masks, including accepted features, are in the TIFF Darktable opens. The style file is the global grade only.
+- The TIFF uses the camera white balance, at half resolution unless you pass `--full-res`. A later steer on that opened picture rereads the camera file, so the masks are not applied twice.

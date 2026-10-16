@@ -50,6 +50,8 @@ ASK_STAGES = frozenset(
         "surround",
         "background",
         "gradient",
+        "eyes",
+        "eye",
     }
 )
 _BLOCKED = frozenset({"strong", "epic", "caps", "caps_open", "open"})
@@ -64,7 +66,7 @@ The JSON may be raw or inside a ```json fence.
 {"reasoning": "two or three sentences", "stages": [{"stage": "subject", "action": "lift", "reason": "why"}]}
 
 Stages you may skip: gradient, subject, surround, vignette, theme, reflection, eyes, skin, sky.
-Targets you may darken, lift, or hold: subject, foreground, rock, sky, behind, reflection.
+Targets you may darken, lift, or hold: subject, foreground, rock, sky, behind, reflection, eyes.
 foreground is the surround, not the subject.
 Name water, a reflection, eyes, or an animal only when the picture description or the request already says so. Do not invent them.
 A request to make a reflection clearer is action lift on stage reflection. Do not skip that stage.
@@ -75,6 +77,18 @@ exposure EV, a small color-calibration warmth on the pipeline white (never a cus
 Diffuse strength is a masked control and is not written into the style.
 Do not ask for a center-line gradient. Name sky, highlights, or the bright end, or leave the gradient out.
 Caps stay closed. Only the user's own strong or epic word opens them.
+
+Also name mask features the request is asking for. When the request is none, leave the stages array empty and name a short path the picture description supports.
+Add this array to the same JSON object:
+{"features": [{"id": "foreground", "reason": "words from the request or the picture description"}]}
+Feature ids only: foreground, opening, shafts, highlights, eyes.
+foreground darkens the lower band and leaves a person or animal alone.
+opening darkens one bright compact gap, not the whole sky.
+shafts darkens tall dark vertical shapes so the gap beside them stays the light.
+highlights warms the bright range and adds a little local contrast, leaving a person or animal out.
+eyes is only the eyes of a person or animal the request already named. Do not use it for the whole subject.
+Use an id only when the request or the picture description supports it. The reason must point at those words. Do not invent an id outside this list. The id itself does not have to appear in the request.
+Return every stage the request needs, in the order they should be accepted. Several stages are allowed. Do not collapse them into one.
 
 Picture: {description}
 Vibe: {vibe}
@@ -126,6 +140,35 @@ def validate_proposal(payload: object) -> list[dict]:
         if len(reason) > 180:
             reason = reason[:180].rstrip()
         kept.append({"stage": stage, "action": action, "reason": reason})
+    return kept
+
+
+_FEATURE_IDS = frozenset({"foreground", "opening", "shafts", "highlights", "eyes", "separate"})
+
+
+def validate_features(payload: object) -> list[dict]:
+    """Keep catalog ids. Drop a tool the model invented."""
+
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("features")
+    if not isinstance(raw, list):
+        return []
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("id") or item.get("feature") or "").strip().lower()
+        if name not in _FEATURE_IDS or name in seen:
+            continue
+        reason = " ".join(str(item.get("reason") or "").split())
+        if _is_placeholder(reason) or not reason:
+            continue
+        if len(reason) > 180:
+            reason = reason[:180].rstrip()
+        seen.add(name)
+        kept.append({"id": name, "reason": reason})
     return kept
 
 
@@ -213,14 +256,19 @@ def interpret_reply(text: str) -> dict:
     payload = _parse_json(text)
     paragraph = ""
     stages: list[dict] = []
+    features: list[dict] = []
     if payload is not None:
         paragraph = _usable_paragraph(str(payload.get("reasoning") or payload.get("paragraph") or ""))
         stages = validate_proposal(payload)
+        features = validate_features(payload)
     if not paragraph:
         paragraph = _prose_paragraph(text)
     if not stages:
         stages = validate_proposal({"stages": _stages_from_prose(text)})
-    return {"paragraph": paragraph, "stages": stages}
+    reply = {"paragraph": paragraph, "stages": stages}
+    if features:
+        reply["features"] = features
+    return reply
 
 
 def _text_model() -> str:
@@ -444,7 +492,7 @@ def _ask_gemini(description: str, vibe: str, preset: str, steer: str = "") -> di
     for model in _reason_models():
         reply = _ask_gemini_model(model, description, vibe, preset, steer, key)
         error = str(reply.get("error") or "").strip()
-        if not error and (reply.get("paragraph") or reply.get("stages")):
+        if not error and (reply.get("paragraph") or reply.get("stages") or reply.get("features")):
             return reply
         reason = plain_gemini_failure(error or "no reply")
         tried.append(f"{model}: {reason}")
@@ -459,16 +507,20 @@ def _from_reply(reply: dict | None, *, status: str, backend: str, note: str) -> 
         return None
     paragraph = str(reply.get("paragraph") or "")
     stages = list(reply.get("stages") or [])
-    if not paragraph and not stages:
+    features = list(reply.get("features") or [])
+    if not paragraph and not stages and not features:
         # The model answered, but only with a placeholder. The steer still applies.
         return {"status": status, "backend": backend, "note": "", "paragraph": "", "stages": []}
-    return {
+    plan = {
         "status": status,
         "backend": backend,
-        "note": note if stages or paragraph else "",
+        "note": note if stages or paragraph or features else "",
         "paragraph": paragraph,
         "stages": stages,
     }
+    if features:
+        plan["features"] = features
+    return plan
 
 
 def _note_gemini_failure(result: dict, gemini_failed: bool, detail: str = "") -> dict:
@@ -511,7 +563,7 @@ def propose_gemini(description: str, vibe: str, preset: str, steer: str = "") ->
         backend=model or _reason_model(),
         note="Stages proposed by Gemini.",
     )
-    if plan and (plan.get("paragraph") or plan.get("stages")):
+    if plan and (plan.get("paragraph") or plan.get("stages") or plan.get("features")):
         return {"ask_ollama": False, "gemini_tried": True, "failure": "", "proposal": plan}
     reason = plain_gemini_failure(error)
     return {"ask_ollama": True, "gemini_tried": True, "failure": reason, "proposal": None}

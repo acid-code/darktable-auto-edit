@@ -179,6 +179,9 @@ def parse_clause(clause: str) -> dict | None:
     tool = _expert_clause(tokens)
     if tool is not None:
         return tool
+    scale = _scale_clause(tokens)
+    if scale is not None:
+        return scale
     if tokens[0] in _SKIP_VERBS and len(tokens) == 2 and tokens[1] in _STAGE_WORDS:
         return {"kind": "skip", "stage": _STAGE_WORDS[tokens[1]], "said": tokens[1]}
     if tokens[0] in _ASK_VERBS:
@@ -191,6 +194,28 @@ def parse_clause(clause: str) -> dict | None:
         if len(found) == 1 and len(rest) == 1:
             return {"kind": "ask", "verb": verb, "target": found[0]}
     return None
+
+
+_SCALE_PHRASES = {
+    ("more", "eye", "clarity"): ("eyes", 1.35),
+    ("less", "eye", "clarity"): ("eyes", 0.7),
+    ("more", "eyes"): ("eyes", 1.35),
+    ("less", "eyes"): ("eyes", 0.7),
+    ("more", "background", "blur"): ("background", 1.35),
+    ("less", "background", "blur"): ("background", 0.7),
+    ("more", "subject", "lift"): ("subject", 1.35),
+    ("less", "subject", "lift"): ("subject", 0.7),
+}
+
+
+def _scale_clause(tokens: list[str]) -> dict | None:
+    """A follow-up amount: more eye clarity, less background blur, less subject lift."""
+
+    found = _SCALE_PHRASES.get(tuple(tokens))
+    if found is None:
+        return None
+    stage, factor = found
+    return {"kind": "scale", "stage": stage, "factor": factor}
 
 
 def _expert_clause(tokens: list[str]) -> dict | None:
@@ -336,6 +361,7 @@ def parse_steer(sentence: str) -> dict:
     skip: list[str] = []
     asks: list[dict] = []
     tools: dict[str, object] = {}
+    scales: list[dict] = []
     ignored: list[str] = []
     for clause in _clauses(sentence):
         items, leftover = _interpret(clause)
@@ -355,6 +381,8 @@ def parse_steer(sentence: str) -> dict:
                     skip.append(stage)
             elif parsed["kind"] == "tool":
                 tools[str(parsed["name"])] = parsed["value"]
+            elif parsed["kind"] == "scale":
+                scales.append({"stage": str(parsed["stage"]), "factor": float(parsed["factor"])})
             else:
                 ask = {
                     "verb": parsed["verb"],
@@ -376,6 +404,7 @@ def parse_steer(sentence: str) -> dict:
         "skip": skip,
         "asks": asks,
         "tools": tools,
+        "scales": scales,
         "ignored": ignored,
         "summary": summary,
     }
@@ -395,6 +424,8 @@ _ASK_TARGET = {
     "behind": "behind",
     "foreground": "foreground",
     "rock": "rock",
+    "eyes": "eyes",
+    "eye": "eyes",
 }
 
 
@@ -498,10 +529,25 @@ def revise_plan(plan: dict, sentence: str) -> dict:
         updated["asks"].append(ask)
     for name, value in (parsed.get("tools") or {}).items():
         updated[str(name)] = value
+    scales = {str(key): float(value) for key, value in (updated.get("scales") or {}).items()}
+    for item in parsed.get("scales") or []:
+        stage = str(item.get("stage") or "")
+        if not stage:
+            continue
+        current = float(scales.get(stage) or 1.0)
+        scales[stage] = max(0.25, min(1.5, current * float(item.get("factor") or 1.0)))
+    updated["scales"] = scales
     updated["ignored"] = list(parsed["ignored"])
     updated["summary"] = parsed["summary"]
     updated["skip_by"] = skip_by
-    if parsed["asks"] or parsed["skip"] or parsed["strong"] or parsed["gradient"] or parsed.get("tools"):
+    if (
+        parsed["asks"]
+        or parsed["skip"]
+        or parsed["strong"]
+        or parsed["gradient"]
+        or parsed.get("tools")
+        or parsed.get("scales")
+    ):
         updated["user"] = True
     updated = _sync_caps(updated)
     updated = _ensure_paragraph(updated)
@@ -573,6 +619,11 @@ def _copy_plan(plan: dict) -> dict:
         "reasoning": dict(plan.get("reasoning") or {}),
         "lines": [],
         "user": bool(plan.get("user")),
+        "features_committed": [str(item) for item in (plan.get("features_committed") or [])],
+        "features_skipped": [str(item) for item in (plan.get("features_skipped") or [])],
+        "features_done": [str(item) for item in (plan.get("features_done") or [])],
+        "features_next": str(plan.get("features_next") or ""),
+        "features_path": [str(item) for item in (plan.get("features_path") or [])],
     }
 
 

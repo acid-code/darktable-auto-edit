@@ -18,9 +18,10 @@ from ai_dt.detectors.merge import merge_detections
 from ai_dt.detectors.yolo import YoloDetector
 from ai_dt.errors import AdvisorUnavailable, DetectorUnavailable, RawReadError, RawSupportUnavailable
 from ai_dt.io_image import LoadedImage, is_raw, load_image
-from ai_dt.choices import apply_named_look, collect_choices, mark_recommendations
+from ai_dt.choices import collect_choices, mark_recommendations
+from ai_dt.handoff import build_handoff
 from ai_dt.history_ops import history_operations
-from ai_dt.mapping import build_modules, render_style
+from ai_dt.mapping import build_modules, render_style, step_style
 from ai_dt.masks_xmp import MASKS_REASON, ellipse_sidecar, masks_can_attach
 from ai_dt.modules_extra import append_extra_modules, retouch_decision
 from ai_dt.guides.decide import apply_steer_scene, decide_picture
@@ -30,16 +31,17 @@ from ai_dt.recipes.library import blend_look, match_vibe, scene_from_detections
 from ai_dt.recipes.reason import reason_about
 from ai_dt.recipes.recommend import recommend_looks
 from ai_dt.reasoner import propose_stages
-from ai_dt.review import guard_faithful_grade, guard_warm_grade, review_plan
+from ai_dt.features import FEATURE_IDS, feature_title
+from ai_dt.precedence import resolve_plan
+from ai_dt.review import guard_faithful_grade, guard_warm_grade
+from ai_dt.runbook import assess_run, original_behind_edit
 from ai_dt.schema import Atmosphere
 from ai_dt.steer import (
-    apply_proposal,
     build_run_lines,
     empty_plan,
     format_plan_label,
     format_plan_text,
     load_stored,
-    revise_plan,
     stage_intents,
 )
 from ai_dt.schema import Atmosphere as _Atmosphere
@@ -51,6 +53,10 @@ from ai_dt.versions import build_version_record, write_version
 
 DETECTORS = ("auto", "yolo", "mediapipe", "heuristic")
 ADVISORS = ("auto", "ollama", "histogram")
+# The darkroom opens edited.tif. The style is the global grade only.
+# Half-resolution RAW is several times this edge, and the paint scales with
+# the pixel count, so the looks stay on a preview-sized frame.
+_RENDER_EDGE = 1280
 
 
 def _finish_intents(bundle: dict) -> list[dict]:
@@ -230,6 +236,19 @@ def _atmosphere_from(data: object) -> Atmosphere | None:
     return Atmosphere(**kwargs)
 
 
+def _status(output_dir: Path | None, text: str) -> None:
+    """One line the panel can show while this process is still running."""
+
+    if output_dir is None:
+        return
+    try:
+        folder = Path(output_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "status.txt").write_text(text.strip() + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
 def analyze(
     image_path: Path,
     *,
@@ -258,12 +277,16 @@ def analyze(
 ) -> dict:
     """Analyze one image and return the recipe written to ``output.json``.
 
-    ``source_path`` is the original file when ``image_path`` is only a
-    developed preview. A camera RAW at that path is decoded and used.
+    ``source_path`` is the camera file when ``image_path`` is the developed
+    preview. The preview is the picture that gets graded. The camera file
+    is decoded only when there is no separate developed preview.
     """
 
     path = Path(image_path)
-    loaded, input_notes = _open_input(path, source_path, full_res=full_res)
+    _status(output_dir, "Reading the picture…")
+    loaded, input_notes = _open_input(
+        path, source_path, full_res=full_res, output_dir=output_dir
+    )
     image = loaded.image
     detections, detector_notes = _detect(image, detector, yolo_model)
     detections = gate_faces(loaded.pixels, detections)
@@ -302,8 +325,10 @@ def analyze(
     plan = empty_plan(guide_stages, reflection=reflection, theme=theme)
     # A steer, or a look picked onto a duplicate, continues the plan already
     # written in this folder. A blank first run has nothing to continue.
-    picked = (look or "").strip()
-    if output_dir is not None and (steer.strip() or picked):
+    raw_look = (look or "").strip()
+    feature_look = raw_look if raw_look in {"accept-feature", "skip-feature"} else ""
+    picked = "" if feature_look else raw_look
+    if output_dir is not None and (steer.strip() or picked or feature_look):
         stored = load_stored(output_dir)
         if stored is not None:
             previous = stored["plan"]
@@ -315,6 +340,13 @@ def analyze(
             plan["strong_word"] = str(previous.get("strong_word") or "")
             plan["gradient"] = bool(previous.get("gradient"))
             plan["proposed"] = [dict(item) for item in (previous.get("proposed") or []) if isinstance(item, dict)]
+            plan["features_committed"] = [
+                str(item) for item in (previous.get("features_committed") or [])
+            ]
+            plan["features_skipped"] = [str(item) for item in (previous.get("features_skipped") or [])]
+            plan["features_done"] = [str(item) for item in (previous.get("features_done") or [])]
+            plan["features_next"] = str(previous.get("features_next") or "")
+            plan["features_path"] = [str(item) for item in (previous.get("features_path") or [])]
     scene = scene_from_detections(detections)
     if scene_override and picture.type == "night":
         scene = "night"
@@ -339,15 +371,21 @@ def analyze(
             "suggestion": suggestion.to_dict() if suggestion is not None else None,
             "advisor_notes": advisor_notes,
         }
+    if proposal is None:
+        _status(output_dir, "Asking Gemini…")
     chosen = proposal if proposal is not None else propose_stages(reading.sentence, vibe, preset_name, steer)
-    plan = apply_proposal(plan, chosen)
-    if steer.strip():
-        plan = revise_plan(plan, steer)
-    if picked:
-        plan = apply_named_look(plan, picked)
-    # Before the choice buttons exist: drop claims the picture and the
-    # steer do not support. This does not call another model.
-    plan = review_plan(plan, picture, reading, steer)
+    # User sentence, then locks from a found subject, then the model, then the guide.
+    waiting_step = str(plan.get("features_next") or "")
+    plan = resolve_plan(
+        plan,
+        proposal=chosen if isinstance(chosen, dict) else {},
+        steer=steer,
+        look=picked,
+        feature_look=feature_look,
+        picture=picture,
+        reading=reading,
+        detections=detections,
+    )
     reasoning = reason_about(
         picture,
         detections,
@@ -382,6 +420,10 @@ def analyze(
     falloff = linear_falloff(loaded.pixels)
     if falloff is not None:
         plan["falloff"] = falloff
+    committed_features = [str(item) for item in (plan.get("features_committed") or [])]
+    next_feature = str(plan.get("features_next") or "")
+    _status(output_dir, "Writing the looks…")
+    render_pixels = _pixels_for_render(loaded.pixels)
     adjusted, modules, local_edits, plugins = build_modules(
         image,
         atmosphere,
@@ -391,27 +433,47 @@ def analyze(
         include_vignette=include_vignette,
         opened=caps_open,
     )
-    rendered, separation = render_finish(
-        loaded.pixels,
-        adjusted,
-        detections,
-        vignette_from_modules(modules),
-        guide=guide_match.guide,
-        picture=picture,
-        guide_match=guide_match,
-        nudges=reasoning.nudges,
-        stages=bundle["stages"],
-        scales=plan["scales"],
-        intentions={
-            "reflection": plan["reflection"],
-            "theme": plan["theme"],
-            "regions": reading.to_dict().get("regions") or [],
-        },
-        omit=set(bundle["skip"]),
-        asks=bundle["asks"],
-        caps_open=caps_open,
-        intents=intents,
-    )
+    def _render(mask_features: list[str]) -> tuple[object, dict]:
+        return render_finish(
+            render_pixels,
+            adjusted,
+            detections,
+            vignette_from_modules(modules),
+            guide=guide_match.guide,
+            picture=picture,
+            guide_match=guide_match,
+            nudges=reasoning.nudges,
+            stages=bundle["stages"],
+            scales=plan["scales"],
+            intentions={
+                "reflection": plan["reflection"],
+                "theme": plan["theme"],
+                "regions": reading.to_dict().get("regions") or [],
+            },
+            omit=set(bundle["skip"]),
+            asks=bundle["asks"],
+            caps_open=caps_open,
+            intents=intents,
+            mask_features=mask_features,
+        )
+
+    rendered, separation = _render(committed_features)
+    next_rendered = None
+    next_info: dict = {}
+    # A subject suggestion is already in this paint. Only a catalog tool
+    # changes the next picture, so that case is the only second pass.
+    if next_feature in FEATURE_IDS and next_feature not in committed_features:
+        next_rendered, next_info = _render(committed_features + [next_feature])
+    elif next_feature:
+        next_rendered = rendered
+    feature_notes = list(separation.get("feature_notes") or [])
+    for note in next_info.get("feature_notes") or []:
+        if note not in feature_notes:
+            feature_notes.append(note)
+    feature_note = str(plan.get("feature_note") or "").strip()
+    if feature_notes:
+        feature_note = f"{feature_note} {' '.join(feature_notes)}".strip()
+    plan["feature_note"] = feature_note
     plan["lines"] = build_run_lines(plan, separation)
     plan["text"] = format_plan_text(plan)
     plan["label"] = format_plan_label(plan)
@@ -481,6 +543,7 @@ def analyze(
             "path": str(loaded.path),
             "kind": loaded.kind,
             "notes": input_notes,
+            "resolution": "full" if full_res else "half",
         },
         "separation": separation,
         "backends": {
@@ -510,8 +573,15 @@ def analyze(
         "retouch": retouch_decision(detections, masks=masks_can_attach()),
         "guide": _guide_record(guide_match, separation),
         "features": list(separation.get("features") or []),
+        "features_committed": committed_features,
+        "features_next": next_feature,
+        "features_next_title": str(plan.get("features_next_title") or "")
+        or (feature_title(next_feature) if next_feature else ""),
+        "features_next_action": str(plan.get("features_next_action") or ""),
+        "feature_note": feature_note,
         "subject_name": subject_name,
         "look_id": picked or "faithful",
+        "run": assess_run(picture.type, separation),
         "recipe_match": match.to_dict(),
         "reasoning": reasoning.to_dict(),
         "analysis": {
@@ -530,11 +600,33 @@ def analyze(
             "file": style_file,
         },
     }
+    recipe["offer_looks"] = bool((recipe.get("run") or {}).get("finished"))
+    if not recipe["offer_looks"]:
+        recipe["choices"] = []
     recipe["picture_backend"] = picture_backend_line(str(adjusted.source or ""), advisor_notes)
     recipe["plan_backend"] = plan_backend_line((plan.get("reasoning") if isinstance(plan, dict) else {}) or {})
+    if output_dir is not None:
+        recipe["render"] = {"file": str(Path(output_dir) / "edited.tif"), "format": "tiff16"}
+    accepted_step = waiting_step if feature_look == "accept-feature" and waiting_step else ""
+    if output_dir is not None:
+        step_path = Path(output_dir) / "step.dtstyle"
+        again = "Another lift" in str(plan.get("feature_note") or "")
+        xml = step_style(accepted_step, again=again) if accepted_step else None
+        if xml:
+            step_path.write_text(xml, encoding="utf-8")
+            recipe["step_style"] = {
+                "name": "AI accepted step",
+                "file": str(step_path),
+                "feature": accepted_step,
+            }
+        elif step_path.is_file():
+            step_path.unlink()
+    recipe["handoff"] = build_handoff(recipe)
     recipe["status_text"] = panel_status(recipe)
     recipe["_plugins"] = plugins
     recipe["_rendered"] = rendered
+    if next_rendered is not None:
+        recipe["_next_rendered"] = next_rendered
     recipe["_sidecar"] = ellipse_sidecar(local_edits)
     recipe["_version_meta"] = {
         "image_id": image_id,
@@ -546,17 +638,53 @@ def analyze(
     return recipe
 
 
+def _developed_preview(preview: Path, original: Path | None) -> Path | None:
+    """The camera path when ``preview`` is the edited picture, else None."""
+
+    if original is None or not preview.is_file() or not original.is_file():
+        return None
+    if preview.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}:
+        return None
+    try:
+        if preview.resolve() == original.resolve():
+            return None
+    except OSError:
+        return original
+    return original
+
+
 def _open_input(
     preview: Path,
     original: Path | None,
     *,
     full_res: bool,
+    output_dir: Path | None = None,
 ) -> tuple[LoadedImage, list[str]]:
-    """Prefer the original file. A RAW that will not decode falls back to the preview."""
+    """Use the developed preview when it is a different file from the camera original.
+
+    That preview is the picture currently open, including edits already made.
+    The camera file is decoded only when it is the file being analyzed, or
+    when the preview cannot be read.
+    """
 
     notes: list[str] = []
+    developed = _developed_preview(preview, original)
+    if developed is not None:
+        try:
+            loaded = load_image(preview, full_res=False)
+        except OSError:
+            notes.append("The developed picture could not be read. The camera file was used.")
+        else:
+            notes.append(
+                f"Used the developed picture. The camera file {developed.name} was not decoded."
+            )
+            return loaded, notes
     if original is not None:
         source = Path(original)
+        continued = original_behind_edit(source, output_dir)
+        if continued is not None:
+            notes.append("Continued from the edited TIFF back to the original file.")
+            source = continued
         same = False
         try:
             same = source.is_file() and preview.is_file() and source.resolve() == preview.resolve()
@@ -577,6 +705,41 @@ def _open_input(
     return loaded, notes
 
 
+def _pixels_for_render(pixels: object) -> object:
+    """Shrink a large frame to the preview edge before the mask paint."""
+
+    import numpy as np
+
+    array = np.asarray(pixels)
+    if array.ndim != 3 or array.shape[2] != 3:
+        return pixels
+    height, width = int(array.shape[0]), int(array.shape[1])
+    longest = max(height, width)
+    if longest <= _RENDER_EDGE:
+        return pixels
+    scale = _RENDER_EDGE / float(longest)
+    image = Image.fromarray(np.rint(np.clip(array, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB")
+    image = image.resize(
+        (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+        Image.Resampling.BOX,
+    )
+    return np.asarray(image).astype(np.float32) / np.float32(255.0)
+
+
+def _write_look_jpeg(path: Path, pixels: object) -> None:
+    """A JPEG of the separated render, for the preview page and the panel."""
+
+    import numpy as np
+
+    array = np.asarray(pixels)
+    if array.ndim != 3 or array.shape[2] != 3:
+        return
+    scaled = np.clip(array, 0.0, 1.0)
+    image = Image.fromarray(np.rint(scaled * 255.0).astype(np.uint8), "RGB")
+    image.thumbnail((1280, 1280))
+    image.save(path, format="JPEG", quality=90)
+
+
 def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     """Write ``output.json``, ``edit.dtstyle``, and ``edited.tif``."""
 
@@ -584,6 +747,7 @@ def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     plugins = recipe.pop("_plugins")
     rendered = recipe.pop("_rendered")
+    next_rendered = recipe.pop("_next_rendered", None)
     sidecar = recipe.pop("_sidecar", "")
     meta = recipe.pop("_version_meta", None) or {}
     style_path = directory / "edit.dtstyle"
@@ -591,6 +755,8 @@ def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     edited_path = directory / "edited.tif"
     recipe["style"]["file"] = str(style_path)
     recipe["render"] = {"file": str(edited_path), "format": "tiff16"}
+    recipe["handoff"] = build_handoff(recipe)
+    recipe["status_text"] = panel_status(recipe)
     record = build_version_record(
         recipe,
         directory,
@@ -608,6 +774,9 @@ def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     )
     style_path.write_text(style_xml, encoding="utf-8")
     write_rgb16(edited_path, rendered)
+    _write_look_jpeg(directory / "look.jpg", rendered)
+    if next_rendered is not None:
+        _write_look_jpeg(directory / "next.jpg", next_rendered)
     if sidecar:
         (directory / "masks.xmp").write_text(sidecar, encoding="utf-8")
     write_version(directory, record)

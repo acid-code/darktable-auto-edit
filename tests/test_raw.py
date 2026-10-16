@@ -95,7 +95,24 @@ class RawPipelineTests(unittest.TestCase):
                 source_path=original,
             )
         self.assertEqual(recipe["input"]["kind"], "raster")
-        self.assertTrue(any("Fell back" in note for note in recipe["input"]["notes"]))
+        self.assertTrue(any("developed picture" in note for note in recipe["input"]["notes"]))
+
+    def test_a_developed_preview_is_used_instead_of_the_camera_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            preview = directory / "preview.jpg"
+            Image.new("RGB", (20, 10), (180, 40, 40)).save(preview, quality=90)
+            original = write_dng(directory / "frame.dng")
+            recipe = analyze(
+                preview,
+                detector="heuristic",
+                advisor="histogram",
+                source_path=original,
+            )
+        self.assertEqual(recipe["input"]["kind"], "raster")
+        self.assertEqual(recipe["width"], 20)
+        self.assertEqual(recipe["height"], 10)
+        self.assertTrue(any("was not decoded" in note for note in recipe["input"]["notes"]))
 
     def test_batch_writes_one_tiff_per_picture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
