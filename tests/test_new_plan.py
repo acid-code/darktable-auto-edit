@@ -33,6 +33,7 @@ class NewPlanTests(unittest.TestCase):
         self.assertNotIn("apply_sidecar", body)
         self.assertNotIn("sidecar_file", body)
         self.assertIn("press Ask", body)
+        self.assertNotIn('steer_entry.text = ""', body)
 
 
 if __name__ == "__main__":

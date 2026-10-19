@@ -3797,12 +3797,10 @@ function request_ui.new_plan()
   shown_recipe = nil
   pcall(show_choices, nil)
   pcall(show_feature_pair, nil)
-  if steer_entry then
-    steer_entry.text = ""
-  end
+  -- The request box keeps its text so the next Ask can reuse it.
   refresh_controls(nil)
   status_label.text = "This photo's saved plan is cleared (" .. tostring(removed)
-    .. " file(s)). Your darktable edits stay as they are. Type a request, or leave it blank, and press Ask."
+    .. " file(s)). Your darktable edits and your request stay, so press Ask for a fresh plan."
 end
 
 request_ui.new_plan_button = dt.new_widget("button") {
