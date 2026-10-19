@@ -449,6 +449,8 @@ def mask_to_outlines(
     values = np.asarray(mask, dtype=np.float32)
     if values.ndim != 2 or min(values.shape) < 4:
         raise ShapeError("the mask must be a 2-D array at least 4 pixels on a side")
+    # The writer keeps at most MAX_PATH_POINTS corners per path.
+    max_points = max(3, min(int(max_points), MAX_PATH_POINTS))
     small = _downsample(values, working_size)
     height, width = small.shape
     binary = small >= float(threshold)
@@ -509,12 +511,26 @@ def mask_to_outlines(
     return outlines
 
 
+SHARP_TURN_DEG = 60.0
+
+
+def _sharp_turn(px: float, py: float, x: float, y: float, nx: float, ny: float) -> bool:
+    ax, ay, bx, by = x - px, y - py, nx - x, ny - y
+    norm = math.hypot(ax, ay) * math.hypot(bx, by)
+    if norm <= 0.0:
+        return False
+    return (ax * bx + ay * by) / norm < math.cos(math.radians(SHARP_TURN_DEG))
+
+
 def smooth_path(points: list[tuple[float, float]], *, border: float = 0.01,
-                smooth: bool = True) -> list[PathPoint]:
+                smooth: bool = True, sharp_turns: bool = False) -> list[PathPoint]:
     """Path points with Catmull-Rom handles, the same rule darktable uses for a NORMAL point.
 
     A corner on the frame edge keeps sharp handles so the path does not
-    bulge out of the frame and back.
+    bulge out of the frame and back. With ``sharp_turns`` (traced
+    outlines) so does a turn of more than SHARP_TURN_DEG: Catmull-Rom handles there point across the corner and the
+    curve swings out past the long side next to it, a few pixels outside the
+    outline the mask was traced from (a gap ring round a subject).
     """
 
     count = len(points)
@@ -526,7 +542,7 @@ def smooth_path(points: list[tuple[float, float]], *, border: float = 0.01,
         px, py = points[index - 1]
         nx, ny = points[(index + 1) % count]
         on_edge = x in (0.0, 1.0) or y in (0.0, 1.0)
-        if smooth and not on_edge:
+        if smooth and not on_edge and not (sharp_turns and _sharp_turn(px, py, x, y, nx, ny)):
             dx = (nx - px) / 6.0
             dy = (ny - py) / 6.0
             ctrl1 = (x - dx, y - dy)

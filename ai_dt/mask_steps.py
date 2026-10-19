@@ -190,7 +190,11 @@ STEPS.update(
             "mask_animal_background", "Quiet around the animals", "Darken and soften around the animals",
             "animal", "colorbalancergb",
             {
-                "darken": _cb(brilliance_global=-0.1, saturation_global=-0.1, contrast=-0.08),
+                # Darker and a little muted, not milky: lower contrast and a
+                # -0.1 saturation cut squeezed the water flat and grey (duck
+                # render: L p5-p95 range 38.7 -> 31.2). Deeper shadows and a
+                # touch more contrast keep the range (35.9) at the same depth.
+                "darken": _cb(brilliance_global=-0.12, brilliance_shadows=-0.05, saturation_global=-0.03, contrast=0.04),
                 "lift": _cb(brilliance_global=0.06),
             },
             invert=True, what="inverse animal mask", builder="animal_all",
@@ -296,9 +300,31 @@ def _outer(forms: list[dict]) -> list[dict]:
 
 
 def _subtract(forms: list[dict], cutters: list[dict]) -> list[dict]:
-    """Append each outer outline of ``cutters`` as a difference member."""
+    """Append each outer outline of ``cutters`` as a difference member.
 
-    return forms + [dict(form, mode="difference") for form in _outer(cutters)]
+    A cutter's holes (the water between a duck's legs) are not part of the
+    subject, so they get the base mask back. A group is a left fold, so for a
+    single base form that is ``((base - outer) | holes) & base``; for several
+    base forms each hole is added back at the base mask's mean strength
+    inside it.
+    """
+
+    out = forms + [dict(form, mode="difference") for form in _outer(cutters)]
+    holes = [form for form in cutters if form.get("mode") == "difference"]
+    if not holes or not forms:
+        return out
+    if len(forms) == 1:
+        return out + [dict(hole, mode="union") for hole in holes] + [dict(forms[0], mode="intersect")]
+    from ai_dt.dt_shapes import render_form, render_forms
+
+    width, height = 384, 256
+    base = render_forms(forms, width, height)
+    for hole in holes:
+        inside = render_form(dict(hole, mode="union"), width, height) >= 0.5
+        strength = float(base[inside].mean()) if inside.any() else 0.0
+        if strength >= 0.02:
+            out.append(dict(hole, mode="union", opacity=round(min(strength, 1.0), 3)))
+    return out
 
 
 def sky_gradient_forms(sky_forms: list[dict], *, extent: float = 0.55) -> list[dict]:

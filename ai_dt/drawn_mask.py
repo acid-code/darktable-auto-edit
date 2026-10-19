@@ -498,7 +498,12 @@ def _form_record(form: dict) -> tuple[int, bytes, int]:
     if kind == "path":
         raw = form.get("points") or []
         corners = []
-        for point in raw[: dt_shapes.MAX_PATH_POINTS]:
+        if len(raw) > dt_shapes.MAX_PATH_POINTS:
+            # Thin out evenly. Cutting the list closed the outline with a
+            # chord: an 86-corner duck lost its whole left side.
+            step = len(raw) / float(dt_shapes.MAX_PATH_POINTS)
+            raw = [raw[int(index * step)] for index in range(dt_shapes.MAX_PATH_POINTS)]
+        for point in raw:
             try:
                 if isinstance(point, dict):
                     x, y = float(point["x"]), float(point["y"])
@@ -513,6 +518,7 @@ def _form_record(form: dict) -> tuple[int, bytes, int]:
             corners,
             border=float(form.get("border", 0.01)),
             smooth=bool(form.get("smooth", True)),
+            sharp_turns=bool(form.get("sharp_turns", False)),
         )
         return dt_shapes.PATH, dt_shapes.encode_path(points), len(points)
     if kind == "gradient":

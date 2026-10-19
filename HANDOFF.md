@@ -448,6 +448,9 @@ test runs instead of skipping).
 | After iop-order fix (venv) | 478 | 0 | 0 | 1 (darktable-cli) |
 | After iop-order fix (venv, `DTCLI` set) | 478 | 0 | 0 | 0 |
 | After iop-order fix (system python3) | 478 | 0 | 0 | 5 (4 rawpy, 1 darktable-cli) |
+| After halo fix (venv) | 494 | 0 | 0 | 1 (darktable-cli) |
+| After halo fix (venv, `DTCLI` set) | 494 | 0 | 0 | 0 |
+| After halo fix (system python3) | 494 | 0 | 0 | 5 (4 rawpy, 1 darktable-cli) |
 
 The last pre-existing failure (`test_guides…red_yellow_bird…`, broken
 since `dd888ef`) is fixed in code — see "Bird-eye fix" below. The test
@@ -458,6 +461,63 @@ System `python3` without the venv (no `rawpy`): the 4 DNG tests in
 raw+jpeg) are skipped with "rawpy is not installed (optional RAW decoder;
 pip install -r requirements.txt)"; everything else passes. In the venv they
 run.
+
+## Halo round the animal (inverse masks short of the edge)
+
+Visual review: a light ring round the duck's belly, tail and feet in the
+3-step animal plan. Causes, all confirmed with darktable-cli 5.6.2 renders:
+
+1. **darktable feathers a path outward** (`border * MIN(wd, ht)`, path.c). With
+   the outline on the segmented edge, the lift spilled onto the water and an
+   inverted mask or a "gradient minus animal" only reached full strength one
+   feather width outside the animal. Fix: `animal_forms` pulls the outline in by
+   the feather width (`inset_mask`, a round erosion that keeps legs thinner than
+   twice the inset); `ANIMAL_BORDER` is 0.005; holes (water between the legs) are
+   not grown, their difference feather already runs into the legs. The pull is
+   capped at a tenth of the animal's size so a distant bird a few pixels across
+   is kept.
+2. **Catmull-Rom handles at sharp turns** swing the curve out past the long side
+   next to it (2-3 px gap on a blocky outline). Traced animal forms carry
+   `sharp_turns: True`; `smooth_path(..., sharp_turns=True)` gives turns over 60
+   degrees sharp handles. Default paths are unchanged.
+3. **`_subtract` dropped the cutter's holes**, so the bottom gradient and edge burn
+   skipped the water between the legs. A single base form is now
+   `((base - outer) | holes) & base`; with several base forms each hole is added
+   back at the base mask's mean strength inside it.
+4. **Point limit:** `_form_record` cut paths at `MAX_PATH_POINTS` (64) and closed
+   them with a chord, which cut off half the duck at 86 corners. It now thins
+   evenly; `mask_to_outlines` clamps `max_points` to 64; the animal outline uses 64
+   on a 512 working size (finer at legs and feet).
+5. **verify harness bug:** darktable-cli does not overwrite. It wrote `name_01.png`
+   and the old file was measured. `render()` now deletes the destination first.
+
+Halo metric (`tools/verify_dt.py`): the mean change, in percent of base luma, in
+a ring 1-8 px outside the segmented outline against a band 16-40 px out, weighed
+row by row. `spill` (lift cases) fails above +1%. `match` fails when
+|ring - far| > max(1%, 12% of far). `mask_bottom_gradient` is checked in rows
+75-100%.
+
+| case (duck, 768 px) | before ring / far | after ring / far |
+| --- | --- | --- |
+| mask_animal (spill) | +2.9% / 0 (halo) | +0.0% / 0 |
+| mask_animal_background | -8.6% / -10.9% (halo) | -12.8% / -12.8% |
+| mask_bottom_gradient | -5.2% / -10.8% (halo) | -11.0% / -11.0% |
+| animal_stack | -0.1% / -5.8% (halo, old stack had the glow) | -22.3% / -23.4% |
+
+All 28 verify cases are OK, with 0 warnings. The stack is now the default
+animal plan (lift, background, bottom gradient, edge burn, split tone). The glow
+was dropped from the stack because it lifts a ring behind the subject by
+design. Images: `/workspace/diag/duck_fixed_before_after.jpg` and
+`/workspace/diag/duck_fixed_feet_crop.jpg` (crop x 50-80%, y 60-98%, 2000 px
+renders). The old renders are in `/workspace/diag/verify_dt_before`.
+
+**Water grade** (`mask_animal_background` darken). Old setting: brilliance -0.1,
+saturation -0.1, contrast -0.08. It squeezed the water flat: the far-background
+L p5-p95 range went from 38.7 to 31.2. Blacks were not lifted (p5 41.9 to 38.6),
+and chroma fell 11.3 to 9.1. New setting: brilliance -0.12, shadows brilliance
+-0.05, saturation -0.03, contrast +0.04. Mean L is 55.4 (old 55.7), p5 36.0,
+range 35.9, chroma 9.4. In the full stack: L 50.4, p5 31.0, range 36.8, C/L 0.179
+(base 0.180), so the water is darker without being greyer.
 
 ## Bird-eye fix (wildlife guide)
 

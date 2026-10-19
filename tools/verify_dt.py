@@ -77,13 +77,28 @@ STYLE_CASES = (
     ("palander", "", "lift"),
     ("keep_color", "keep only the red", "lift"),
 )
+# The default animal plan (animal_plan.py), plus a global split tone so one
+# module gets a third instance. The glow is left out: lifting a ring behind
+# the subject is what it is for, and it would hide a halo.
 STACK = (
     ("mask_animal", "lift"),
     ("mask_animal_background", "darken"),
     ("mask_bottom_gradient", "darken"),
     ("mask_edge_burn", "darken"),
-    ("mask_glow", "lift"),
 )
+# Ring just outside the segmented edge vs a band farther out (render pixels).
+RING = (1, 8)
+FAR = (16, 40)
+# Which cases are checked for a halo, and how:
+#   "spill": the lift must not reach the ring;
+#   "match": the ring must change about as much as the band farther out.
+HALO_CASES = {
+    "mask_animal": "spill",
+    "mask_animals": "spill",
+    "mask_animal_background": "match",
+    "mask_bottom_gradient": "match",
+    "animal_stack": "match",
+}
 
 
 def find_cli(explicit: str = "") -> str:
@@ -102,6 +117,9 @@ def warnings_in(lines: list[str]) -> list[str]:
 def render(cli: str, image: Path, xmp: Path, dest: Path, width: int) -> list[str]:
     """Render with darktable-cli; return the log lines. Raises on failure."""
 
+    # darktable never overwrites: it writes name_01.png beside an old file,
+    # and the old file would then be measured as if it were the new render.
+    dest.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         # A copy, so darktable does not pick up a sidecar next to the image.
@@ -133,6 +151,64 @@ def mean_diff(a: Path, b: Path) -> tuple[float, float]:
         return float("nan"), float("nan")
     diff = np.abs(one - two).max(axis=2)
     return float(diff.mean()), float(np.percentile(diff, 99))
+
+
+def _grow(mask, radius: int):
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    image = Image.fromarray((np.asarray(mask, dtype=bool) * 255).astype(np.uint8))
+    return np.asarray(image.filter(ImageFilter.MaxFilter(2 * int(radius) + 1))) > 127
+
+
+def halo_metric(base_png: Path, test_png: Path, outline, *, rows: tuple[float, float] = (0.0, 1.0)) -> dict:
+    """Mean signed change, in percent of the base luma, in a thin ring just
+    outside ``outline`` and in a band farther out (optionally only in a band
+    of rows).
+
+    ``outline`` is the segmented animal (any size; resized to the render).
+    A halo is a ring that changes less than the band around it. The change
+    is relative, so a bright ledge and dark water count alike, and the band
+    is weighed row by row like the ring, so a gradient's slope or a ledge
+    under the feet does not pass for a halo.
+    """
+
+    import numpy as np
+    from PIL import Image
+
+    base = np.asarray(Image.open(base_png).convert("L"), dtype=np.float32)
+    test = np.asarray(Image.open(test_png).convert("L"), dtype=np.float32)
+    height, width = base.shape
+    shape = Image.fromarray((np.asarray(outline, dtype=np.float32) >= 0.5).astype(np.uint8) * 255)
+    animal = np.asarray(shape.resize((width, height), Image.BILINEAR)) > 127
+    keep = np.zeros_like(animal)
+    keep[int(rows[0] * height): int(rows[1] * height)] = True
+    ring = _grow(animal, RING[1]) & ~_grow(animal, RING[0]) & keep
+    far = _grow(animal, FAR[1]) & ~_grow(animal, FAR[0]) & keep
+    change = (test - base) / np.maximum(base, 8.0) * 100.0
+    ring_rows, far_rows = ring.sum(axis=1), far.sum(axis=1)
+    both = (ring_rows > 0) & (far_rows > 0)
+    if not both.any():
+        return {"ring": 0.0, "far": 0.0}
+    weight = ring_rows[both].astype(np.float64)
+    ring_mean = (np.where(ring, change, 0.0).sum(axis=1)[both] / ring_rows[both])
+    far_mean = (np.where(far, change, 0.0).sum(axis=1)[both] / far_rows[both])
+    return {
+        "ring": round(float((ring_mean * weight).sum() / weight.sum()), 2),
+        "far": round(float((far_mean * weight).sum() / weight.sum()), 2),
+    }
+
+
+def halo_failure(kind: str, metric: dict) -> str:
+    """"" when the ring is fine, else why it is a halo (values in percent)."""
+
+    ring, far = metric["ring"], metric["far"]
+    if kind == "spill":
+        return f"the lift spills {ring:+.1f}% onto the ring" if ring > 1.0 else ""
+    # The old outward-feathered outline on the duck (background ring -8.6%
+    # vs -10.9% around it) fails; the outline pulled in by the feather passes.
+    tolerance = max(1.0, 0.12 * abs(far))
+    return f"ring {ring:+.1f}% vs around {far:+.1f}%" if abs(ring - far) > tolerance else ""
 
 
 def _recipe(box: tuple[float, float, float, float], label: str) -> dict:
@@ -295,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     base_png = args.out / "base.png"
     base_warn = set(warnings_in(render(cli, args.image, args.base, base_png, args.width)))
     only = {item.strip() for item in args.only.split(",") if item.strip()}
+    from ai_dt.mask_steps import subject_boxes
+    from ai_dt.segment.animals import segment_animals
+
+    found = segment_animals(image, subject_boxes(_recipe(box, args.label)))
+    outline = found.union(image.size)
     results = []
     failed = 0
     for case in build_cases(base_text, image, box, args.label, only):
@@ -324,10 +405,22 @@ def main(argv: list[str] | None = None) -> int:
         elif not (diff > 0.2 or p99 >= 3.0):
             # A small local region moves few pixels: the p99 still shows it.
             status = "no effect"
+        halo = None
+        if status == "ok" and outline is not None and case["name"] in HALO_CASES:
+            # The bottom gradient only acts low in the frame; compare there.
+            rows = (0.75, 1.0) if case["name"] == "mask_bottom_gradient" else (0.0, 1.0)
+            halo = halo_metric(base_png, png, outline, rows=rows)
+            why = halo_failure(HALO_CASES[case["name"]], halo)
+            if why:
+                status = "halo"
+                halo["why"] = why
         failed += status != "ok"
         row.update(status=status, warnings=new, mean_abs_diff=round(diff, 3), p99_abs_diff=round(p99, 1))
+        if halo is not None:
+            row["halo"] = halo
         results.append(row)
-        print(f"{row['name']:<24} {status:<12} diff {diff:6.2f} p99 {p99:5.1f}  {row['detail']}" + (f"\n    {new}" if new else ""))
+        print(f"{row['name']:<24} {status:<12} diff {diff:6.2f} p99 {p99:5.1f}  {row['detail']}"
+              + (f"  [ring {halo['ring']:+.1f}% / around {halo['far']:+.1f}%]" if halo else "") + (f"\n    {new}" if new else ""))
     (args.out / "report.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
     print(f"{len(results)} cases, {failed} failed; report {args.out / 'report.json'}")
     return 1 if failed else 0

@@ -391,28 +391,107 @@ def segment_animals(
     return result
 
 
-def animal_forms(result: AnimalResult, *, which: str = "all", border: float = 0.01, max_forms: int = 24) -> list[dict]:
+# darktable feathers a path *outward* by ``border * min(width, height)``.
+# With the outline on the animal's edge, the lift spilled that far onto the
+# water and an inverted (background) mask, or a gradient minus the animal,
+# only reached full strength that far out: a bright ring round the duck and
+# its feet. The outline is pulled in by the feather width, so the feather
+# ends on the real edge for both uses (the lift fades out and the background
+# darken fades in across the same thin band inside the edge).
+ANIMAL_BORDER = 0.005
+
+
+def animal_forms(
+    result: AnimalResult,
+    *,
+    which: str = "all",
+    border: float = ANIMAL_BORDER,
+    inset: float | None = None,
+    max_forms: int = 24,
+    max_points: int = 64,
+    working_size: int = 512,
+) -> list[dict]:
     """Path forms for one darktable group. ``which`` is ``all`` or ``main``.
 
     Each animal is vectorised on its own crop, so a distant bird keeps its
     shape, then mapped back to frame coordinates. All animals join by union;
-    holes are differences that follow their animal.
+    holes are differences that follow their animal. The outline sits
+    ``inset`` (default: the feather width) inside the segmented edge; parts
+    too thin to survive that (legs, a bill) keep their own outline.
     """
 
     from ai_dt.dt_shapes import mask_to_forms
 
+    pull = border if inset is None else max(0.0, float(inset))
     animals = result.animals[:1] if which == "main" else result.animals
     forms: list[dict] = []
     for animal in animals:
         cx, cy, cw, ch = animal.crop
-        local = mask_to_forms(animal.crop_mask, border=border, max_paths=3, max_points=40, min_area=0.01)
+        frame_h, frame_w = animal.mask.shape
+        crop_h = animal.crop_mask.shape[0]
+        # Crop-mask pixels per frame pixel, then the feather in crop pixels.
+        scale = crop_h / max(1.0, ch * frame_h)
+        radius = pull * min(frame_w, frame_h) * scale
+        binary = animal.crop_mask >= 0.5
+        # A distant bird a few pixels across would vanish; its ring is a
+        # pixel at most, so cap the pull at a tenth of its size.
+        radius = min(radius, 0.1 * float(np.sqrt(binary.sum() / np.pi)))
+        shape = inset_mask(binary, radius)
+        local = mask_to_forms(
+            shape.astype(np.float32), border=border, max_paths=3, max_points=max_points, min_area=0.01, working_size=working_size,
+        )
         for form in local:
             points = [
                 [min(max(cx + x * cw, 0.0), 1.0), min(max(cy + y * ch, 0.0), 1.0)] for x, y in form["points"]
             ]
-            forms.append(dict(form, points=points))
+            # Sharp turns (feet, tail tip) keep sharp handles: no swing
+            # out past the edge beside them.
+            forms.append(dict(form, points=points, sharp_turns=True))
         if len(forms) >= max_forms:
             break
     if forms:
         forms[0]["mode"] = "union"
     return forms[:max_forms]
+
+
+def inset_mask(binary: np.ndarray, radius: float) -> np.ndarray:
+    """``binary`` shrunk by about ``radius`` pixels, keeping thin parts.
+
+    A blur thresholded at 0.84 moves a straight edge in by one sigma, with a
+    round (not square) structuring element. Parts the shrink removes
+    entirely, such as legs thinner than twice the radius, are put back as
+    they were so the outline does not lose them.
+    """
+
+    mask = np.asarray(binary, dtype=bool)
+    if radius < 0.5 or not mask.any():
+        return mask
+    from PIL import Image, ImageFilter
+
+    def blur(values: np.ndarray) -> np.ndarray:
+        image = Image.fromarray((values.astype(np.float32) * 255.0).astype(np.uint8))
+        return np.asarray(image.filter(ImageFilter.GaussianBlur(radius=float(radius))), dtype=np.float32) / 255.0
+
+    # Holes (water between the legs) stay as they are: they are cut out with
+    # a difference, whose feather already runs into the animal, so growing
+    # them would eat the legs. Only the outside edge moves in.
+    holes = _holes(mask)
+    filled = mask | holes
+    shrunk = filled & (blur(filled) >= 0.84)
+    # About two sigma: a 0.16 cut (one sigma) fell just short of the old
+    # edge and kept a loose one-pixel ring round the whole animal as "thin".
+    grown = blur(shrunk) >= 0.02
+    thin = filled & ~grown
+    return (shrunk | thin) & ~holes
+
+
+def _holes(mask: np.ndarray) -> np.ndarray:
+    """Background pixels not connected to the frame edge."""
+
+    from PIL import Image, ImageDraw
+
+    padded = np.pad(mask, 1, constant_values=False)
+    # A copy: an image over a numpy buffer is read-only and the fill is lost.
+    image = Image.fromarray(np.where(padded, 255, 0).astype(np.uint8)).copy()
+    ImageDraw.floodfill(image, (0, 0), 128)
+    return (np.asarray(image) == 0)[1:-1, 1:-1]
