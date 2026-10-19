@@ -1,9 +1,10 @@
 --[[
 AI editor for Darktable.
 
-Opening a photo writes the description when that box is empty. Looks opens
-the looks window, and the choices stay there. Cancel on that window or on
-this panel leaves the current plan in place. Copy makes a duplicate when
+Opening a photo writes the description when that box is empty. Ask writes
+a plan of steps; there is no looks window or vibe box any more (use
+darktable presets for a look). Cancel on this panel leaves the current plan
+in place. Copy makes a duplicate when
 you want one. Accept, Skip, and a chosen look stay on the photo that is
 open. Back and Next move one history step, for every module. Revert AI edit
 still removes the AI steps.
@@ -1561,6 +1562,10 @@ local function apply_image(image, vibe, steer, look)
 end
 
 local function remember_vibe()
+  -- The vibe box is gone (looks come from darktable presets now).
+  if vibe_entry == nil then
+    return ""
+  end
   local text = tostring(vibe_entry.text or "")
   text = text:gsub("^%s+", ""):gsub("%s+$", "")
   if #text > 400 then
@@ -1623,8 +1628,10 @@ local function remember_steer()
 end
 
 local function vibe_to_send()
-  -- The typed words are always kept. A chosen preset is the only frame
-  -- look sent to Python, so the two are not applied together.
+  -- No vibe box and no preset dropdown: always faithful (blank).
+  if vibe_entry == nil and preset_box == nil then
+    return ""
+  end
   local typed = remember_vibe()
   local index = 1
   if preset_box and preset_box.selected ~= nil then
@@ -1983,7 +1990,7 @@ local function run_analysis()
   end
   show_choices(shown)
   local continued = type(shown) == "table" and shown._continued == true
-  local where = "Press Looks to open the choices. They stay in that window."
+  local where = "Type what should change, then press Ask. Accept and Skip stay on this photo."
   if continued then
     where = "Type what should change, then press Ask. Accept and Skip stay on this photo."
   end
@@ -1993,7 +2000,7 @@ local function run_analysis()
   if continued then
     last = last .. "\n" .. where
   elseif type(shown) == "table" and type(shown.features_next) == "string" and shown.features_next ~= "" then
-    last = last .. "\nAccept or skip the next step, or press Looks. " .. where
+    last = last .. "\nAccept or skip the next step. " .. where
   elseif type(shown) ~= "table" or shown.offer_looks ~= false then
     last = last .. "\n" .. where
   end
@@ -3039,7 +3046,7 @@ end
 local function open_looks()
   local images = target_images()
   if #images == 0 then
-    status_label.text = "Open a photo, then press Looks."
+    status_label.text = "Open a photo first."
     dt.print("Select an image first")
     return false
   end
@@ -3579,75 +3586,6 @@ local function load_presets()
   return loaded
 end
 
-local preset_ready = false
-
-local function save_preset_choice(widget)
-  if not preset_ready then
-    return
-  end
-  local index = tonumber(widget.selected) or 1
-  if index < 1 then
-    index = 1
-  end
-  pcall(dt.preferences.write, PREFERENCE, "preset", "string", preset_ids[index] or "")
-end
-
-local vibe_label = dt.new_widget("label") {
-  label = "Vibe",
-  halign = "start",
-}
-
-vibe_entry = dt.new_widget("entry") {
-  text = stored_string("vibe"),
-  placeholder = "blank = faithful",
-  editable = true,
-  tooltip = "Faithful (leave blank), warm, moody, quiet. Fuji sims: provia, velvia, astia, classic chrome, acros, pro neg, eterna, nostalgic neg, reala ace. fuji or fujicam picks one simulation for the picture. A preset chosen beside this box wins over this text.",
-}
-
-preset_ids = { "" }
-preset_queries = { "" }
-local preset_labels = { "Faithful" }
-for _, item in ipairs(load_presets()) do
-  preset_ids[#preset_ids + 1] = item.id
-  preset_queries[#preset_queries + 1] = (item.id:gsub("-", " "))
-  preset_labels[#preset_labels + 1] = item.label
-end
-local saved_preset = stored_string("preset")
-local preset_selected = 1
-for index, preset_id in ipairs(preset_ids) do
-  if preset_id ~= "" and preset_id == saved_preset then
-    preset_selected = index
-    break
-  end
-end
-local preset_spec = {
-  label = "Preset",
-  tooltip = "Film and color presets. Faithful uses the vibe box, or the measured correction when that box is empty. Any other entry is the only frame look sent to the analyzer.",
-  selected = preset_selected,
-  changed_callback = save_preset_choice,
-}
-for index, label in ipairs(preset_labels) do
-  preset_spec[index] = label
-end
-local preset_ok, preset_widget = pcall(function()
-  return dt.new_widget("combobox")(preset_spec)
-end)
-if preset_ok then
-  preset_box = preset_widget
-  preset_ready = true
-else
-  print("AI editor: preset dropdown was not created: " .. tostring(preset_widget))
-  preset_box = nil
-end
-
-local look_row_spec = {
-  orientation = "horizontal",
-  vibe_entry,
-}
-if preset_box then
-  look_row_spec[2] = preset_box
-end
-local look_row = dt.new_widget("box")(look_row_spec)
 
 scene_entry = dt.new_widget("text_view") {
   text = "",
@@ -3690,7 +3628,7 @@ steer_entry = dt.new_widget("entry") {
   text = stored_string("steer"),
   placeholder = "what should change on this photo?",
   editable = true,
-  tooltip = "Ask reads this photo and writes a plan, even when a plan is already stored. It does not open the looks window. Accept and Skip stay on this photo.",
+  tooltip = "Ask reads this photo and writes a plan, even when a plan is already stored. Accept and Skip stay on this photo.",
 }
 
 -- text_view wraps at word and character breaks. A vertical box gives each
@@ -3759,11 +3697,7 @@ status_label = setmetatable({}, {
     request_ui.status_widget[key] = value
   end,
 })
-status_label.text = "Open a photo. The description is written when that box is empty. Ask writes a plan. Looks opens the choices."
-look_name_label = dt.new_widget("label") {
-  label = "Look: —",
-  halign = "start",
-}
+status_label.text = "Open a photo. The description is written when that box is empty. Ask writes a plan of steps to Accept or Skip."
 local status_row = dt.new_widget("box") {
   orientation = "vertical",
   request_ui.status_widget,
@@ -3772,31 +3706,10 @@ local status_row = dt.new_widget("box") {
 run_button = dt.new_widget("button") {
   label = "Ask",
   sensitive = false,
-  tooltip = "Read the open photo and write a plan. This does not open the looks window.",
+  tooltip = "Read the open photo and write a plan of steps to Accept or Skip.",
   clicked_callback = on_click,
 }
 
-looks_button = dt.new_widget("button") {
-  label = "Looks",
-  sensitive = false,
-  tooltip = "Open the looks window after Ask has written choices. It does not start a new plan.",
-  clicked_callback = function()
-    set_panel_busy(true)
-    local opened
-    local ok, failure = pcall(open_looks)
-    opened = ok and failure == true
-    close_progress()
-    set_panel_busy(false)
-    if not ok then
-      status_label.text = "Failed: " .. tostring(failure)
-      dt.print("Looks failed")
-      return
-    end
-    if opened then
-      watch_preview_pick()
-    end
-  end,
-}
 
 cancel_button = dt.new_widget("button") {
   label = "Cancel",
@@ -3893,7 +3806,6 @@ request_ui.new_plan_button = dt.new_widget("button") {
 local action_row = dt.new_widget("box") {
   orientation = "horizontal",
   run_button,
-  looks_button,
   cancel_button,
   copy_button,
   remove_button,
@@ -3987,8 +3899,6 @@ local feature_row = dt.new_widget("box") {
 
 local panel = dt.new_widget("box") {
   orientation = "vertical",
-  vibe_label,
-  look_row,
   scene_label,
   scene_entry,
   rewrite_scene_button,
@@ -3997,7 +3907,6 @@ local panel = dt.new_widget("box") {
   history_row,
   feature_row,
   dt.new_widget("separator") {},
-  look_name_label,
   status_row,
 }
 

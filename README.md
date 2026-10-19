@@ -177,6 +177,11 @@ The type itself comes from the detectors you already have, plus the frame: brigh
 
 ## Vibes and recipes
 
+The darktable panel no longer has a Looks button, a vibe box, a Preset
+dropdown or a "Look:" line: use darktable presets for a look. The panel
+always sends a blank (faithful) vibe; the `--vibe` flag below still works
+from the command line.
+
 A vibe is a sentence you type, such as `moody dark` or `crisp building`. It changes the global grade. It does not search folder names, it does not choose the guide, and a vibe named "wildlife" does not put a bird treatment on a portrait.
 
 Each file in `recipes/` is one look. The words that get matched are the title, the scene tags, the vibe words, and the description. Those words become a term-frequency vector. Your sentence, plus the scene the detector named (portrait, animal, architecture, or general), becomes another vector. Cosine similarity picks the nearest recipe. A small bonus is added when that recipe lists the detected scene.

@@ -66,8 +66,9 @@ class ButtonWordsTests(unittest.TestCase):
         sources = [lua] + [(ROOT / "ai_dt" / name).read_text(encoding="utf-8")
                            for name in ("status_text.py", "features.py", "pipeline.py")]
         for text in sources:
-            for word in re.findall(r"press ([A-Z][a-z]+)", text):
-                self.assertIn(word, labels | {"Accept", "Skip"}, word)
+            for word, more in re.findall(r"press ([A-Z][a-z]+)( [a-z]+)?", text):
+                known = labels | {"Accept", "Skip"}
+                self.assertTrue(word in known or word + more in known, word + more)
             self.assertNotIn("Propose looks", text)
 
 
