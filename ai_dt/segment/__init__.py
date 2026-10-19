@@ -44,6 +44,8 @@ class SegmentResult:
     masks: dict[str, np.ndarray] = field(default_factory=dict)
     sources: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # One entry per instance for instance classes: {"animal": [Animal, ...]}.
+    instances: dict[str, list] = field(default_factory=dict)
 
     def get(self, name: str) -> np.ndarray | None:
         return self.masks.get(name)
@@ -96,9 +98,20 @@ def segment(
 
     wanted = [name for name in dict.fromkeys(classes) if name in ALL_CLASSES]
     result = SegmentResult()
+    rgb = image.convert("RGB")
+    if "animal" in classes:
+        from ai_dt.segment.animals import segment_animals
+
+        found_animals = segment_animals(rgb, boxes or [], backend=backend, segmenters=segmenters)
+        result.notes.extend(found_animals.notes)
+        union = found_animals.union(rgb.size)
+        if union is not None:
+            result.masks["animal"] = union
+            result.instances["animal"] = found_animals.animals
+            kinds = sorted({animal.source for animal in found_animals.animals})
+            result.sources["animal"] = ", ".join(kinds)
     if not wanted:
         return result
-    rgb = image.convert("RGB")
     chain = segmenters if segmenters is not None else []
     if segmenters is None:
         for name in backend_order(backend):
@@ -138,7 +151,7 @@ def segment(
         result.masks["background"] = (1.0 - result.masks["subject"]).astype(np.float32)
         result.sources["background"] = result.sources["subject"] + " (inverse subject)"
     for name in list(result.masks):
-        if name not in wanted:
+        if name not in wanted and name != "animal":
             del result.masks[name]
             result.sources.pop(name, None)
     return result

@@ -96,6 +96,34 @@ Python 3.13, no darktable, no API keys).
   `tests/synthetic_scenes.py` (helpers). Optional backends are tested
   with fakes; no network.
 
+### Phase 2b — Animal masks (user priority: landscapes, then animals, then people)
+
+- `ai_dt/segment/animals.py` (new): `segment_animals(image, boxes)` gives
+  one outline per animal (`Animal`: label, confidence, bbox, full-frame
+  mask, crop mask, source) and `.union()` for "all animals";
+  `segment(image, ["animal"], boxes=…)` returns the union as
+  `masks["animal"]` and the list as `instances["animal"]`.
+  `animal_forms(result, which="all"|"main")` vectorises each animal on its
+  own crop (so a distant bird keeps its shape) and joins them by union.
+- Boxes: the existing YOLO COCO mapping (bird, cat, dog, horse, sheep, cow,
+  elephant, bear, zebra, giraffe → `animal`). Size-aware confidence bar
+  (≥0.15 under 1% of the frame, ≥0.2 under 5%, ≥0.25 otherwise), boxes
+  under 0.8% of a side dropped, duplicates (IoU > 0.6) merged, at most 12.
+- Refinement per crop: model backends first (darktable SAM, rembg, Gemini
+  if opted in), then an occlusion-tolerant color heuristic (colors common
+  outside the box are removed from the core model, then a close bridges
+  grass blades / branches / fence wires, fragments far from the core are
+  dropped), then a soft box ellipse if nothing is trustworthy. Masks with
+  < 24 preview pixels are skipped with a note. Pose-agnostic by design.
+- The existing guide `build: "animal"` path (`separate.extend_animal`) is
+  unchanged.
+- Note: darktable SAM refuses previews under 256 px, so on small crops it
+  is skipped and rembg/heuristic refine instead. Real-photo quality of the
+  heuristic is unverified (synthetic scenes only).
+- Tests: `tests/test_animals.py` (10): multiple animals (standing, lying,
+  bird in flight), occluded dog behind grass, tiny distant bird, none
+  found, model-first with untrusted-model fallback, size-aware confidence.
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -108,6 +136,7 @@ test runs instead of skipping).
 | Baseline `dd888ef`, venv with requirements | 318 | 2 | 0 | 1 |
 | After phase 1 | 343 | 1 | 0 | 0 |
 | After phase 2 | 379 | 1 | 0 | 0 |
+| After phase 2b (animals) | 389 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`

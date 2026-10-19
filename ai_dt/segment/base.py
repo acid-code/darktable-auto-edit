@@ -9,6 +9,9 @@ import numpy as np
 LANDSCAPE_CLASSES = ("sky", "architecture", "vegetation", "water", "ground")
 BOX_CLASSES = ("subject", "people")
 ALL_CLASSES = ("subject", "background", "people", *LANDSCAPE_CLASSES)
+# Instance classes are refined box by box (ai_dt/segment/animals.py).
+ANIMAL_CLASS = "animal"
+INSTANCE_CLASSES = (ANIMAL_CLASS,)
 
 # A mask that covers almost nothing, or the whole frame, is not a region.
 MIN_COVER = 0.01
