@@ -266,7 +266,7 @@ Fix (`ai_dt/applied.py`, `features.plan_chat`, `reasoner._fill`):
 Tests: `tests/test_applied.py` (11; mock planner returning a repeat, prompt
 contains the applied and skipped steps, sidecar history, redo wording).
 
-### Bug 3 — editing the request hid the plan; Accept/Skip were ambiguous
+### Bug 3 — editing the request hid the plan; Accept/Skip were ambiguous (`d6f43b9`)
 
 darktable 5.6's Lua `entry` has no change signal (`src/lua/widget/entry.c`
 registers only `text`, `placeholder`, `is_password`, `editable`), so the
