@@ -451,6 +451,7 @@ test runs instead of skipping).
 | After halo fix (venv) | 494 | 0 | 0 | 1 (darktable-cli) |
 | After halo fix (venv, `DTCLI` set) | 494 | 0 | 0 | 0 |
 | After halo fix (system python3) | 494 | 0 | 0 | 5 (4 rawpy, 1 darktable-cli) |
+| After offline plan + Ask (venv) | 504 | 0 | 0 | 1 (darktable-cli) |
 
 The last pre-existing failure (`test_guides…red_yellow_bird…`, broken
 since `dd888ef`) is fixed in code — see "Bird-eye fix" below. The test
@@ -462,102 +463,87 @@ raw+jpeg) are skipped with "rawpy is not installed (optional RAW decoder;
 pip install -r requirements.txt)"; everything else passes. In the venv they
 run.
 
-## Open: offline darkroom GUI test findings (round after `bcc4e51`, not fixed yet)
+## Offline GUI test findings: fixed (commit `38ffdcb`)
 
-A real darktable 5.6.2 GUI test was run offline (detector=heuristic,
-advisor=histogram, no keys, no Ollama) with the plugin at `bcc4e51`. It found
-the problems below. This round only diagnosed them; **no code was changed**.
-The usage budget ran out before the fixes.
+The offline darkroom test (darktable 5.6.2, detector=heuristic,
+advisor=histogram, no keys) found four problems. What changed for each:
 
-Findings, summarised from the test report:
-1. **Offline never offers a step.** Propose with "make the duck the main theme"
-   gives: `Plan: not used / Faithful correction. Kept animal. Set aside Gentle
-   animal. Reasoning was skipped. No local model and no Gemini key. ... Ignored:
-   make, duck, main, theme. ... This sentence could not be mapped, so nothing
-   extra was painted. No step is waiting, so Accept and Skip are off. Type a
-   change and press Ask for a plan.` History is unchanged and Accept/Skip are
-   off. "make the water darker" does the same (`Ignored: make, water, darker`).
-   The same fallback is what Windows users get whenever Gemini fails.
-2. **The edited description is ignored offline.** The header still says "Plan:
-   not used". The default description was "Leave the measured color alone.".
+1. **Offline now offers steps.** New `ai_dt/offline_plan.py`:
+   - `planner_missing(proposal)`: true when the reasoner skipped, failed, or
+     returned nothing usable.
+   - `offline_operations(...)`: the request steps first (from
+     `mask_grammar.mask_operations`), then the guide steps.
+   - Guide steps for an animal: mask_animal, mask_animal_background,
+     mask_bottom_gradient when the ground is bright, and mask_edge_burn. Other
+     picture types use `lessons.PRESETS`.
+   - The guide steps join on the first Ask, on a blank request, or on an
+     emphasis request. A specific follow-up keeps only its own step.
+   - `apply_offline` runs through the same `apply_operations` and
+     `_install_history_steps` path as a model plan, in both `pipeline.run` and
+     `features.plan_chat`. This is also what Windows users get when Gemini fails.
+   - Offline duck results:
+     - "make the duck the main theme" gives mask_animal, mask_animal_background,
+       mask_bottom_gradient and mask_edge_burn.
+     - "make the water darker" gives mask_water darken first, then the animal
+       steps.
+     - Accept/Skip are enabled in both cases.
+2. **Description:**
+   - With no picture model, the description box gets a factual line
+     (`pipeline._local_description`: "Measured locally: a <type> photo with
+     <labels>, <light> light. Describe the subject here."). Before, it showed
+     the reading's advice line ("Leave the measured color alone.").
+   - A typed description is used for the animal check, the noun, and the
+     water and ground checks.
+   - The header says so: "Plan: offline (no Gemini key), from the guide,
+     request and description".
 3. **Wording:**
-   - Status text says "press Ask" while the button reads "Propose".
-   - Accept/Skip show plain labels when no step is waiting. That is by design in
-     `show_feature_pair`; the labelled state "Accept: <step>" still needs a GUI
-     check with a step waiting.
-   - "Plan: not used" should say plainly why, e.g. "Plan: offline (no Gemini key)".
-4. **Keystroke leak:** typing in the request entry sometimes triggers darktable
-   shortcuts (capital letters switched to map view, a tethering toast, the
-   exposure popup).
+   - The run button is now always **Ask** (it was "Propose" on a first plan).
+   - All status, tooltip and help text in Lua, Python and the README says Ask.
+     "Propose looks" is gone.
+   - Accept/Skip show "Accept: <step>" whenever a step is waiting.
+   - The plan header is "Plan: offline (<why>), from the …", or "Plan: offline
+     (Gemini failed …)" when Gemini failed. "Plan: not used" is gone.
+4. **Keystroke leak (mitigated; Asaf must still test it in the darkroom):**
+   - Cause: in darktable 5.6, `gui/accelerators.c` (`dt_shortcut_dispatcher`)
+     passes every key to the focused widget first, then runs a shortcut for any
+     key the widget did not consume. The panel's status box was a read-only
+     `text_view`. It can take the focus, but it consumes no keys, so after a
+     click on it a capital letter fired a shortcut (map view, tethering, the
+     exposure popup).
+   - Fix: the status `text_view` is now `sensitive = false`, so it cannot take
+     the focus. It still wraps; a Lua label would not. The text is a little dim.
+   - The request entry is a real `GtkEntry` (`lua/widget/entry.c`), so letters
+     typed there are consumed and never reach a shortcut.
+   - Limit: the 5.6 Lua API has no grab-focus or key-filter call. If the focus
+     is outside the entries (for example after clicking the image), typed keys
+     are shortcuts. Workaround: click into the request box before typing.
 
-Diagnosis (reproduce with
-`.venv/bin/python ai_processor.py /tmp/off/preview.jpg --output-dir /tmp/off
---detector heuristic --advisor histogram --steer "make the duck the main theme"`,
-using a copy of the GUI work dir's `preview.jpg`; keys unset):
-- The picture is typed `animal` and `pipeline.py` calls `animal_plan`. But
-  `animal_plan` only *maps* the existing `step_queue`. Offline, the proposal is
-  `reasoner.skipped(...)` (`status: "skipped"`, no stages), so the queue is
-  empty, `emphasis` is False, and nothing is queued.
-- The first Propose (`pipeline.run`, about line 696, `resolve_plan`) never calls
-  `mask_grammar.mask_operations`. Only the follow-up path (`features.plan_chat`,
-  about line 976) does, followed by `apply_operations`, `select_mask_features`
-  and `_install_history_steps`. `mask_operations("make the water darker")`
-  already returns `mask_water` darken.
-- The default description comes from `pipeline._scene_record`: with no vision
-  advisor it falls back to `reading.sentence`, which is advice
-  (`reading.py:475` "Leave the measured color alone."), not a description.
-- Button wording:
-  - The Lua `run_button` reads "Propose" on a first plan and "Ask" on a
-    follow-up (`show_choices`, `recipe._continued`).
-  - The Python strings in `status_text.py:153-156` and `features.py:711,831` say
-    "press Ask".
-  - `pipeline.py:374` and `status_text.py:276,288` say "Propose looks". No
-    button has that label.
-  - Lua lines 1070-1071, 1480, 1795-1796 and 1943 say "Ask".
+Tests: `tests/test_offline_plan.py` (10 tests). They cover:
+- the duck plan;
+- water darker;
+- a follow-up;
+- the landscape preset;
+- the headers;
+- the default description;
+- that status strings name only real buttons.
 
-Planned fix (resume here):
-- New `ai_dt/offline_plan.py`:
-  - `planner_missing(proposal)`: true when the status is skipped or there are
-    no stages, features or operations.
-  - `offline_operations(steer, description, picture_type, animal, ground)`:
-    the operations from `mask_operations(steer)`, plus guide steps. For an
-    animal those are mask_animal lift, mask_animal_background, mask_bottom_gradient
-    when the ground is bright, and mask_edge_burn. Otherwise use
-    `lessons.PRESETS[type]`.
-- In both `pipeline.run` (after `resolve_plan`, before `animal_plan`) and
-  `plan_chat`, when the planner is missing, run `apply_operations` and
-  `_install_history_steps` with those operations so `animal_plan` sees a queue.
-  `animal_plan._GENERAL` already matches "main theme".
-- `plan_backend_line`: "Plan: offline (no Gemini key)" or "Plan: offline
-  (Gemini failed: …)", plus "from request + description" when the user typed a
-  description.
-- Default description offline: a factual measured line (type, detections,
-  light), not `reading.sentence`.
-- Wording: one rule. Python says "press Propose". Lua swaps "press
-  Propose/Ask" for the current `run_button.label` before showing status. Drop
-  "Propose looks".
-- Keystroke leak: not investigated. Check whether darktable 5.6 Lua `entry`
-  widgets grab focus; otherwise document a workaround (click into the entry,
-  avoid shift-letters; or turn off the conflicting shortcuts in preferences ›
-  shortcuts).
-- Tests:
-  - the offline duck plan gives steps;
-  - "make the water darker" gives `mask_water`;
-  - the description is used;
-  - status strings name only real buttons (scan `status_text.py`/`features.py`/
-    `ai_editor.lua` against the Lua button labels).
-
-Also still to do (from the parent):
-- `/workspace/dtverify/launch-gui-online.sh`: the same GUI launch, but keys are
-  not unset, and `--conf` sets the user's prefs (advisor Mistral
-  `ministral-14b-2512`, planner Gemini `gemini-3.5-flash-lite`, best detector;
-  check the pref names in `ai_editor.lua`). Never write key values anywhere.
-- One online `ai_processor.py` run on `/workspace/uploads/duck.jpg`.
-- After the fixes, refresh the GUI plugin copy:
-  `P=/workspace/dtverify/guiconfig/lua/ai_editor && rm -rf $P.new && mkdir -p $P.new && git archive HEAD | tar -x -C $P.new && rm -rf $P && mv $P.new $P`.
-  Then restart darktable (`pkill -TERM darktable`, wait,
-  `/workspace/dtverify/launch-gui.sh`). darktable was **not** restarted this
-  round; it is still the offline instance with the `bcc4e51` plugin.
+Left:
+- In the darkroom: confirm the shortcut mitigation, and click through Accept
+  on the offline duck plan.
+- The online launcher script was not made. The user deleted the keys from the
+  box.
+- **Order-dependent flake (not caused by this change):** running
+  `tests.test_pipeline` and `tests.test_guides` together, or the full suite
+  while darktable is starting, can fail
+  `AnalysisTests.test_portrait_finds_a_face_and_writes_a_vignette` and
+  `FaceGateTests.test_a_head_with_two_eyes_is_still_a_face`.
+  - It reproduces on `f99ce55` too, before any of this round's code.
+  - Each test passes on its own, and the full suite passed (504 tests, 1 skip)
+    on an idle box.
+  - Likely cause: face-detector state shared between tests. Not investigated.
+- darktable on DISPLAY :3 was restarted offline with the refreshed plugin. The
+  old instance ignored SIGTERM for 30 s and was killed with SIGKILL; its stale
+  `*.db.lock` files were removed. The plugin loaded with no Lua errors.
 
 Online check (one real run, 2026-10-19, keys taken from the environment
 only and never written anywhere):
