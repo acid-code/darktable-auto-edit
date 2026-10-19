@@ -16,6 +16,15 @@ from ai_dt.pipeline import analyze, write_outputs
 from ai_dt.tiff16 import write_rgb16
 from tests.minimal_dng import write_dng
 
+try:  # rawpy is optional (requirements.txt); without it a DNG cannot be decoded.
+    import rawpy  # noqa: F401
+
+    HAVE_RAWPY = True
+except ImportError:
+    HAVE_RAWPY = False
+
+needs_rawpy = unittest.skipUnless(HAVE_RAWPY, "rawpy is not installed (optional RAW decoder; pip install -r requirements.txt)")
+
 
 class TiffTests(unittest.TestCase):
     def test_rgb16_round_trip(self) -> None:
@@ -35,6 +44,7 @@ class TiffTests(unittest.TestCase):
 
 
 class RawPipelineTests(unittest.TestCase):
+    @needs_rawpy
     def test_a_dng_is_decoded_and_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -58,6 +68,7 @@ class RawPipelineTests(unittest.TestCase):
             self.assertTrue(style_path.is_file())
             self.assertIn("half resolution", " ".join(payload["input"]["notes"]))
 
+    @needs_rawpy
     def test_full_res_keeps_the_sensor_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -114,6 +125,7 @@ class RawPipelineTests(unittest.TestCase):
         self.assertEqual(recipe["height"], 10)
         self.assertTrue(any("was not decoded" in note for note in recipe["input"]["notes"]))
 
+    @needs_rawpy
     def test_batch_writes_one_tiff_per_picture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "inbox"
@@ -137,6 +149,7 @@ class RawPipelineTests(unittest.TestCase):
             self.assertTrue((output / "two" / "edited.tif").is_file())
             self.assertTrue((output / "two" / "edit.dtstyle").is_file())
 
+    @needs_rawpy
     def test_a_raw_and_a_jpeg_with_the_same_name_both_survive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "inbox"

@@ -159,7 +159,87 @@ def _saturation_peaks(
         if int(near.sum()) < 8:
             continue
         peaks.append((float(cx), float(cy), spot, spot, spot, score))
-    return peaks
+    return _drop_bands(peaks)
+
+
+def _drop_bands(peaks: list[tuple]) -> list[tuple]:
+    """Drop colored peaks that line up along an edge.
+
+    The peak search clears a square around each maximum, so a saturated
+    edge (red plumage meeting yellow, a coloured stripe) comes back as a
+    row of evenly spaced peaks on one line. Any two of them make a level
+    "pair". Irises are isolated spots: four or more peaks on one row or
+    column are an edge, not eyes.
+    """
+
+    banded: set[int] = set()
+    for axis in (0, 1):
+        for peak in peaks:
+            row = sorted(
+                (index for index, item in enumerate(peaks) if abs(item[1 - axis] - peak[1 - axis]) <= 2.0),
+                key=lambda index: peaks[index][axis],
+            )
+            # Only an unbroken chain is an edge: two irises side by side can
+            # each give two peaks on one row, with a wide gap between them.
+            chain = row[:1]
+            for index in row[1:]:
+                step = abs(peaks[index][axis] - peaks[chain[-1]][axis])
+                if step <= 2.5 * max(1, int(peaks[index][2])):
+                    chain.append(index)
+                else:
+                    if len(chain) >= 4:
+                        banded.update(chain)
+                    chain = [index]
+            if len(chain) >= 4:
+                banded.update(chain)
+    return [peak for index, peak in enumerate(peaks) if index not in banded]
+
+
+def _single_eye(
+    small: np.ndarray,
+    dark: np.ndarray,
+    local: np.ndarray,
+) -> tuple[float, float, int, int, int, float] | None:
+    """One eye seen in profile: a round, solid dark spot holding a catchlight.
+
+    A bird or animal side-on shows one eye. A nose, a shadow or the dark
+    neck beside bright water is dark too, so a lone spot only counts when
+    it is compact and round, clearly darker than its surround, and holds a
+    bright catchlight *enclosed* by the dark (a hole in the pupil, not light
+    at its rim), and it is the only such spot in the search box.
+    """
+
+    region_area = int(small.size)
+    filled = _filled(dark)
+    found: list[tuple[float, float, int, int, int, float]] = []
+    for cx, cy, area, spot_w, spot_h in _component_spots(filled):
+        if area < 12 or area > int(0.02 * region_area):
+            continue
+        aspect = spot_w / float(max(1, spot_h))
+        if aspect < 0.7 or aspect > 1.45:
+            continue
+        if area < 0.6 * spot_w * spot_h:
+            continue
+        x0 = max(0, int(round(cx - spot_w / 2.0)))
+        y0 = max(0, int(round(cy - spot_h / 2.0)))
+        x1 = min(small.shape[1], x0 + spot_w + 1)
+        y1 = min(small.shape[0], y0 + spot_h + 1)
+        inside = small[y0:y1, x0:x1]
+        pupil = dark[y0:y1, x0:x1]
+        hole = filled[y0:y1, x0:x1] & ~pupil
+        if inside.size == 0 or not pupil.any():
+            continue
+        holes = int(hole.sum())
+        if holes < 2 or holes > 0.4 * area:
+            continue
+        depth = float(np.median(local[y0:y1, x0:x1]) - float(np.min(inside)))
+        catchlight = float(np.max(inside[hole])) - float(np.median(inside[pupil]))
+        if depth < 0.15 or catchlight < 0.35:
+            continue
+        found.append((cx, cy, area, spot_w, spot_h, depth))
+    if len(found) != 1:
+        return None
+    return found[0]
 
 
 def _with_pupil(
@@ -496,10 +576,19 @@ def animal_eye_boxes(
     # Pupils are dark. Orange or white fur around them is not.
     dark = (small < local - np.float32(0.14)) & (small < np.float32(0.38))
     pair = _best_eye_pair(_kept_spots(dark, local - small), float(max(small.shape)), 0.22)
-    if pair is None:
+    if pair is not None:
+        boxes = _pair_to_boxes(pair, small.shape, (x0, y0), scale_y, scale_x, width, height)
+        placed = _separate_eyes([box for box in boxes if box[2] > 0.015 and box[3] > 0.015])
+        if placed:
+            return placed
+    # Side-on, only one eye shows (and a "pair" of specks too small to be
+    # eyes is no pair). The catchlight leaves a hole in the dark mask, so
+    # fill the spot before reading its shape.
+    single = _single_eye(small, dark, local)
+    if single is None:
         return []
-    boxes = _pair_to_boxes(pair, small.shape, (x0, y0), scale_y, scale_x, width, height)
-    return _separate_eyes([box for box in boxes if box[2] > 0.015 and box[3] > 0.015])
+    boxes = _pair_to_boxes((single,), small.shape, (x0, y0), scale_y, scale_x, width, height, expand=1.4)
+    return [box for box in boxes if box[2] > 0.015 and box[3] > 0.015]
 
 
 def attach_animal_eyes(pixels: np.ndarray, detections: list[Detection]) -> list[Detection]:
@@ -569,6 +658,29 @@ def _eye_search_box(animal: Detection) -> tuple[float, float, float, float]:
     if str(animal.label or "").lower() == "bird" and animal.source != "heuristic" and h > 1.3 * w:
         return (x, y, w, h * 0.45)
     return (x, y, w, h)
+
+
+def _filled(mask: np.ndarray) -> np.ndarray:
+    """``mask`` with enclosed holes (a catchlight inside a pupil) filled."""
+
+    outside = np.zeros(mask.shape, dtype=bool)
+    free = ~mask
+    stack = [(y, x) for y in range(mask.shape[0]) for x in (0, mask.shape[1] - 1) if free[y, x]]
+    stack += [(y, x) for x in range(mask.shape[1]) for y in (0, mask.shape[0] - 1) if free[y, x]]
+    while stack:
+        y, x = stack.pop()
+        if outside[y, x] or not free[y, x]:
+            continue
+        outside[y, x] = True
+        if y > 0:
+            stack.append((y - 1, x))
+        if y + 1 < mask.shape[0]:
+            stack.append((y + 1, x))
+        if x > 0:
+            stack.append((y, x - 1))
+        if x + 1 < mask.shape[1]:
+            stack.append((y, x + 1))
+    return mask | (free & ~outside)
 
 
 def _box_blur(values: np.ndarray) -> np.ndarray:

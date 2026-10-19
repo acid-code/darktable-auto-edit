@@ -170,3 +170,43 @@ class AnimalEyeTests(unittest.TestCase):
         mask = eye_ellipse(edits)
         self.assertIsNotNone(mask)
         self.assertEqual(mask["name"], "AI eyes")
+
+
+class ProfileEyeTests(unittest.TestCase):
+    """dd888ef made the eye search pairs-only. A bird side-on shows one eye,
+    and a red-meets-yellow plumage edge came back as a level colour "pair"."""
+
+    def _profile_bird(self, catchlight: bool = True) -> np.ndarray:
+        height, width = 240, 360
+        pixels = np.full((height, width, 3), (0.30, 0.55, 0.25), dtype=np.float32)
+        pixels[60:220, 120:260] = (0.10, 0.10, 0.11)
+        pixels[50:120, 140:250] = (0.78, 0.12, 0.08)  # red head
+        pixels[125:200, 145:245] = (0.86, 0.70, 0.10)  # yellow breast, a colour edge
+        pixels[70:84, 200:214] = (0.04, 0.03, 0.03)  # the one eye
+        if catchlight:
+            pixels[74:78, 205:209] = (0.92, 0.92, 0.90)
+        return pixels
+
+    def test_one_eye_with_a_catchlight_is_found_side_on(self) -> None:
+        bird = Detection("animal", "animal", 0.6, (120 / 360, 50 / 240, 140 / 360, 170 / 240), "heuristic")
+        found = [item for item in attach_animal_eyes(self._profile_bird(), [bird]) if item.category == "eye"]
+        self.assertEqual(len(found), 1)
+        x, y, w, h = found[0].bbox
+        self.assertTrue(x <= 207 / 360 <= x + w and y <= 77 / 240 <= y + h)
+
+    def test_a_dark_spot_without_an_enclosed_catchlight_is_not_an_eye(self) -> None:
+        bird = Detection("animal", "animal", 0.6, (120 / 360, 50 / 240, 140 / 360, 170 / 240), "heuristic")
+        found = [item for item in attach_animal_eyes(self._profile_bird(catchlight=False), [bird]) if item.category == "eye"]
+        self.assertEqual(found, [])
+
+    def test_a_colour_edge_is_not_a_pair_of_eyes(self) -> None:
+        # The wildlife-guide bird: red meets yellow across the body. Its
+        # edge gave a row of colour peaks and a level "pair" on the breast.
+        from tests.test_guides import _bird
+
+        pixels = np.rint(_bird() * 255.0) / 255.0
+        luma = (0.2126 * pixels[..., 0] + 0.7152 * pixels[..., 1] + 0.0722 * pixels[..., 2]).astype(np.float32)
+        found = animal_eye_boxes(luma, (0.436, 0.254, 0.239, 0.554), 720, 480, color=pixels.astype(np.float32))
+        self.assertEqual(len(found), 1)
+        x, y, w, h = found[0]
+        self.assertTrue(x <= 409 / 720 <= x + w and y <= 197 / 480 <= y + h)

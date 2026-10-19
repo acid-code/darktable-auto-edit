@@ -383,15 +383,43 @@ test runs instead of skipping).
 | After bug 2 fix | 437 | 1 | 0 | 0 |
 | After bug 3 fix | 446 | 1 | 0 | 0 |
 | After duck test 2 (animal routing) | 465 | 1 | 0 | 0 |
+| After bird-eye fix (venv) | 468 | 0 | 0 | 0 |
+| After bird-eye fix (system python3, no rawpy) | 468 | 0 | 0 | 4 |
 
-The one remaining failure is **pre-existing** and not touched here:
-`tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`
-expects `separation.eyes >= 1`. It passes at `d5115dd` and fails at
-`dd888ef`: the reworked heuristic animal-eye search (`animal_eye_boxes`,
-pairs only) no longer finds the single profile eye of the synthetic bird.
-Decide whether the test or the heuristic is right; I did not change the
-detector. It is not related to the animal routing (that photo is already typed
-wildlife/animal; only the eye count fails), so it is still left as is.
+The last pre-existing failure (`test_guides…red_yellow_bird…`, broken
+since `dd888ef`) is fixed in code — see "Bird-eye fix" below. The test
+expectation was right.
+
+System `python3` without the venv (no `rawpy`): the 4 DNG tests in
+`tests/test_raw.py` (`RawPipelineTests`: dng decode, full res, batch,
+raw+jpeg) are skipped with "rawpy is not installed (optional RAW decoder;
+pip install -r requirements.txt)"; everything else passes. In the venv they
+run.
+
+## Bird-eye fix (wildlife guide)
+
+Cause: `dd888ef` made `animal_eye_boxes` pairs-only and added a colour-iris
+search. On the synthetic red/yellow bird the colour path found a row of
+evenly spaced saturation peaks along the red-meets-yellow plumage edge
+(peak clearing turns an edge into a dotted line) and took two of them as a
+level "pair" on the breast. Those boxes measured hotter than the face, so the
+eyes stage rolled back (`separation.eyes = 0`). The real eye (dark pupil
+with a catchlight, side-on, so only one) was never a candidate.
+
+Fix (`ai_dt/detectors/heuristic.py`):
+- `_drop_bands`: four or more colour peaks in an unbroken chain on one row
+  or column are an edge, not irises (two irises side by side still pass).
+- `_single_eye` (+ `_filled`): when no usable pair is found (no pair, or a
+  "pair" of specks too small to box), one eye counts if it is a compact,
+  round, solid dark spot, clearly darker than its surround, with a bright
+  catchlight *enclosed* in the pupil, and it is the only such spot.
+- Duck check: real YOLO on `uploads/duck.jpg` still gives no eye on the
+  feet or the dark neck (a looser version put one on the neck beside bright
+  water; the enclosed-catchlight rule removed it). The head-only search for
+  tall bird boxes is unchanged; the duck mask overlays are unchanged.
+
+Tests: `tests/test_animal_eyes.py::ProfileEyeTests` (3; two fail on the
+previous code).
 
 ## Known risks / unverified against real darktable 5.6
 
