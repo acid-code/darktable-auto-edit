@@ -28,6 +28,13 @@ from ai_dt.mask_steps import EXPANDS as _MASK_EXPANDS, STEPS as _MASK_STEPS  # n
 
 FEATURE_TITLES.update({ident: step.title for ident, step in _MASK_STEPS.items()})
 FEATURE_TITLES["mask_landscape"] = "Grade each part of the landscape"
+FEATURE_TITLES.update(
+    {
+        "split_tone": "Split tone: warm highlights, cool shadows",
+        "palander": "Warm-only look",
+        "keep_color": "Keep only one color",
+    }
+)
 _STEP_FROM_STAGE = {
     "subject": "subject",
     "eyes": "eyes",
@@ -1058,6 +1065,13 @@ _HISTORY_STEP = {
     "recolor": "recolor",
     **{ident: ident for ident in _MASK_STEPS},
     **{ident: ident for ident in _MASK_EXPANDS},
+    # Global looks from the lessons (one module each, see mapping.step_style).
+    "split_tone": "split_tone",
+    "splittone": "split_tone",
+    "palander": "palander",
+    "warm_only": "palander",
+    "keep_color": "keep_color",
+    "selective_color": "keep_color",
 }
 _NOT_HISTORY = frozenset({"reflection", "background", "skin", "sky"})
 
@@ -1111,7 +1125,9 @@ def history_steps(operations: list[dict] | None) -> tuple[list[dict], list[str]]
         if step == "recolor" and _cast_hue(reason):
             verb = "darken"
         found.append({"id": step, "action": verb, "title": reason or feature_title(step)})
-    return found, held
+    from ai_dt.lessons import order_steps
+
+    return order_steps(found), held
 
 
 def _mask_default_action(step_id: str) -> str:

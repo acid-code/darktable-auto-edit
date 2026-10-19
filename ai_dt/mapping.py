@@ -673,6 +673,12 @@ def step_history_name(
     if name == "colorzones":
         hue = _named_hue(title) or "color"
         return f"Highlight the {hue}"
+    if name == "split_tone":
+        return "Split tone"
+    if name == "palander":
+        return "Warm-only look"
+    if name == "keep_color":
+        return f"Keep only the {_named_hue(title) or 'red'}"
     if name == "eyes":
         label = " ".join(str(title or "").split()) or "Eyes"
         if len(label) > 48:
@@ -776,6 +782,13 @@ def step_style(
             _plugin(0, "colorzones", 5, blob, label, multi_priority=6)
         ]
         return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
+    if name in _LESSON_GLOBALS:
+        blob, operation, version = _lesson_global(name, title, action)
+        if blob is None:
+            return None
+        label = step_history_name(name, again=again, title=title)
+        plugins = [_plugin(0, operation, version, blob, label, multi_priority=7)]
+        return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
     if name == "eyes":
         label = step_history_name(name, again=again, title=title)
         priority = 5 if again else 4
@@ -797,6 +810,41 @@ def step_style(
         ]
         return render_style("AI accepted step", f"Accepted step: {title}.", plugins)
     return None
+
+
+# Global looks from the photoserge lessons. Each is one module, like every
+# other accepted step.
+_LESSON_GLOBALS = frozenset({"split_tone", "palander", "keep_color"})
+_HUE_TURN = {"red": 0.0, "orange": 0.08, "yellow": 0.16, "green": 0.33, "blue": 0.66}
+
+
+def _lesson_global(name: str, title: str, action: str) -> tuple[bytes | None, str, int]:
+    from ai_dt.mask_steps import HUE_BLUE, HUE_WARM
+    from ai_dt.modules_extra import COLORZONES_VERSION, colorzones_keep_params
+
+    gentle = action == "hold"
+    if name == "split_tone":
+        values = {
+            "highlights_C": 0.04 if gentle else 0.07,
+            "highlights_H": HUE_WARM,
+            "shadows_C": 0.04 if gentle else 0.07,
+            "shadows_H": HUE_BLUE,
+            "contrast": 0.08 if gentle else 0.15,
+            "vibrance": -0.1 if gentle else -0.2,
+        }
+        return colorbalance_params(values), "colorbalancergb", COLORBALANCE_VERSION
+    if name == "palander":
+        # Example 4: warm hues +50, the rest about -50. Example 5 is the same on a night scene.
+        blob = colorzones_keep_params(
+            [_HUE_TURN["red"], _HUE_TURN["orange"], _HUE_TURN["yellow"]],
+            kept=0.66 if gentle else 0.75,
+            others=0.35 if gentle else 0.25,
+            width=0.04,
+        )
+        return blob, "colorzones", COLORZONES_VERSION
+    hue = _named_hue(title) or "red"
+    blob = colorzones_keep_params([_HUE_TURN[hue]], kept=0.75, others=0.0, width=0.05)
+    return blob, "colorzones", COLORZONES_VERSION
 
 
 def render_style(name: str, description: str, plugins: list[dict]) -> str:

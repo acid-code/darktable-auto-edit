@@ -1558,6 +1558,21 @@ local editor_history_names = {
   "Grade the ground",
   "Lift the people",
   "Quiet the background",
+  -- Lesson steps (photoserge examples 4-11) and animal masks.
+  "Darken the sky gradient",
+  "Darken the bottom",
+  "Burn the edges",
+  "Glow behind the subject",
+  "Lift the animal",
+  "Lift the animals",
+  "Quiet around the animals",
+  "Split tone",
+  "Warm-only look",
+  "Keep only the red",
+  "Keep only the orange",
+  "Keep only the yellow",
+  "Keep only the green",
+  "Keep only the blue",
 }
 
 local function sidecar_has_editor_history(body, recipe)

@@ -214,6 +214,78 @@ def colorzones_hue_params(
     return bytes(buf)
 
 
+def colorzones_keep_params(
+    keep: list[float] | tuple[float, ...],
+    *,
+    kept: float = 0.7,
+    others: float = 0.0,
+    width: float = 0.05,
+) -> bytes | None:
+    """Selective color: chroma ``kept`` around each ``keep`` hue, ``others`` elsewhere.
+
+    Hues are 0..1 on the color zones wheel (red 0). 0.5 is neutral, 0 is
+    gray, 1 doubles. The photoserge lessons: "only red stays" (example 6)
+    is ``keep=[red], others=0``; the warm-only look (examples 4 and 5) is
+    ``keep=[red, orange, yellow], kept~0.75, others~0.25``.
+    Not checked against darktable 5.6's curve interpolation (see HANDOFF.md).
+    """
+
+    centers = sorted({float(value) % 1.0 for value in keep})
+    if not centers:
+        return None
+    kept = _clamp(kept, 0.0, 1.0)
+    others = _clamp(others, 0.0, 1.0)
+    width = _clamp(width, 0.02, 0.15)
+    shoulder = width * 1.8
+
+    def height_at(position: float) -> float:
+        best = others
+        for center in centers:
+            distance = abs(((position - center) + 0.5) % 1.0 - 0.5)
+            if distance <= width:
+                return kept
+            if distance < shoulder:
+                mix = (distance - width) / (shoulder - width)
+                best = max(best, kept + (others - kept) * mix) if kept >= others else min(
+                    best, kept + (others - kept) * mix
+                )
+        return best
+
+    positions = {0.0, 1.0}
+    for center in centers:
+        for offset in (0.0, -width, width, -shoulder, shoulder):
+            positions.add(round((center + offset) % 1.0, 4))
+    for step in range(0, 10):
+        positions.add(round(step / 10.0 + 0.05, 4))
+    ordered = sorted(positions)
+    nodes: list[tuple[float, float]] = []
+    for position in ordered:
+        if nodes and position - nodes[-1][0] < 0.012:
+            continue
+        nodes.append((position, height_at(position)))
+    if len(nodes) > 20:
+        # Keep the hue nodes, thin the filler.
+        essential = {round((c + o) % 1.0, 4) for c in centers for o in (0.0, -width, width, -shoulder, shoulder)}
+        essential |= {0.0, 1.0}
+        nodes = [node for node in nodes if round(node[0], 4) in essential][:20]
+    buf = bytearray(COLORZONES_BYTES)
+    struct.pack_into("<i", buf, 0, 2)  # select by hue
+    _write_hue_curve(buf, 0, [(0.0, 0.5), (1.0, 0.5)])
+    _write_hue_curve(buf, 1, nodes)
+    _write_hue_curve(buf, 2, [(0.0, 0.5), (1.0, 0.5)])
+    struct.pack_into("<f", buf, 508, 0.0)
+    struct.pack_into("<i", buf, 512, 0)
+    struct.pack_into("<i", buf, 516, 1)
+    return bytes(buf)
+
+
+def colorzones_curve(blob: bytes, channel: int) -> list[tuple[float, float]]:
+    """Read one curve back (tests)."""
+
+    count = struct.unpack_from("<i", blob, 484 + channel * 4)[0]
+    return [struct.unpack_from("<ff", blob, 4 + (channel * 20 + node) * 8) for node in range(count)]
+
+
 def _hue_nodes(center: float, peak: float, shoulder: float) -> list[tuple[float, float]]:
     raw = [
         (center - 0.09, 0.5),

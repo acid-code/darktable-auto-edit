@@ -1,0 +1,400 @@
+{
+ "source": {
+  "title": "15 Years of Lightroom: My top 10 SECRETS",
+  "author": "Serge Ramelli (photoserge.com)",
+  "url_hint": "YouTube / photoserge.com tutorial (Serge Ramelli); frames grabbed from a 1280x720 screen recording"
+ },
+ "note": "Trimmed copy of the photoserge lesson notes (no images, timestamps or diff stats). Used as few-shot hints for the planner prompts and as the reference for the lesson steps.",
+ "general_tips": [
+  "Fix exposure (tone, black/white points) before white balance and colour work.",
+  "Use the clipping view (Alt/Option while dragging Blacks/Whites) to set black and white points: about 1-2% clipping for colour images, about 5% for B&W.",
+  "Keep brush dodge/burn subtle: within about +/-0.5 EV, Feather 100, Flow/Density around 70, and build up gradually.",
+  "Decide the story first, then remove distractions and use crop and vignettes/gradients to direct the eye to the subject."
+ ],
+ "examples": [
+  {
+   "id": 1,
+   "slug": "paris_sunset_crop",
+   "title": "Paris sunset over the Seine - finding the right crop",
+   "goal": "Make one photo work for different outputs, with deliberate composition instead of the camera's native 3:2 frame.",
+   "edits": [
+    {
+     "tool": "Crop",
+     "setting": "Aspect ratio",
+     "value": "16:9",
+     "reason": "16:9 fits screens, TVs and YouTube/desktop viewing"
+    },
+    {
+     "tool": "Crop",
+     "setting": "Horizon placement",
+     "value": "horizon on the lower rule-of-thirds line (about 1/3 sky, 2/3 water)",
+     "reason": "Rule-of-thirds placement is more dynamic than a centred horizon and gives weight to the colourful reflection"
+    },
+    {
+     "tool": "Crop",
+     "setting": "Alternative aspect ratio",
+     "value": "4:5 (vertical)",
+     "reason": "4:5 takes up the most space in vertical social feeds (Instagram/Facebook)"
+    }
+   ],
+   "darktable_modules": [
+    "crop (aspect: 16:9 or 4:5, guides: rule of thirds)",
+    "rotate and perspective (if the horizon needs levelling)"
+   ],
+   "darktable_equivalent": "crop module: set the aspect to 16:9 (or 4:5 with portrait orientation) and turn on the rule-of-thirds guide overlay. This maps 1:1 to Lightroom's crop."
+  },
+  {
+   "id": 2,
+   "slug": "rock_cove_dusk_exposure",
+   "title": "Rocky cove at dusk - black and white point baseline",
+   "goal": "Set a proper tonal baseline (true black and white points, opened shadows) before any creative colour work.",
+   "edits": [
+    {
+     "tool": "Basic > Tone",
+     "setting": "Shadows",
+     "value": "+100",
+     "reason": "Open up the very dark rocks and foreground"
+    },
+    {
+     "tool": "Basic > Tone",
+     "setting": "Highlights",
+     "value": "-100",
+     "reason": "Protect the sky and the moon while the image gets brighter"
+    },
+    {
+     "tool": "Basic > Tone",
+     "setting": "Blacks",
+     "value": "-14",
+     "reason": "Set a true black point: hold Alt/Option for the clipping view and stop when only 1-2% of the image shows as pure black"
+    },
+    {
+     "tool": "Basic > Tone",
+     "setting": "Whites",
+     "value": "+68",
+     "reason": "Set the white point by eye, so the brightest areas reach near-white without clipping"
+    }
+   ],
+   "darktable_modules": [
+    "exposure",
+    "tone equalizer (shadows up / highlights down)",
+    "sigmoid or filmic rgb (white/black relative exposure)",
+    "rgb levels (black/white points)"
+   ],
+   "darktable_equivalent": "exposure for the global brightness. tone equalizer: raise the -8 to -5 EV bands and lower the -2 to 0 EV bands (Shadows +100 / Highlights -100). Black and white points: filmic rgb or sigmoid (white/black relative exposure / contrast), or rgb levels. Use the clipping indicator (raw/gamut overexposed toggles) the way Lightroom uses Alt-drag. Darktable has no exact Alt-drag clipping-preview slider."
+  },
+  {
+   "id": 3,
+   "slug": "golden_hour_seine_warmth",
+   "title": "Golden hour on the Seine - exposure first, then warmth and clean hues",
+   "goal": "Fix exposure first, then push warmth on purpose and clean up the sunset hues so the sky glows orange instead of green-yellow.",
+   "edits": [
+    {
+     "tool": "Basic > Tone",
+     "setting": "Shadows / Highlights",
+     "value": "+100 / -100",
+     "reason": "Recover detail at both ends of a high-contrast backlit scene"
+    },
+    {
+     "tool": "Basic > Tone",
+     "setting": "Blacks / Whites",
+     "value": "-29 / +65",
+     "reason": "Set the black and white points (clipping view) to give a proper baseline before touching colour"
+    },
+    {
+     "tool": "Basic > White Balance",
+     "setting": "Preset Shade, then custom Temp/Tint",
+     "value": "Shade = 7500K / +10, then dragged to 8857K / about +23-24",
+     "reason": "Deliberately warmer than neutral to amplify the golden-hour mood (correct exposure first, then white balance)"
+    },
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Red / Orange / Yellow",
+     "value": "+37 / +40 / +60",
+     "reason": "Make the sunset hues richer"
+    },
+    {
+     "tool": "Color Mixer > Hue",
+     "setting": "Yellow (plus Orange/Green, see notes)",
+     "value": "Yellow about -47 (blurry panel at 05:26 suggests about Orange -14, Yellow -50, Green -39)",
+     "reason": "Shift yellows toward orange to remove the green cast that warm WB plus saturation gives the sky"
+    }
+   ],
+   "darktable_modules": [
+    "exposure",
+    "tone equalizer",
+    "sigmoid / filmic rgb",
+    "color calibration (CAT/illuminant) or white balance",
+    "color balance rgb (vibrance/saturation)",
+    "color equalizer (or color zones) for per-hue saturation and hue"
+   ],
+   "darktable_equivalent": "exposure + tone equalizer (shadows/highlights), then filmic rgb/sigmoid for black/white points. Warmth: color calibration (CAT tab, raise the illuminant temperature / move the hue) or white balance with a higher temperature. Per-hue saturation: color equalizer, saturation tab (red/orange/yellow up). Hue shift: color equalizer hue tab (yellow toward orange). color zones (hue vs hue curve) is an older alternative."
+  },
+  {
+   "id": 4,
+   "slug": "brooklyn_manhattan_bridge_palander",
+   "title": "Brooklyn street / Manhattan Bridge - 'Alen Palander look'",
+   "goal": "A stylised warm-only, muted-cool, high-contrast street look.",
+   "edits": [
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Red / Orange / Yellow",
+     "value": "+52 / +52 / +51",
+     "reason": "Keep and boost warm tones (brick, van, lights)"
+    },
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Green / Aqua / Blue / Purple / Magenta",
+     "value": "-56 / -49 / -45 / -49 / -53",
+     "reason": "Mute the cool tones so the image becomes warm-only (signature Palander style)"
+    },
+    {
+     "tool": "Basic",
+     "setting": "Contrast",
+     "value": "+67",
+     "reason": "High-contrast, punchy look"
+    },
+    {
+     "tool": "Basic > Presence",
+     "setting": "Vibrance",
+     "value": "-23",
+     "reason": "Pull overall colour intensity back down after the contrast boost so it stays moody, not garish"
+    }
+   ],
+   "darktable_modules": [
+    "color equalizer (saturation tab per hue)",
+    "color zones (saturation curve)",
+    "color balance rgb (vibrance, global saturation, contrast)",
+    "sigmoid/filmic contrast or rgb curve"
+   ],
+   "darktable_equivalent": "color equalizer saturation tab: raise red/orange/yellow and lower green/cyan/blue/purple/magenta nodes (or a color zones saturation curve). color balance rgb: contrast slider (or sigmoid contrast) for +67 contrast, and the global vibrance slider for vibrance -23. Note: color balance rgb vibrance is not the same algorithm as Lightroom's, so tune by eye."
+  },
+  {
+   "id": 5,
+   "slug": "flatiron_night_clock",
+   "title": "NYC Flatiron at night - same warm-only look on a night scene",
+   "goal": "Show that the warm-tones-only look transfers to night photography: cleaner, more cohesive colour.",
+   "edits": [
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Red / Orange / Yellow",
+     "value": "+45 / +46 / +47",
+     "reason": "Keep the warm city lights and clock glowing"
+    },
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Green / Aqua / Blue / Purple / Magenta",
+     "value": "-47 / -46 / -47 / -46 / -51",
+     "reason": "Kill the blue/cyan/magenta colour noise of mixed street lighting"
+    },
+    {
+     "tool": "Basic",
+     "setting": "Contrast",
+     "value": "+47",
+     "reason": "Add punch to the night scene"
+    }
+   ],
+   "darktable_modules": [
+    "color equalizer / color zones (per-hue saturation)",
+    "color balance rgb (contrast)",
+    "sigmoid"
+   ],
+   "darktable_equivalent": "Same as example 4: color equalizer saturation per hue (warm up, cool down) and color balance rgb or sigmoid contrast."
+  },
+  {
+   "id": 6,
+   "slug": "iceland_volcano_selective_red",
+   "title": "Iceland volcano (drone) - selective colour, only red stays",
+   "goal": "Selective colour: the eye goes straight to the one remaining colour, the red crater.",
+   "edits": [
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Red",
+     "value": "+69 (about +65 while dragging at 08:06-08:14)",
+     "reason": "Keep and strengthen only the red lava/crater colour"
+    },
+    {
+     "tool": "Color Mixer > Saturation",
+     "setting": "Orange / Yellow / Green / Aqua / Blue / Purple / Magenta",
+     "value": "on screen: -100 for all (analysis said Orange +6, Yellow +9, Green -65, Aqua -61, Blue -65, Purple -66, Magenta -100)",
+     "reason": "Remove every other colour, leaving a black-and-white landscape with a red accent"
+    },
+    {
+     "tool": "Basic",
+     "setting": "Contrast",
+     "value": "about +83 on screen (analysis said +56)",
+     "reason": "Dramatic, graphic monochrome"
+    }
+   ],
+   "darktable_modules": [
+    "color equalizer (saturation)",
+    "color zones",
+    "color balance rgb",
+    "sigmoid / filmic contrast",
+    "alternative: monochrome + parametric mask on hue"
+   ],
+   "darktable_equivalent": "color equalizer: saturation -100% on every node except red (raise red). A more robust alternative is a monochrome (or color calibration gray tab) instance with a parametric mask on hue (exclude reds) plus feathering. Contrast: color balance rgb contrast or sigmoid."
+  },
+  {
+   "id": 7,
+   "slug": "paris_river_lamp_landscape_masks",
+   "title": "Paris river with street lamp - AI landscape masks",
+   "goal": "Treat each region (sky, buildings, trees, water, ground) separately to build depth, colour contrast and a clear focal point.",
+   "edits": [
+    {
+     "tool": "Masking > Landscape (Sky)",
+     "setting": "Exposure / Temp / Tint",
+     "value": "-0.38 / +24 / +34",
+     "reason": "Darker, warmer, more magenta sky for a richer dusk mood"
+    },
+    {
+     "tool": "Masking > Landscape (Architecture)",
+     "setting": "Exposure / Clarity / Texture / Sharpness",
+     "value": "+0.44 / +43 / +26 / +64",
+     "reason": "Brighten and crisp up the buildings so they read as the subject"
+    },
+    {
+     "tool": "Masking > Landscape (Vegetation)",
+     "setting": "Tint",
+     "value": "-57",
+     "reason": "Make the trees greener (less magenta cast)"
+    },
+    {
+     "tool": "Masking > Landscape (Water)",
+     "setting": "Exposure / Temp / Clarity / Sharpness",
+     "value": "-0.66 / -34 / -15 / -33",
+     "reason": "Darker, bluer, smoother water so it doesn't compete and contrasts with the warm sky"
+    },
+    {
+     "tool": "Masking > Landscape (Artificial ground)",
+     "setting": "Exposure",
+     "value": "-0.48",
+     "reason": "Darken the cobblestones so the foreground is less distracting"
+    }
+   ],
+   "darktable_modules": [
+    "exposure, color balance rgb, color calibration, local contrast, sharpen / diffuse or sharpen, each with drawn and parametric masks"
+   ],
+   "darktable_equivalent": "No direct equivalent: darktable has no AI 'Select Landscape' semantic masks. Make separate module instances (exposure, color balance rgb for warmth/tint, local contrast for clarity/texture, sharpen or diffuse or sharpen for sharpness/smoothing) and mask each one. Sky: parametric mask on lightness + blue/hue, refined with details threshold and guided filter. Water: drawn path/gradient + parametric. Buildings/ground: drawn paths or brush. Vegetation: parametric mask on green hue (color equalizer can also shift green directly). Expect much more manual work than Lightroom."
+  },
+  {
+   "id": 8,
+   "slug": "big_ben_sunset_distractions",
+   "title": "Big Ben sunset from Westminster Bridge - remove distractions, crop, guide the eye",
+   "goal": "Simplify the scene and steer attention to the subject by removing distractions, re-framing and darkening the foreground.",
+   "edits": [
+    {
+     "tool": "Remove > Distraction Removal",
+     "setting": "People + Dust (auto detect)",
+     "value": "Apply",
+     "reason": "Remove pedestrians and sensor dust that pull attention from the landmark"
+    },
+    {
+     "tool": "Crop",
+     "setting": "Aspect ratio / position",
+     "value": "16:9, frame shifted up toward Big Ben",
+     "reason": "Cut the empty road and put more of the frame on the tower and sky"
+    },
+    {
+     "tool": "Masking > Linear Gradient (from bottom)",
+     "setting": "Exposure",
+     "value": "-0.68",
+     "reason": "Darken the road/foreground so the eye moves up to Big Ben and the sky"
+    }
+   ],
+   "darktable_modules": [
+    "retouch (heal/clone, plus fill for spots)",
+    "crop",
+    "exposure with drawn gradient mask"
+   ],
+   "darktable_equivalent": "retouch module (heal/clone brush and spot removal) for dust and people. No automatic people/dust detection, so it is manual work, and people on a railing are hard to heal. crop at 16:9. exposure instance at -0.68 EV with a drawn gradient mask from the bottom (or graduated density module)."
+  },
+  {
+   "id": 9,
+   "slug": "paris_eiffel_street_gradient_sky",
+   "title": "Paris street with Eiffel Tower at sunset - gradient intersected with sky",
+   "goal": "Add a graduated-filter effect to the sky only, without the typical side effect of darkening tall buildings.",
+   "edits": [
+    {
+     "tool": "Masking > Linear Gradient (from top)",
+     "setting": "Exposure / Temp",
+     "value": "-0.85 / about -11 (panel at 13:10.5 reads -0.85; temp is low confidence)",
+     "reason": "Darken and slightly cool the top of the sky to add drama and keep the eye in the frame"
+    },
+    {
+     "tool": "Masking > Intersect with Select Sky",
+     "setting": "Intersect",
+     "value": "Sky only",
+     "reason": "Stop the gradient from darkening the buildings, which a plain gradient would also hit"
+    }
+   ],
+   "darktable_modules": [
+    "exposure (or graduated density) with drawn gradient + parametric mask combined",
+    "color calibration / color balance rgb for the slight cooling"
+   ],
+   "darktable_equivalent": "exposure instance at about -0.85 EV with a drawn gradient from the top, combined (drawn & parametric) with a parametric mask selecting the sky (high lightness / blue-purple hue, details threshold + guided filter to refine edges). No AI sky mask, so the parametric mask stands in for 'Select Sky'. The cooling can be a white balance/color calibration tweak in the same masked instance."
+  },
+  {
+   "id": 10,
+   "slug": "studio_portrait_background_glow",
+   "title": "Studio male portrait - background glow behind the subject",
+   "goal": "Separate the subject from the backdrop with a subtle glow behind the head and shoulders, like a background light.",
+   "edits": [
+    {
+     "tool": "Masking > Radial Gradient",
+     "setting": "Exposure",
+     "value": "about +2.19 on screen (analysis said +1.19)",
+     "reason": "Create a light pool on the backdrop"
+    },
+    {
+     "tool": "Masking > Intersect with Select Sky",
+     "setting": "Intersect",
+     "value": "AI 'sky' = the background",
+     "reason": "Trick: on a studio shot, 'Select Sky' picks the plain backdrop, so the glow stays off the subject"
+    }
+   ],
+   "darktable_modules": [
+    "exposure with drawn ellipse mask combined with a parametric/inverted subject mask"
+   ],
+   "darktable_equivalent": "exposure instance at about +1.2 to +2.2 EV (tune by eye) with a drawn ellipse mask (large feather) behind the subject, minus the subject: combine with an inverted drawn path/brush around the person, or a parametric mask on lightness/chroma if the backdrop is distinct enough. No AI subject/sky mask in darktable, so this is manual."
+  },
+  {
+   "id": 11,
+   "slug": "tuscany_bw_dodge_burn",
+   "title": "Tuscany B&W landscape - dodge and burn for 3D depth",
+   "goal": "Zone-system dodge and burn: create 3D depth and a clear light path leading to the cypress trees in the centre.",
+   "edits": [
+    {
+     "tool": "Masking > Linear Gradients",
+     "setting": "Exposure (top / upper half / top edge / bottom-left / bottom-right)",
+     "value": "-0.89 / -0.86 / -0.68 / -0.54 / -0.66",
+     "reason": "Darken the edges and corners (a hand-built vignette) to keep the eye in the centre"
+    },
+    {
+     "tool": "Masking > Radial Gradient over trees, intersected with Sky",
+     "setting": "Exposure",
+     "value": "+1.44",
+     "reason": "Glow in the sky behind the cypress row so the trees pop"
+    },
+    {
+     "tool": "Masking > Brush (dodge)",
+     "setting": "Exposure",
+     "value": "+0.44 on centre field and inner clouds",
+     "reason": "Lift the light where the eye should go, sculpting the light"
+    },
+    {
+     "tool": "Masking > Brush (burn)",
+     "setting": "Exposure / Feather / Flow / Density",
+     "value": "-0.34 / 100 / 99 / 79 (the panel at 18:25 is blurry and may read Flow about 84, Density about 68)",
+     "reason": "Darken the outer hills and clouds for depth"
+    }
+   ],
+   "darktable_modules": [
+    "exposure (several instances) with drawn gradient, ellipse and brush masks",
+    "tone equalizer",
+    "monochrome / color calibration gray tab",
+    "local contrast"
+   ],
+   "darktable_equivalent": "Several exposure instances (or one per zone), each with drawn masks: gradients for the edge burns, an ellipse behind the trees combined with a parametric sky mask, and brush masks (hardness ~0, opacity ~70%) for dodge (+0.4 EV) and burn (-0.3 EV). Darktable brush masks have hardness/opacity rather than Flow/Density, and pressure settings approximate flow. The tone equalizer with masking can also do zone-based tonal shaping. B&W base: color calibration gray tab or monochrome."
+  }
+ ]
+}

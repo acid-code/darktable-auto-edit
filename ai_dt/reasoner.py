@@ -234,6 +234,11 @@ def _fill(
         parts.append("Photo description:\n" + str(scene).strip())
     if str(brief or "").strip():
         parts.append("Technical brief:\n" + str(brief).strip())
+    from ai_dt.lessons import few_shot_text, guess_type
+
+    lessons = few_shot_text(guess_type(description, scene, steer, preset))
+    if lessons:
+        parts.append(lessons)
     parts.append(
         "Run state: include an operation only when this photo still needs it. "
         "Caps stay closed unless the request itself says strong or epic."

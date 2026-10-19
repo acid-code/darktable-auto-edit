@@ -14,6 +14,20 @@ built from a segmentation of ``preview.jpg``:
 | mask_people | Lift the people | people | exposure |
 | mask_background | Quiet the background | inverse of the subject | color balance rgb |
 
+Lesson steps (photoserge examples 8 to 11) use the same machinery, but
+their group is built from gradients and ellipses, not only outlines:
+
+| step id | history name | shapes | module |
+| --- | --- | --- | --- |
+| mask_sky_gradient | Darken the sky gradient | sky outline intersected with a top gradient (ex. 9) | exposure |
+| mask_bottom_gradient | Darken the bottom | bottom gradient (ex. 8) | exposure |
+| mask_edge_burn | Burn the edges | four edge gradients, minus the subject (ex. 11) | exposure |
+| mask_glow | Glow behind the subject | wide ellipse behind the subject, minus the subject (ex. 10) | exposure |
+
+The lessons push a gradient to -0.85 EV and a glow past +1 EV. Here every
+local exposure stays inside ``LOCAL_EV_CAP`` (the brush rule of the same
+lessons); stack the step again for more.
+
 ``mask_landscape`` is not a module. It expands into the five landscape
 class steps in the order the video lesson uses (sky, architecture,
 vegetation, water, ground). A class that is not in the photo leaves its
@@ -56,6 +70,9 @@ class MaskStep:
     grades: dict = field(default_factory=dict)
     invert: bool = False
     what: str = "drawn mask"
+    # How the group is built: "segment" (outline of ``region``), "sky_gradient",
+    # "bottom_gradient", "edge_burn" or "glow".
+    builder: str = "segment"
 
 
 def _cb(**values: float) -> dict:
@@ -121,6 +138,68 @@ STEPS: dict[str, MaskStep] = {
     ),
 }
 
+STEPS.update(
+    {
+        "mask_sky_gradient": MaskStep(
+            "mask_sky_gradient", "Darken the sky gradient", "Darken the sky with a gradient from the top", "sky",
+            "exposure", {"darken": {"exposure": -0.5}, "lift": {"exposure": 0.3}},
+            what="sky gradient", builder="sky_gradient",
+        ),
+        "mask_bottom_gradient": MaskStep(
+            "mask_bottom_gradient", "Darken the bottom", "Darken the bottom of the frame with a gradient", "",
+            "exposure", {"darken": {"exposure": -0.5}, "lift": {"exposure": 0.3}},
+            what="bottom gradient", builder="bottom_gradient",
+        ),
+        "mask_edge_burn": MaskStep(
+            "mask_edge_burn", "Burn the edges", "Burn the edges to lead the eye in", "subject",
+            "exposure", {"darken": {"exposure": -0.4}, "lift": {"exposure": 0.25}},
+            what="edge gradients", builder="edge_burn",
+        ),
+        "mask_glow": MaskStep(
+            "mask_glow", "Glow behind the subject", "Add a glow behind the subject", "subject",
+            "exposure", {"lift": {"exposure": 0.5}, "darken": {"exposure": -0.3}},
+            what="glow ellipse", builder="glow",
+        ),
+    }
+)
+
+# Animals (user priority after landscapes). One outline per animal, joined
+# by union; the main animal is the largest. Fur and eye crispness come from
+# local contrast, not exposure, and stay subtle.
+STEPS.update(
+    {
+        "mask_animal": MaskStep(
+            "mask_animal", "Lift the animal", "Lift the main animal and crisp its fur", "animal",
+            "colorbalancergb",
+            {
+                "lift": _cb(brilliance_global=0.1, contrast=0.12, vibrance=0.05),
+                "darken": _cb(brilliance_global=-0.08, contrast=0.06),
+            },
+            what="animal mask", builder="animal_main",
+        ),
+        "mask_animals": MaskStep(
+            "mask_animals", "Lift the animals", "Lift every animal a little", "animal",
+            "colorbalancergb",
+            {
+                "lift": _cb(brilliance_global=0.08, contrast=0.1, vibrance=0.04),
+                "darken": _cb(brilliance_global=-0.08),
+            },
+            what="animal masks", builder="animal_all",
+        ),
+        "mask_animal_background": MaskStep(
+            "mask_animal_background", "Quiet around the animals", "Darken and soften around the animals",
+            "animal", "colorbalancergb",
+            {
+                "darken": _cb(brilliance_global=-0.1, saturation_global=-0.1, contrast=-0.08),
+                "lift": _cb(brilliance_global=0.06),
+            },
+            invert=True, what="inverse animal mask", builder="animal_all",
+        ),
+    }
+)
+
+LESSON_STEP_IDS = ("mask_sky_gradient", "mask_bottom_gradient", "mask_edge_burn", "mask_glow")
+
 DEFAULT_ACTION = {
     "mask_sky": "darken",
     "mask_architecture": "lift",
@@ -129,6 +208,13 @@ DEFAULT_ACTION = {
     "mask_ground": "darken",
     "mask_people": "lift",
     "mask_background": "darken",
+    "mask_sky_gradient": "darken",
+    "mask_bottom_gradient": "darken",
+    "mask_edge_burn": "darken",
+    "mask_glow": "lift",
+    "mask_animal": "lift",
+    "mask_animals": "lift",
+    "mask_animal_background": "darken",
 }
 
 EXPANDS = {"mask_landscape": tuple(f"mask_{name}" for name in LANDSCAPE_ORDER)}
@@ -180,10 +266,14 @@ def build_spec(step_id: str, mask, *, action: str = "", border: float = 0.015, s
 
     from ai_dt.dt_shapes import mask_to_forms
 
-    step = STEPS[step_id]
     forms = mask_to_forms(mask, border=border, max_paths=6, max_points=48, min_area=0.004)
     if not forms:
         return None
+    return spec_from_forms(step_id, forms, action=action, source=source)
+
+
+def spec_from_forms(step_id: str, forms: list[dict], *, action: str = "", source: str = "") -> dict:
+    step = STEPS[step_id]
     grade = capped_grade(step, action)
     params, version = module_blob(step, grade)
     return {
@@ -201,36 +291,150 @@ def build_spec(step_id: str, mask, *, action: str = "", border: float = 0.015, s
     }
 
 
+def _outer(forms: list[dict]) -> list[dict]:
+    return [form for form in forms if form.get("mode", "union") != "difference"]
+
+
+def _subtract(forms: list[dict], cutters: list[dict]) -> list[dict]:
+    """Append each outer outline of ``cutters`` as a difference member."""
+
+    return forms + [dict(form, mode="difference") for form in _outer(cutters)]
+
+
+def sky_gradient_forms(sky_forms: list[dict], *, extent: float = 0.55) -> list[dict]:
+    """Sky outline(s) intersected with a gradient from the top (example 9).
+
+    The sky outlines go first so the group's left fold is
+    ``(sky1 | sky2 - holes) & gradient``. Without a sky the gradient alone
+    is the mask.
+    """
+
+    from ai_dt.dt_shapes import edge_gradient
+
+    gradient = edge_gradient("top", extent, compression=0.3)
+    if not sky_forms:
+        return [dict(gradient, mode="union")]
+    return list(sky_forms) + [dict(gradient, mode="intersect")]
+
+
+def bottom_gradient_forms(*, extent: float = 0.3) -> list[dict]:
+    from ai_dt.dt_shapes import edge_gradient
+
+    return [dict(edge_gradient("bottom", extent, compression=0.2), mode="union")]
+
+
+def edge_burn_forms(subject_forms: list[dict] | None = None, *, extent: float = 0.14) -> list[dict]:
+    """Union of four edge gradients, minus the subject (example 11)."""
+
+    from ai_dt.dt_shapes import edge_gradient
+
+    forms = [
+        dict(edge_gradient(edge, extent, compression=0.12), mode="union")
+        for edge in ("top", "bottom", "left", "right")
+    ]
+    return _subtract(forms, subject_forms or [])
+
+
+def glow_forms(box: tuple[float, float, float, float], subject_forms: list[dict] | None = None) -> list[dict]:
+    """A wide soft ellipse behind the subject, minus the subject (example 10)."""
+
+    x, y, w, h = box
+    cx = min(max(x + w / 2.0, 0.02), 0.98)
+    cy = min(max(y + h * 0.4, 0.02), 0.98)
+    # Wide enough to read as light behind the subject, not a halo on its edge.
+    rx = min(max(w * 1.5, h * 0.5, 0.12), 0.6)
+    ry = min(max(h * 0.8, w * 0.8, 0.12), 0.6)
+    ellipse = {"type": "ellipse", "cx": cx, "cy": cy, "rx": rx, "ry": ry, "border": 0.2, "mode": "union"}
+    return _subtract([ellipse], subject_forms or [])
+
+
+def _main_box(recipe: dict) -> tuple[float, float, float, float] | None:
+    from ai_dt.segment.base import SUBJECT_CATEGORIES, box_of
+
+    best = None
+    for item in subject_boxes(recipe):
+        parsed = box_of(item)
+        if not parsed or parsed[0] not in SUBJECT_CATEGORIES:
+            continue
+        area = parsed[1][2] * parsed[1][3]
+        if best is None or area > best[0]:
+            best = (area, parsed[1])
+    return best[1] if best else None
+
+
 def subject_boxes(recipe: dict) -> list[dict]:
     analysis = recipe.get("analysis") if isinstance(recipe.get("analysis"), dict) else {}
     return [item for item in (analysis.get("subjects") or []) if isinstance(item, dict)]
 
 
+def _open_image(directory, image):
+    if image is not None:
+        return image
+    path = directory / "preview.jpg"
+    if not path.is_file():
+        return None
+    from PIL import Image
+
+    with Image.open(path) as opened:
+        return opened.convert("RGB")
+
+
+def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[list[dict] | None, str]:
+    """The group members for one step and the segmenter that found the region."""
+
+    from ai_dt.dt_shapes import mask_to_forms
+
+    step = STEPS[step_id]
+    if step.builder == "bottom_gradient":
+        return bottom_gradient_forms(), "gradient"
+    chosen_backend = backend or str(recipe.get("segmenter") or "") or "auto"
+    if step.builder in ("animal_main", "animal_all"):
+        from ai_dt.segment.animals import animal_forms, segment_animals
+
+        if image is None:
+            return None, ""
+        found = segment_animals(image, subject_boxes(recipe), backend=chosen_backend)
+        forms = animal_forms(found, which="main" if step.builder == "animal_main" else "all")
+        kinds = sorted({animal.source for animal in found.animals})
+        return (forms or None), ", ".join(kinds)
+    region_forms: list[dict] = []
+    source = ""
+    box = _main_box(recipe) if step.region == "subject" else None
+    if step.builder == "glow" and box is None:
+        return None, ""
+    if step.region and image is not None and (step.builder in ("segment", "sky_gradient") or box is not None):
+        from ai_dt.segment import segment
+
+        found = segment(image, [step.region], boxes=subject_boxes(recipe), backend=chosen_backend)
+        mask = found.get(step.region)
+        if mask is not None:
+            region_forms = mask_to_forms(mask, border=0.015, max_paths=6, max_points=48, min_area=0.004)
+            source = found.sources.get(step.region, "")
+    if step.builder == "segment":
+        return (region_forms or None), source
+    if step.builder == "sky_gradient":
+        return sky_gradient_forms(region_forms), source or "gradient"
+    if step.builder == "edge_burn":
+        return edge_burn_forms(region_forms), source or "gradient"
+    if step.builder == "glow":
+        return glow_forms(box, region_forms), source or "subject box"
+    return None, ""
+
+
 def write_step_mask(recipe: dict, directory, step_id: str, *, action: str = "", image=None, backend: str = "") -> dict | None:
-    """Segment the preview, write ``mask.json``, and return the ``step_mask`` entry.
+    """Build the step's group, write ``mask.json``, and return the ``step_mask`` entry.
 
     None when there is no preview or the region is not in the photo.
     """
 
-    from ai_dt.segment import segment
-
     step = STEPS[step_id]
+    image = _open_image(directory, image)
     if image is None:
-        path = directory / "preview.jpg"
-        if not path.is_file():
-            return None
-        from PIL import Image
-
-        with Image.open(path) as opened:
-            image = opened.convert("RGB")
-    chosen_backend = backend or str(recipe.get("segmenter") or "") or "auto"
-    found = segment(image, [step.region], boxes=subject_boxes(recipe), backend=chosen_backend)
-    mask = found.get(step.region)
-    if mask is None:
         return None
-    spec = build_spec(step_id, mask, action=action, source=found.sources.get(step.region, ""))
-    if spec is None:
+    forms, source = step_forms(recipe, step_id, image, backend)
+    if not forms:
         return None
+    spec = spec_from_forms(step_id, forms, action=action, source=source)
     spec_path = directory / "mask.json"
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     return {
@@ -244,6 +448,12 @@ def write_step_mask(recipe: dict, directory, step_id: str, *, action: str = "", 
 
 def missing_sentence(step_id: str) -> str:
     step = STEPS[step_id]
+    if step.builder == "glow":
+        return "No subject was found to glow behind, so this step was left off."
+    if step.builder in ("animal_main", "animal_all"):
+        return "No animal was found in this photo, so this step was left off."
+    if step.builder != "segment":
+        return "There is no preview to place this step on, so it was left off."
     region = "subject" if step.id == "mask_background" else step.region
     if region == "architecture":
         region = "building"

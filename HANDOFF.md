@@ -10,7 +10,8 @@ Python 3.13, no darktable, no API keys).
 | --- | --- | --- |
 | 1 | Path / gradient / group shape writer for `masks_history` (+ reader, reference renderer, tests) | **done** |
 | 2 | Segmentation backends (Subject, Sky, Background, People, Landscape classes), wired into Accept steps, guide `build` values, Lua names | **done** |
-| 3 | Smarter editing from the photoserge video lessons (ordering, caps, landscape class grades, sky-intersected gradients/glow, split tone, selective color, edge burn, crop suggestion, few-shot prompt data) | pending |
+| 2b | Animal masks: per-animal outlines + union (user priority: landscapes, animals, then people) | **done** |
+| 3 | Smarter editing from the photoserge video lessons (ordering, caps, landscape class grades, sky-intersected gradients/glow, split tone, selective color, edge burn, crop suggestion, few-shot prompt data), plus animal Accept steps | **done** |
 | 4 | Tests for everything new, full suite green | rolling, per phase |
 
 ## Done
@@ -124,6 +125,46 @@ Python 3.13, no darktable, no API keys).
   bird in flight), occluded dog behind grass, tiny distant bird, none
   found, model-first with untrusted-model fallback, size-aware confidence.
 
+### Phase 3 — lessons
+
+- `ai_dt/lessons/` (new): `photoserge_examples.json` (trimmed copy of
+  `/workspace/fbvideo/.../examples.json`: id, title, goal, edits,
+  darktable modules/equivalent; no images, timestamps or diff stats,
+  ~17 KB), `few_shot_text(type)` (general tips + 2 matching examples +
+  suggested steps + the ±0.5 EV rule; animal photos get `ANIMAL_HINTS`),
+  `guess_type`, `STEP_RANK`/`order_steps` (global first: look → regional
+  → gradients → edge burn/glow; a stable sort so every pre-existing step
+  keeps its order), `PRESETS` per picture type, `crop_suggestion`.
+- Prompts: `reasoner._fill` appends the lesson block (Ollama + Gemini
+  planner). `pipeline._vision_context` (Mistral/Ollama vision) appends the
+  global-first tips. The word "images" is rewritten to "photos" so the
+  "no image is sent" test and promise hold.
+- `mask_steps`: `MaskStep.builder`; new steps `mask_sky_gradient` (sky
+  outline ∩ top gradient, ex. 9), `mask_bottom_gradient` (ex. 8),
+  `mask_edge_burn` (4 edge gradients − subject, ex. 11), `mask_glow`
+  (ellipse − subject, ex. 10), `mask_animal`, `mask_animals`,
+  `mask_animal_background` (animal outlines from Phase 2b; the inverse
+  sets drawn-mask polarity). Lesson EVs (−0.85, +1.2…2.2) are capped to
+  ±0.5 EV on purpose — stack a step for more.
+- Animal hints: `mask_animal` is brilliance +0.1 / contrast +0.12 /
+  vibrance +0.05 (fur and eyes crispness, no exposure jump);
+  `mask_animal_background` darkens/mutes/softens; the `animal` preset is
+  animal → background → edge burn. The existing `eyes` step still covers
+  animal eyes.
+- Global looks via `mapping.step_style` (one module each): `split_tone`
+  (color balance rgb), `palander` (warm-only, color zones chroma curve),
+  `keep_color` (selective color, hue from the request).
+  `modules_extra.colorzones_keep_params` writes the curve.
+- Grammar: lesson phrases fire without an edit verb and take the clause;
+  animal phrases; "the wildlife/landscape/... look" expands a preset.
+- Names (Python `revert` ↔ Lua `editor_history_names`, tested):
+  Darken the sky gradient, Darken the bottom, Burn the edges, Glow behind
+  the subject, Lift the animal, Lift the animals, Quiet around the
+  animals, Split tone, Warm-only look, Keep only the
+  red/orange/yellow/green/blue.
+- `output.json` → `analysis.crop_suggestion` (advisory, never applied).
+- Tests: `tests/test_lessons.py` (29).
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -137,6 +178,7 @@ test runs instead of skipping).
 | After phase 1 | 343 | 1 | 0 | 0 |
 | After phase 2 | 379 | 1 | 0 | 0 |
 | After phase 2b (animals) | 389 | 1 | 0 | 0 |
+| After phase 3 | 418 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`
@@ -169,6 +211,16 @@ detector.
   tested with fakes only; the real models were not downloaded on the box.
 - Accept writes the shapes in preview coordinates (see above).
 
+- Phase 3: color zones curves for keep-red / warm-only were built from
+  the 5.x param layout (select-by-hue, chroma channel, 0.5 = neutral)
+  but not rendered in darktable; check that "keep only the red" really
+  grays every other hue and that the curve does not ring between nodes.
+  Split-tone hue angles share the unverified 65° / 225° constants.
+  Gradient `compression` 0.12–0.3 and the glow ellipse feather (0.2) are
+  eyeballed against the reference renderer, not darktable.
+- The crop suggestion is reported only. It does not account for a crop
+  already in history.
+
 ## Manual checklist in darkroom (5.6)
 
 (Expanded as phases land.)
@@ -194,6 +246,18 @@ detector.
    status line names.
 6. `darken the background` on a portrait: the effect is outside the
    person, polarity toggle on.
+
+7. Phase 2b/3, animals: on a photo with two or more animals type
+   `lift the animals`, Ask, Accept → "Lift the animals" with one path
+   per animal in one group. `darken around the dog` → "Quiet around the
+   animals", polarity on. Try a bird in flight and a partly hidden animal.
+8. Phase 3: `darken the sky with a gradient` → exposure −0.5 EV, group =
+   sky path(s) then a gradient with the *intersection* icon; the fade
+   runs top → down. `burn the edges` → four gradients (union) and the
+   subject as a *difference*. `add a glow behind him` on a portrait.
+   `keep only the red`, `warm-only look`, `split tone` → one color zones /
+   color balance rgb item each; check the hue curves in the module UI.
+9. Confirm Back and Revert remove each of these items and their forms.
 
 ## How to run
 

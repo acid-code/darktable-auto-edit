@@ -425,6 +425,24 @@ Typing a request such as `darken the sky`, `make the trees greener, brighten the
 
 Segmenters (`ai_dt/segment/`) are tried in order and each one is optional: darktable's own SAM 2.1 files (subject/people from a detector box), `rembg` (subject), an ADE20K SegFormer/OneFormer through `transformers` (sky, buildings, vegetation, water, ground, people), then a NumPy heuristic that always runs. `pip install -r requirements-masks.txt` adds the model backends; all run on CPU. Gemini segmentation uploads the preview, so it is off unless `AI_DT_SEGMENT_GEMINI=1` and `GEMINI_API_KEY` are set. `AI_DT_SEGMENTER=heuristic|rembg|ade20k|gemini|darktable-sam` forces one backend (plus the heuristic fallback). A guide can also paint these classes into `edited.tif` with `build` values `people`, `architecture`, `vegetation`, `water` and `ground`.
 
+### Lesson steps, animal masks and looks (photoserge examples)
+
+`ai_dt/lessons/` holds a trimmed copy of the lesson notes (eleven before/after edits, no images). They feed a short "editing lessons" block into the planner prompt (`reasoner._fill`, Ollama and Gemini) and the global-first order into the vision prompt. Accept steps are ordered global first: a global look, then regional grades, then gradients, then edge burn and glow; existing steps keep their order. Every local exposure stays within ±0.5 EV.
+
+| Request (Ask) | Step | What lands in history |
+| --- | --- | --- |
+| `darken the sky with a gradient` | `mask_sky_gradient` | Darken the sky gradient: exposure −0.5 EV through sky outline ∩ top gradient (ex. 9) |
+| `a gradient from the bottom` | `mask_bottom_gradient` | Darken the bottom: exposure −0.5 EV through a bottom gradient (ex. 8) |
+| `burn the edges` | `mask_edge_burn` | Burn the edges: four edge gradients minus the subject (ex. 11) |
+| `add a glow behind him` | `mask_glow` | Glow behind the subject: soft ellipse minus the subject, +0.5 EV (ex. 10) |
+| `brighten the dog` / `lift the birds` / `darken around the dog` | `mask_animal` / `mask_animals` / `mask_animal_background` | One outline per animal (detector box → model or heuristic outline), union, or its inverse |
+| `split tone` | `split_tone` | Split tone (color balance rgb: warm highlights, cool shadows, contrast up, vibrance down) |
+| `warm-only look` / `palander` | `palander` | Warm-only look (color zones: warm hues up, others down; ex. 4, 5) |
+| `keep only the red` | `keep_color` | Keep only the red (color zones chroma; ex. 6) |
+| `the wildlife look` / `landscape look` | preset | The lesson steps for that picture type |
+
+`output.json` `analysis.crop_suggestion` is a rule-of-thirds 16:9 crop (ex. 1, 8). It is advice only and is never applied.
+
 ### Two mask paths
 
 | Path | What it changes | When it runs |

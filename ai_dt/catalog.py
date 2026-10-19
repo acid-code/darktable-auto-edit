@@ -46,6 +46,16 @@ MASKS = (
     ("mask_people", "Lift the people through a people mask, within half a stop."),
     ("mask_background", "Darken and mute everything except the subject (inverse subject mask)."),
     ("mask_landscape", "All five landscape masks in order: sky, buildings, vegetation, water, ground."),
+    ("mask_animal", "Lift the main animal through its outline: a little brilliance and local contrast for fur and eyes."),
+    ("mask_animals", "Lift every animal (one outline per animal, joined)."),
+    ("mask_animal_background", "Darken, mute and soften everything around the animals (inverse animal mask)."),
+    ("mask_sky_gradient", "Exposure through a top gradient intersected with the sky outline. darken = moodier sky."),
+    ("mask_bottom_gradient", "Exposure through a gradient from the bottom. darken = leads the eye up."),
+    ("mask_edge_burn", "Burn the frame edges with four gradients, minus the subject."),
+    ("mask_glow", "A soft glow (ellipse) behind the subject, minus the subject."),
+    ("split_tone", "Global look: warm highlights, cool shadows, more contrast, less vibrance."),
+    ("palander", "Global warm-only look: reds, oranges and yellows up, every other hue down."),
+    ("keep_color", "Global selective color: keep one hue (name it in the reason), gray the rest."),
 )
 
 _HISTORY_IDS = frozenset(item[0] for item in HISTORY)

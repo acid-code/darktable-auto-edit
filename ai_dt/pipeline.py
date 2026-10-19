@@ -281,6 +281,27 @@ def _observations(text: str) -> str:
     return " ".join(part for part in parts if part and not _sentence_is_instruction(part))
 
 
+def _crop_suggestion(image, detections) -> dict | None:
+    """A rule-of-thirds 16:9 crop (photoserge examples 1 and 8). Advisory; never applied."""
+
+    try:
+        from ai_dt.lessons import crop_suggestion
+        from ai_dt.segment.heuristic import _small, horizon_row, sky_mask
+
+        subject = None
+        best = 0.0
+        for item in detections or []:
+            if getattr(item, "category", "") in {"animal", "person", "face", "subject"}:
+                x, y, w, h = item.bbox
+                if w * h > best:
+                    best, subject = w * h, (x, y, w, h)
+        sky = sky_mask(_small(image))
+        horizon = horizon_row(sky) if float(sky.mean()) > 0.08 else None
+        return crop_suggestion(image.size, subject=subject, horizon=horizon)
+    except Exception:  # advisory only; never block a run
+        return None
+
+
 def _vision_context(brief: str, scene_text: str, *, describe: bool) -> str:
     parts = []
     if brief.strip():
@@ -299,6 +320,11 @@ def _vision_context(brief: str, scene_text: str, *, describe: bool) -> str:
         parts.append(
             "Return mood, rationale, and the numeric keys. Leave description and summary empty."
         )
+    from ai_dt.lessons import general_tips
+
+    tips = general_tips()
+    if tips:
+        parts.append("Editing order from the lessons (global first):\n" + "\n".join(f"- {tip}" for tip in tips))
     return "\n\n".join(parts)
 
 
@@ -851,6 +877,7 @@ def analyze(
             "mood": adjusted.mood,
             "rationale": adjusted.rationale,
             "subjects": [item.to_dict() for item in detections],
+            "crop_suggestion": _crop_suggestion(image, detections),
             "atmosphere": adjusted.to_dict(),
             "measured": measured.to_dict(),
             "llm": suggestion.to_dict() if suggestion is not None else None,
