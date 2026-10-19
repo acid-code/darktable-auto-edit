@@ -21,3 +21,28 @@ class AnimalFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoxlessSubjectLiftTests(unittest.TestCase):
+    def test_a_subject_lift_without_a_box_is_drawn_not_whole_frame(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from ai_dt.features import commit_waiting_step
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            pixels = np.full((240, 320, 3), 90, dtype=np.uint8)
+            pixels[90:160, 130:190] = (230, 200, 40)
+            Image.fromarray(pixels).save(directory / "preview.jpg")
+            recipe = {
+                "features_next": "subject",
+                "features_next_title": "Lift the parrot a little",
+                "plan": {"features_done": [], "features_path": ["subject"], "reasoning": {}},
+                "segmenter": "heuristic",
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            saved = commit_waiting_step(directory)
+            self.assertIn("step_mask", saved)
+            self.assertFalse((directory / "step.dtstyle").is_file())

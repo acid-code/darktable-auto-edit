@@ -1472,12 +1472,13 @@ local function apply_image(image, vibe, steer, look)
       if stepped then
         -- Success means a new history row. Check it rather than trust the write.
         local after = request_ui.history_count(image)
+        -- darktable saves the sidecar on its own timer (the auto-save
+        -- interval), so a count that has not grown yet is not a failure.
+        -- Python already fails a step that made no mask or module.
         if before and after and after <= before then
-          stepped = nil
-          step_error = string.format(
-            "Accept wrote nothing: the history still has %d item(s). The plan did not move on. Press Accept again, or reopen the photo and try once more.",
-            after
-          )
+          request_ui.history_note = "If the new step is not in the history panel yet, wait a few seconds."
+        else
+          request_ui.history_note = nil
         end
       elseif not step_error then
         -- The commit made no mask and no style (no animal outline found, an
@@ -1503,7 +1504,11 @@ local function apply_image(image, vibe, steer, look)
     close_progress()
     local recipe = read_recipe(work)
     local body = recipe and plan_status(recipe) or ""
-    return body ~= "" and body or "The plan is updated."
+    body = body ~= "" and body or "The plan is updated."
+    if look == "accept-feature" and request_ui.history_note then
+      body = body .. "\n" .. request_ui.history_note
+    end
+    return body
   end
   if not feature_turn and already then
     local recipe = read_recipe(work)
@@ -3704,7 +3709,8 @@ end
 request_ui.status_widget = dt.new_widget("label") {
   label = "",
   halign = "start",
-  selectable = false,
+  -- Selectable so the text can be copied (drag over it, then Ctrl+C).
+  selectable = true,
 }
 request_ui.status_text = ""
 status_label = setmetatable({}, {

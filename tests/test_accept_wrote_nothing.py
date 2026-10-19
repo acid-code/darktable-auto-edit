@@ -66,7 +66,7 @@ class LuaChecksTests(unittest.TestCase):
     def test_accept_checks_the_history_grew(self) -> None:
         self.assertIn("local before = request_ui.history_count(image)", LUA)
         self.assertIn("after <= before", LUA)
-        self.assertIn("Accept wrote nothing", LUA)
+        self.assertIn("wait a few seconds", LUA)
 
     def test_a_step_without_mask_or_style_is_a_failure(self) -> None:
         self.assertIn('step_error = "This step was not added: "', LUA)

@@ -767,6 +767,27 @@ def commit_waiting_step(output_dir) -> dict:
         outline = _subject_outline(recipe, directory, again=again)
         if outline is not None:
             mask = outline
+    if (
+        nxt == "subject"
+        and mask is None
+        and _subject_box(recipe, directory) is None
+        and (directory / "preview.jpg").is_file()
+    ):
+        # No box and no outline: never lift the whole frame. Draw the main
+        # subject (the animal detector, then the general subject segmenter).
+        from ai_dt.mask_steps import write_step_mask
+
+        drawn = write_step_mask(recipe, directory, "mask_animal", action="lift")
+        if drawn is None:
+            return _leave_off(
+                directory,
+                path,
+                recipe,
+                plan,
+                nxt,
+                "No subject was found on the photo, so this step was left off.",
+            )
+        mask = drawn
     recoloring = nxt == "recolor" or (nxt == "colorzones" and _cast_hue(title) is not None)
     style_id = "recolor" if recoloring else nxt
     if nxt == "colorzones" and mask is None and not recoloring:
