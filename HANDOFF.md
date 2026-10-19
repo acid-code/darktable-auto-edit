@@ -462,6 +462,103 @@ raw+jpeg) are skipped with "rawpy is not installed (optional RAW decoder;
 pip install -r requirements.txt)"; everything else passes. In the venv they
 run.
 
+## Open: offline darkroom GUI test findings (round after `bcc4e51`, not fixed yet)
+
+A real darktable 5.6.2 GUI test was run offline (detector=heuristic,
+advisor=histogram, no keys, no Ollama) with the plugin at `bcc4e51`. It found
+the problems below. This round only diagnosed them; **no code was changed**.
+The usage budget ran out before the fixes.
+
+Findings, summarised from the test report:
+1. **Offline never offers a step.** Propose with "make the duck the main theme"
+   gives: `Plan: not used / Faithful correction. Kept animal. Set aside Gentle
+   animal. Reasoning was skipped. No local model and no Gemini key. ... Ignored:
+   make, duck, main, theme. ... This sentence could not be mapped, so nothing
+   extra was painted. No step is waiting, so Accept and Skip are off. Type a
+   change and press Ask for a plan.` History is unchanged and Accept/Skip are
+   off. "make the water darker" does the same (`Ignored: make, water, darker`).
+   The same fallback is what Windows users get whenever Gemini fails.
+2. **The edited description is ignored offline.** The header still says "Plan:
+   not used". The default description was "Leave the measured color alone.".
+3. **Wording:**
+   - Status text says "press Ask" while the button reads "Propose".
+   - Accept/Skip show plain labels when no step is waiting. That is by design in
+     `show_feature_pair`; the labelled state "Accept: <step>" still needs a GUI
+     check with a step waiting.
+   - "Plan: not used" should say plainly why, e.g. "Plan: offline (no Gemini key)".
+4. **Keystroke leak:** typing in the request entry sometimes triggers darktable
+   shortcuts (capital letters switched to map view, a tethering toast, the
+   exposure popup).
+
+Diagnosis (reproduce with
+`.venv/bin/python ai_processor.py /tmp/off/preview.jpg --output-dir /tmp/off
+--detector heuristic --advisor histogram --steer "make the duck the main theme"`,
+using a copy of the GUI work dir's `preview.jpg`; keys unset):
+- The picture is typed `animal` and `pipeline.py` calls `animal_plan`. But
+  `animal_plan` only *maps* the existing `step_queue`. Offline, the proposal is
+  `reasoner.skipped(...)` (`status: "skipped"`, no stages), so the queue is
+  empty, `emphasis` is False, and nothing is queued.
+- The first Propose (`pipeline.run`, about line 696, `resolve_plan`) never calls
+  `mask_grammar.mask_operations`. Only the follow-up path (`features.plan_chat`,
+  about line 976) does, followed by `apply_operations`, `select_mask_features`
+  and `_install_history_steps`. `mask_operations("make the water darker")`
+  already returns `mask_water` darken.
+- The default description comes from `pipeline._scene_record`: with no vision
+  advisor it falls back to `reading.sentence`, which is advice
+  (`reading.py:475` "Leave the measured color alone."), not a description.
+- Button wording:
+  - The Lua `run_button` reads "Propose" on a first plan and "Ask" on a
+    follow-up (`show_choices`, `recipe._continued`).
+  - The Python strings in `status_text.py:153-156` and `features.py:711,831` say
+    "press Ask".
+  - `pipeline.py:374` and `status_text.py:276,288` say "Propose looks". No
+    button has that label.
+  - Lua lines 1070-1071, 1480, 1795-1796 and 1943 say "Ask".
+
+Planned fix (resume here):
+- New `ai_dt/offline_plan.py`:
+  - `planner_missing(proposal)`: true when the status is skipped or there are
+    no stages, features or operations.
+  - `offline_operations(steer, description, picture_type, animal, ground)`:
+    the operations from `mask_operations(steer)`, plus guide steps. For an
+    animal those are mask_animal lift, mask_animal_background, mask_bottom_gradient
+    when the ground is bright, and mask_edge_burn. Otherwise use
+    `lessons.PRESETS[type]`.
+- In both `pipeline.run` (after `resolve_plan`, before `animal_plan`) and
+  `plan_chat`, when the planner is missing, run `apply_operations` and
+  `_install_history_steps` with those operations so `animal_plan` sees a queue.
+  `animal_plan._GENERAL` already matches "main theme".
+- `plan_backend_line`: "Plan: offline (no Gemini key)" or "Plan: offline
+  (Gemini failed: …)", plus "from request + description" when the user typed a
+  description.
+- Default description offline: a factual measured line (type, detections,
+  light), not `reading.sentence`.
+- Wording: one rule. Python says "press Propose". Lua swaps "press
+  Propose/Ask" for the current `run_button.label` before showing status. Drop
+  "Propose looks".
+- Keystroke leak: not investigated. Check whether darktable 5.6 Lua `entry`
+  widgets grab focus; otherwise document a workaround (click into the entry,
+  avoid shift-letters; or turn off the conflicting shortcuts in preferences ›
+  shortcuts).
+- Tests:
+  - the offline duck plan gives steps;
+  - "make the water darker" gives `mask_water`;
+  - the description is used;
+  - status strings name only real buttons (scan `status_text.py`/`features.py`/
+    `ai_editor.lua` against the Lua button labels).
+
+Also still to do (from the parent):
+- `/workspace/dtverify/launch-gui-online.sh`: the same GUI launch, but keys are
+  not unset, and `--conf` sets the user's prefs (advisor Mistral
+  `ministral-14b-2512`, planner Gemini `gemini-3.5-flash-lite`, best detector;
+  check the pref names in `ai_editor.lua`). Never write key values anywhere.
+- One online `ai_processor.py` run on `/workspace/uploads/duck.jpg`.
+- After the fixes, refresh the GUI plugin copy:
+  `P=/workspace/dtverify/guiconfig/lua/ai_editor && rm -rf $P.new && mkdir -p $P.new && git archive HEAD | tar -x -C $P.new && rm -rf $P && mv $P.new $P`.
+  Then restart darktable (`pkill -TERM darktable`, wait,
+  `/workspace/dtverify/launch-gui.sh`). darktable was **not** restarted this
+  round; it is still the offline instance with the `bcc4e51` plugin.
+
 ## Halo round the animal (inverse masks short of the edge)
 
 Visual review: a light ring round the duck's belly, tail and feet in the
