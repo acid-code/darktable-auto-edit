@@ -790,11 +790,17 @@ def commit_waiting_step(output_dir) -> dict:
         if xml and "<operation>vignette</operation>" in xml:
             history_name = "Vignette the subject"
         if not xml:
-            if step_path.is_file():
-                step_path.unlink()
-            recipe.pop("step_style", None)
-            _save_recipe(path, recipe)
-            return recipe
+            # Nothing can be written for this step. Say so instead of
+            # keeping the previous note, which read as if it was applied.
+            label = title or nxt
+            return _leave_off(
+                directory,
+                path,
+                recipe,
+                plan,
+                nxt,
+                f"No darktable module could be written for \u201c{label}\u201d, so this step was left off.",
+            )
         step_path.write_text(xml, encoding="utf-8")
         recipe["step_style"] = {
             "name": "AI accepted step",

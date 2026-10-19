@@ -14,7 +14,7 @@ Python 3.13, no darktable, no API keys).
 | 3 | Smarter editing from the photoserge video lessons (ordering, caps, landscape class grades, sky-intersected gradients/glow, split tone, selective color, edge burn, crop suggestion, few-shot prompt data), plus animal Accept steps | **done** |
 | 4 | Tests for everything new, full suite green | rolling, per phase |
 
-## Commits (local only, on `feature/ai-masks`)
+## Commits (on `feature/ai-masks`, pushed to origin)
 
 | Commit | Phase |
 | --- | --- |
@@ -194,6 +194,51 @@ Patches: `/workspace/dt_patches/*.patch`; bundle:
 - `output.json` → `analysis.crop_suggestion` (advisory, never applied).
 - Tests: `tests/test_lessons.py` (29).
 
+## Fixes after the duck report (pushed to `origin/feature/ai-masks`)
+
+### Bug 1 — accepted step not the active top / later step loses the earlier mask
+
+Repro: duck photo, plan subject → mask_background → foreground. Step 1
+"Lift the subject" said done; its row was not the highlighted top and the
+next step did not build on it.
+
+Causes found (all in `ai_dt/drawn_mask.py`):
+
+1. **Pre-existing (`dd888ef`)**: the subject outline (`splice_path_exposure`)
+   and eye ellipse (`splice_ellipse_exposure`) filed their shape under
+   `mask_num = highest mask_num + 1`, not under the new row's `num`.
+   darktable attaches a shape to the history row whose `num == mask_num`,
+   so the outline belonged to some other (usually an early) row.
+2. **Pre-existing, and copied into my `splice_shapes`/`splice_region_module`**:
+   each masked row carried only its own shapes. darktable keeps the full
+   shape list on every masked row and loads the list of the *last* masked
+   row below `history_end` (`dt_masks_read_masks_history`), so after step 2
+   step 1's mask id was gone and darktable blended it with a filled
+   (whole-frame or empty) mask.
+3. **Pre-existing (`_prepare_insert`)**: with `history_end` below the row
+   count (a row clicked in the history panel, or a stale sidecar), the new
+   row was inserted at `history_end` and the old rows were kept above it,
+   so the accepted step was mid-stack and not the highlighted top.
+
+Fix: rows past `history_end` are discarded (as darktable does on any new
+edit), the new row is appended as the top with `history_end = row count`,
+its shapes are filed under its own `num`, and the previous snapshot is
+carried onto the new row. `verify_top()` runs before `drawn_mask.py`
+writes: if `history_end != rows`, the top row is not the step, or its mask
+is not filed under it, the script exits 1 and the panel shows the reason
+instead of "done". `strip_ai_history` also drops shapes filed under a
+removed row. A commit with no module for the step (`step_style` is `None`)
+now leaves the step off with "No darktable module could be written for …"
+instead of keeping the old "This step is on this photo" note; Lua
+`apply_step` returns a reason when `step_style` is malformed or its file
+is missing/empty.
+
+Tests: `tests/test_history_chain.py` (7 — chain of 3 masked steps through
+the functions and through `main()`, `history_end == rows` after each,
+every AI module's mask id present in darktable's current snapshot, stale
+`history_end`, Back/Revert after the chain, `verify_top` refusals; 6 of 7
+fail on the old code), plus one in `tests/test_features.py`.
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -208,6 +253,7 @@ test runs instead of skipping).
 | After phase 2 | 379 | 1 | 0 | 0 |
 | After phase 2b (animals) | 389 | 1 | 0 | 0 |
 | After phase 3 | 418 | 1 | 0 | 0 |
+| After bug 1 fix | 426 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`

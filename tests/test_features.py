@@ -427,6 +427,28 @@ class PanelTests(unittest.TestCase):
         self.assertIn("press Ask", text)
         self.assertNotIn("now —", text)
 
+    def test_a_step_with_no_module_says_it_was_left_off(self) -> None:
+        # It used to keep the previous note ("This step is on this photo")
+        # while nothing was written, so the panel read as done.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = {
+                "features_next": "no_such_step",
+                "features_next_title": "Polish the moon",
+                "feature_note": "This step is on this photo.",
+                "plan": {"features_done": [], "features_path": ["no_such_step"], "reasoning": {}},
+                "style": {"name": "AI edit", "file": "edit.dtstyle"},
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            commit_waiting_step(directory)
+            saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertIn("left off", saved["feature_note"])
+            self.assertIn("Polish the moon", saved["feature_note"])
+            self.assertNotIn("step_style", saved)
+            self.assertNotIn("no_such_step", saved["plan"]["features_done"])
+            self.assertIn("no_such_step", saved["plan"]["features_skipped"])
+            self.assertFalse((directory / "step.dtstyle").exists())
+
     def test_committing_the_waiting_step_does_not_touch_the_look(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

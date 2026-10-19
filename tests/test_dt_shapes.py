@@ -308,8 +308,12 @@ class SpliceShapesTests(unittest.TestCase):
         self.assertIn('mask_name="window"', stripped)
         popped, entry, count = pop_history_level(result)
         self.assertEqual(count, 1)
-        self.assertEqual(len(entry["masks"]), 3)
+        # Three sky shapes plus the photographer's window, carried as
+        # darktable's per-row snapshot.
+        self.assertEqual(len(entry["masks"]), 4)
         self.assertNotIn("AI sky", popped)
+        self.assertEqual(popped.count('mask_name="window"'), 1)
+        self.assertEqual(stripped.count('mask_name="window"'), 1)
 
     def test_second_step_gets_fresh_ids(self) -> None:
         once = splice_shapes(
@@ -320,8 +324,12 @@ class SpliceShapesTests(unittest.TestCase):
             once, forms=[shapes.edge_gradient("bottom", 0.3)], operation="exposure",
             params=exposure_params(-0.3), modversion=6, name="AI ground",
         )
-        ids = [r["id"] for r in read_mask_records(twice)]
+        top = [r for r in read_mask_records(twice) if r["num"] == 3]
+        ids = [r["id"] for r in top]
         self.assertEqual(len(ids), len(set(ids)))
+        sky_ids = {r["id"] for r in read_mask_records(once) if r["name"] == "AI sky"}
+        ground_ids = {r["id"] for r in top if r["name"] == "AI ground"}
+        self.assertFalse(sky_ids & ground_ids)
         ground = [r for r in read_mask_records(twice) if r["name"] == "AI ground"]
         self.assertEqual({r["num"] for r in ground}, {3})
         self.assertIn('darktable:history_end="4"', twice)

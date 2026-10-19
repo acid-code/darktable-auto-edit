@@ -898,11 +898,15 @@ function apply_step(image, work_dir)
     return apply_masked_step(image, work_dir, mask)
   end
   local info = recipe.step_style
-  if type(info) ~= "table" or type(info.file) ~= "string" or type(info.name) ~= "string" then
+  if info == nil then
+    -- The commit left this step off; feature_note says why.
     return nil
   end
+  if type(info) ~= "table" or type(info.file) ~= "string" or type(info.name) ~= "string" then
+    return nil, "The step has no style to apply, so nothing was added. The darkroom history was left as it is."
+  end
   if file_size(info.file) < 32 then
-    return nil
+    return nil, "The step file is missing or empty (" .. info.file .. "), so nothing was added."
   end
   local imported, import_error = pcall(dt.styles.import, info.file)
   if not imported then

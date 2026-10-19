@@ -166,20 +166,112 @@ def _shift_numbers_from(document: str, start: int) -> str:
     return _HISTORY_ITEM.sub(bump, document)
 
 
+def _drop_inactive_rows(document: str, history: list[str], history_end: int) -> str:
+    """Remove the rows past ``history_end`` and their shapes, as darktable does.
+
+    A new edit in darktable's darkroom discards every row above the
+    selected one. Keeping them left the new module in the middle of the
+    stack with older, inactive rows above it, so the top of the history
+    was not the step just accepted.
+    """
+
+    dropped = history[history_end:]
+    nums = {_attr(tag, "darktable:num") for tag in dropped if _attr(tag, "darktable:num")}
+    dropped_set = set(dropped)
+
+    def drop(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if tag in dropped_set:
+            return ""
+        if not _attr(tag, "darktable:operation") and _attr(tag, "darktable:mask_num") in nums:
+            return ""
+        return tag
+
+    return _HISTORY_ITEM.sub(drop, document)
+
+
 def _prepare_insert(document: str) -> tuple[str, list[str], int, int]:
     """Return the document, its history, the active count, and the new item number.
 
-    A shorter active count inserts at that index and shifts later numbers.
-    A count at or past the end appends with the next free number, so a gap
-    in the existing numbers does not turn an active row off.
+    The new module always becomes the top of the stack: rows past
+    ``history_end`` (undone in darktable's history panel) are discarded
+    first, the way darktable discards them on any new edit. A count past
+    the last row appends with the next free number, so a gap in the
+    existing numbers does not turn an active row off. The caller writes
+    ``history_end = active + 1``, which is then the row count.
     """
 
     document, history, history_end = _stack_for_append(document)
-    numbers = [int(_attr(tag, "darktable:num") or "0") for tag in history]
     if history_end < len(history):
-        document = _shift_numbers_from(document, history_end)
-        return document, history, history_end, history_end
+        document = _drop_inactive_rows(document, history, history_end)
+        document, history, history_end = _stack_for_append(document)
+    numbers = [int(_attr(tag, "darktable:num") or "0") for tag in history]
     return document, history, history_end, (max(numbers) + 1) if numbers else 0
+
+
+def _forms_snapshot(document: str, before_num: int) -> list[str]:
+    """The shape records darktable treats as current just before history row ``before_num``.
+
+    darktable keeps a full copy of every shape on each history row that
+    changed masks, and uses the copy on the last such row
+    (``dt_masks_read_masks_history``). A new row that carries only its own
+    shapes makes every earlier masked module lose its mask.
+    """
+
+    records = [
+        match.group(0)
+        for match in _HISTORY_ITEM.finditer(document)
+        if not _attr(match.group(0), "darktable:operation") and _attr(match.group(0), "darktable:mask_num")
+    ]
+    nums = sorted(
+        {int(_attr(tag, "darktable:mask_num")) for tag in records if int(_attr(tag, "darktable:mask_num")) < before_num}
+    )
+    if not nums:
+        return []
+    latest = str(nums[-1])
+    return [tag for tag in records if _attr(tag, "darktable:mask_num") == latest]
+
+
+def _carried_forms(document: str, num: int, new_ids: set[int]) -> str:
+    """The current shapes, re-filed under the new row ``num`` (darktable's snapshot rule)."""
+
+    carried = []
+    for tag in _forms_snapshot(document, num):
+        if int(_attr(tag, "darktable:mask_id") or "0") in new_ids:
+            continue
+        carried.append(re.sub(r'darktable:mask_num="\d+"', f'darktable:mask_num="{num}"', tag, count=1))
+    return "".join(carried)
+
+
+def verify_top(document: str, name: str) -> None:
+    """The step just written is the active top row and its shapes are filed under it."""
+
+    _document, history, history_end = _stack_for_append(document)
+    end_match = re.search(r'darktable:history_end="(\d+)"', document)
+    written_end = int(end_match.group(1)) if end_match else -1
+    if written_end != len(history):
+        raise MaskSpliceError(
+            f"history_end is {written_end} but the stack has {len(history)} rows, "
+            "so the new step would not be the active top"
+        )
+    top = history[-1]
+    if _attr(top, "darktable:multi_name") != escape(name, quote=True):
+        raise MaskSpliceError(f"the top history row is {_attr(top, 'darktable:multi_name')!r}, not {name!r}")
+    num = _attr(top, "darktable:num")
+    blend_id = None
+    try:
+        blend = _decode_gz(_attr(top, "darktable:blendop_params"))
+        blend_id = struct.unpack_from("<I", blend, _OFFSET_MASK_ID)[0]
+    except (MaskSpliceError, ValueError, zlib.error, struct.error):
+        blend_id = None
+    if blend_id:
+        filed = {
+            int(_attr(tag, "darktable:mask_id") or "0")
+            for tag in (m.group(0) for m in _HISTORY_ITEM.finditer(document))
+            if not _attr(tag, "darktable:operation") and _attr(tag, "darktable:mask_num") == num
+        }
+        if blend_id not in filed:
+            raise MaskSpliceError("the new module's mask is not filed under its history row, so darktable would drop it")
 
 
 def _place_history_item(document: str, item: str, num: int) -> str:
@@ -281,8 +373,8 @@ def splice_ellipse_exposure(
     )
     spliced = _pipeline_slot(spliced, "exposure", priority)
 
-    mask_li = (
-        f'<rdf:li darktable:mask_num="{_next_mask_num(spliced)}" '
+    mask_li = _carried_forms(spliced, next_num, {mask_id}) + (
+        f'<rdf:li darktable:mask_num="{next_num}" '
         f'darktable:mask_id="{mask_id}" '
         f'darktable:mask_type="{_ELLIPSE_TYPE}" '
         f'darktable:mask_name="{safe_name}" '
@@ -362,8 +454,8 @@ def splice_path_exposure(
     )
     spliced = _pipeline_slot(spliced, "exposure", priority)
     blob = b"".join(packed)
-    mask_li = (
-        f'<rdf:li darktable:mask_num="{_next_mask_num(spliced)}" '
+    mask_li = _carried_forms(spliced, next_num, {mask_id}) + (
+        f'<rdf:li darktable:mask_num="{next_num}" '
         f'darktable:mask_id="{mask_id}" '
         f'darktable:mask_type="{_PATH_TYPE}" '
         f'darktable:mask_name="{safe_name}" '
@@ -546,7 +638,8 @@ def splice_shapes(
         members.append((form_id, state, min(max(float(form.get("opacity", 1.0)), 0.0), 1.0)))
     group_points = dt_shapes.encode_group(group_id, members)
     entries.append(_mask_record(next_num, group_id, _GROUP_TYPE, safe_name, group_points, len(members)))
-    return _insert_masks(spliced, "".join(entries))
+    carried = _carried_forms(spliced, next_num, set(ids))
+    return _insert_masks(spliced, carried + "".join(entries))
 
 
 def read_mask_records(document: str) -> list[dict]:
@@ -730,7 +823,7 @@ def splice_region_module(
         records.append(
             _mask_record(next_num, group_id, _GROUP_TYPE, safe_name, group_points, len(ellipse_ids))
         )
-    return _insert_masks(spliced, "".join(records))
+    return _insert_masks(spliced, _carried_forms(spliced, next_num, set(ellipse_ids) | {group_id}) + "".join(records))
 
 
 def _mask_record(
@@ -852,6 +945,8 @@ def main(argv: list[str] | None = None) -> int:
                 exposure_ev=args.ev,
                 name=args.name,
             )
+        written_name = str(spec["name"]) if args.mask_json else args.name
+        verify_top(spliced, written_name)
     except (MaskSpliceError, KeyError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

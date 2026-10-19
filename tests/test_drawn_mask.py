@@ -248,7 +248,9 @@ class SpliceTests(unittest.TestCase):
         self.assertIn('darktable:history_end="2"', cleaned)
         self.assertNotIn('darktable:history_end="3"', cleaned)
 
-    def test_an_undone_history_row_stays_when_the_eye_module_is_added(self) -> None:
+    def test_an_undone_history_row_is_discarded_and_the_eye_module_is_the_top(self) -> None:
+        # darktable discards rows past history_end on any new edit; keeping
+        # them left the accepted step mid-stack and not highlighted.
         result = splice_ellipse_exposure(
             _document(history_end="1"),
             center_x=0.5,
@@ -258,12 +260,10 @@ class SpliceTests(unittest.TestCase):
             exposure_ev=0.1,
         )
         self.assertIn(PHOTO_EXPOSURE, result)
-        self.assertIn('darktable:multi_name="portrait"', result)
-        self.assertIn('darktable:num="2"', result)
-        self.assertIn('darktable:mask_name="window"', result)
-        self.assertIn('darktable:mask_num="2"', result)
-        self.assertIn('darktable:multi_name="AI eyes"', result)
+        self.assertNotIn('darktable:multi_name="portrait"', result)
+        self.assertNotIn('darktable:mask_name="window"', result)
         self.assertIn('darktable:num="1" darktable:operation="exposure"', result)
+        self.assertIn('darktable:multi_name="AI eyes"', result)
         self.assertIn('darktable:history_end="2"', result)
 
     def test_a_count_ahead_of_the_stack_still_receives_the_eye_module(self) -> None:

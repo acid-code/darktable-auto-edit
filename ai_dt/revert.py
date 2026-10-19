@@ -228,6 +228,10 @@ def strip_ai_history(document: str, extra_names: list[str] | None = None) -> tup
             tag = match.group(0)
             if _attr(tag, "darktable:num") in removed_nums:
                 return ""
+            # A shape filed under a removed row is that row's snapshot
+            # copy (darktable keeps every shape on each masked row).
+            if not _attr(tag, "darktable:operation") and _attr(tag, "darktable:mask_num") in removed_nums:
+                return ""
             return tag
 
         cleaned = _HISTORY_ITEM.sub(drop_masks, cleaned)
