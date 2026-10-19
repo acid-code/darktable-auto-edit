@@ -128,6 +128,73 @@ class MistralVisionTests(unittest.TestCase):
         self.assertFalse(recipe["plan"]["strong"])
         self.assertFalse(recipe["plan"].get("strong_word"))
 
+    def test_a_structured_scene_is_shown_as_sentences(self) -> None:
+        scene = {
+            "subject": "Mount Fuji viewed through a traditional Japanese architectural structure",
+            "light": "soft and diffused with a hazy atmosphere around the mountain",
+            "background": "a town below and green foliage framing the top of the image",
+        }
+        os.environ["MISTRAL_API_KEY"] = "test-key"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plain.png"
+            Image.new("RGB", (32, 24), (40, 40, 40)).save(path)
+            with (
+                patch(
+                    "ai_dt.advisors.mistral_vision.urllib.request.urlopen",
+                    self._urlopen(_reply(description=scene, summary=scene), []),
+                ),
+                patch("ai_dt.pipeline.OllamaLLaVAAdvisor"),
+            ):
+                recipe = analyze(
+                    path,
+                    detector="heuristic",
+                    advisor="auto",
+                    rewrite_scene=True,
+                    describe_only=True,
+                )
+        summary = recipe["scene"]["summary"]
+        self.assertNotIn("{", summary)
+        self.assertNotIn("'subject'", summary)
+        self.assertIn(
+            "Mount Fuji viewed through a traditional Japanese architectural structure.",
+            summary,
+        )
+        self.assertIn("Soft and diffused with a hazy atmosphere around the mountain.", summary)
+        self.assertIn("A town below and green foliage framing the top of the image.", summary)
+
+    def test_a_mood_label_does_not_replace_the_scene(self) -> None:
+        scene = {
+            "subject": "Mount Fuji",
+            "light": "Soft, diffused natural light with a slight haze around the peak",
+            "background": "A town below the mountain, with green foliage framing the top",
+        }
+        os.environ["MISTRAL_API_KEY"] = "test-key"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plain.png"
+            Image.new("RGB", (32, 24), (40, 40, 40)).save(path)
+            with (
+                patch(
+                    "ai_dt.advisors.mistral_vision.urllib.request.urlopen",
+                    self._urlopen(
+                        _reply(description=scene, summary="mood", mood="serene and misty daylight"),
+                        [],
+                    ),
+                ),
+                patch("ai_dt.pipeline.OllamaLLaVAAdvisor"),
+            ):
+                recipe = analyze(
+                    path,
+                    detector="heuristic",
+                    advisor="auto",
+                    rewrite_scene=True,
+                    describe_only=True,
+                )
+        summary = recipe["scene"]["summary"]
+        self.assertIn("Mount Fuji.", summary)
+        self.assertIn("Soft, diffused natural light with a slight haze around the peak.", summary)
+        self.assertNotEqual(summary, "Mood.")
+        self.assertNotIn("Mood.", summary)
+
     def test_an_edit_instruction_is_not_stored_as_the_photo_description(self) -> None:
         command = (
             "Adjust the image to subtly enhance the soft, warm light on the cat and wooden railing "
@@ -152,6 +219,36 @@ class MistralVisionTests(unittest.TestCase):
         self.assertNotIn("should stand out", summary)
         self.assertNotIn("Maintain a natural look", summary)
         self.assertNotEqual(recipe["scene"]["source"], "mistral")
+
+    def test_a_command_is_replaced_by_the_sentences_about_the_picture(self) -> None:
+        from ai_dt.pipeline import _scene_record
+        from ai_dt.schema import Atmosphere
+
+        command = (
+            "Adjust the image to subtly enhance the soft, warm light on the cat and wooden railing "
+            "while keeping the background muted. The cat's fur and the texture of the wood should "
+            "stand out, with minimal distraction from the urban elements in the background. "
+            "Maintain a natural look, focusing on the gentle interplay of light and texture."
+        )
+        seen = (
+            "The subject is a white-and-orange cat resting on a blue padded ledge against a weathered wooden railing. "
+            "The light is soft and diffused, likely from late afternoon, casting gentle shadows and avoiding harsh contrasts. "
+            "The background features a brick building and a slightly out-of-focus urban scene with recycling symbols, "
+            "competing for attention but not overwhelming the cat. "
+            "The wooden texture of the railing and the cat's fur should remain the primary focus, "
+            "with the background serving as a subtle context. "
+            "The overall composition should emphasize the cat's relaxed posture and the interplay of textures "
+            "between the fur, wood, and blue padding."
+        )
+        suggestion = Atmosphere(scene_description=seen, scene_summary=command, source="mistral:test")
+        scene = _scene_record(suggestion, "A cat on a rail.", "", {}, rewrite=True)
+        self.assertIn("white-and-orange cat", scene["summary"])
+        self.assertIn("blue padded ledge", scene["summary"])
+        self.assertIn("brick building", scene["summary"])
+        self.assertNotIn("Adjust the image", scene["summary"])
+        self.assertNotIn("should", scene["summary"].lower())
+        self.assertNotIn("Maintain a natural look", scene["description"])
+        self.assertNotIn("should", scene["description"].lower())
 
     def test_missing_key_does_not_call_mistral(self) -> None:
         calls: list = []

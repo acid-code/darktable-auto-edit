@@ -98,6 +98,464 @@ def _normalize(box: tuple[int, int, int, int], width: int, height: int) -> tuple
     )
 
 
+def _box_mean(values: np.ndarray, radius: int) -> np.ndarray:
+    """Mean of a square neighborhood. The radius stays small so fur is not an eye."""
+
+    radius = max(1, int(radius))
+    padded = np.pad(values, radius, mode="edge")
+    integral = np.cumsum(np.cumsum(padded, axis=0), axis=1)
+    integral = np.pad(integral, ((1, 0), (1, 0)), mode="constant")
+    height, width = values.shape
+    y = np.arange(height)
+    x = np.arange(width)
+    reach = 2 * radius + 1
+    total = (
+        integral[np.ix_(y + reach, x + reach)]
+        - integral[np.ix_(y, x + reach)]
+        - integral[np.ix_(y + reach, x)]
+        + integral[np.ix_(y, x)]
+    )
+    return total / float(reach * reach)
+
+
+def _shrink_luma(crop: np.ndarray, max_side: int = 220) -> tuple[np.ndarray, float, float]:
+    height, width = crop.shape
+    longest = max(height, width)
+    if longest <= max_side:
+        return crop, 1.0, 1.0
+    scale = max_side / float(longest)
+    resized = (
+        max(1, int(round(height * scale))),
+        max(1, int(round(width * scale))),
+    )
+    image = Image.fromarray(np.clip(crop * 255.0, 0, 255).astype(np.uint8), mode="L")
+    small = np.asarray(image.resize((resized[1], resized[0]), Image.Resampling.BILINEAR))
+    return small.astype(np.float32) / np.float32(255.0), height / small.shape[0], width / small.shape[1]
+
+
+def _saturation_peaks(
+    saturation: np.ndarray,
+    colorful: np.ndarray,
+    minimum: float,
+) -> list[tuple[float, float, int, int, int, float]]:
+    """Bright colored points, with each iris kept once."""
+
+    work = np.where(colorful, saturation, np.float32(0.0)).astype(np.float32, copy=True)
+    reach = max(2, int(round(0.045 * min(work.shape))))
+    peaks: list[tuple[float, float, int, int, int, float]] = []
+    spot = max(4, reach)
+    for _ in range(12):
+        index = int(np.argmax(work))
+        score = float(work.ravel()[index])
+        if score < minimum:
+            break
+        cy, cx = divmod(index, work.shape[1])
+        y0 = max(0, cy - reach)
+        y1 = min(work.shape[0], cy + reach + 1)
+        x0 = max(0, cx - reach)
+        x1 = min(work.shape[1], cx + reach + 1)
+        work[y0:y1, x0:x1] = 0
+        near = colorful[max(0, cy - 3) : cy + 4, max(0, cx - 3) : cx + 4]
+        if int(near.sum()) < 8:
+            continue
+        peaks.append((float(cx), float(cy), spot, spot, spot, score))
+    return peaks
+
+
+def _with_pupil(
+    peaks: list[tuple[float, float, int, int, int, float]],
+    luma: np.ndarray,
+    radius: int,
+) -> list[tuple[float, float, int, int, int, float]]:
+    """Keep a colored spot only when a darker pupil sits inside it."""
+
+    kept: list[tuple[float, float, int, int, int, float]] = []
+    reach = max(2, int(radius))
+    for peak in peaks:
+        cx = min(luma.shape[1] - 1, max(0, int(peak[0])))
+        cy = min(luma.shape[0] - 1, max(0, int(peak[1])))
+        patch = luma[
+            max(0, cy - reach) : min(luma.shape[0], cy + reach + 1),
+            max(0, cx - reach) : min(luma.shape[1], cx + reach + 1),
+        ]
+        if patch.size == 0:
+            continue
+        here = float(luma[cy, cx])
+        pupil = patch < min(0.42, here - 0.12)
+        if int(pupil.sum()) < 2:
+            continue
+        ys, xs = np.nonzero(pupil)
+        width = int(xs.max() - xs.min() + 1)
+        height = int(ys.max() - ys.min() + 1)
+        longer = max(width, height)
+        shorter = max(1, min(width, height))
+        # A grid line is long and thin. A pupil is a small dark spot.
+        if longer / float(shorter) > 3.0 and longer > 0.7 * max(patch.shape):
+            continue
+        if float(pupil.mean()) > 0.4:
+            # A sunlit iris sits in a dark socket. The wide window is mostly
+            # shadow, while a tighter window still holds the pupil.
+            tight = max(2, reach // 2)
+            core = luma[
+                max(0, cy - tight) : min(luma.shape[0], cy + tight + 1),
+                max(0, cx - tight) : min(luma.shape[1], cx + tight + 1),
+            ]
+            if core.size == 0:
+                continue
+            slit = core < min(0.42, here - 0.12)
+            if int(slit.sum()) < 3 or float(slit.mean()) > 0.35:
+                continue
+        kept.append(peak)
+    return kept
+
+
+def _colorful_iris(
+    colorful: np.ndarray,
+    luma: np.ndarray,
+    cx: int,
+    cy: int,
+    reach: int,
+) -> tuple[float, float] | None:
+    """Center of the lower colored pixels under a brow."""
+
+    y0 = min(colorful.shape[0] - 1, cy + 1)
+    y1 = min(colorful.shape[0], cy + reach + 1)
+    half = max(3, reach // 2)
+    x0 = max(0, cx - half)
+    x1 = min(colorful.shape[1], cx + half + 1)
+    mask = colorful[y0:y1, x0:x1]
+    if int(mask.sum()) < 4:
+        return None
+    ys, xs = np.nonzero(mask)
+    if int(ys.max() - ys.min()) < 0.08 * min(colorful.shape):
+        return None
+    lower = ys >= np.percentile(ys, 65)
+    if int(lower.sum()) >= 2:
+        ys, xs = ys[lower], xs[lower]
+    values = luma[y0:y1, x0:x1][ys, xs]
+    bright = values >= float(np.median(values))
+    if int(bright.sum()) >= 2:
+        ys, xs = ys[bright], xs[bright]
+    return (x0 + float(xs.mean()), y0 + float(ys.mean()))
+
+
+def _shaded_pupil(
+    luma: np.ndarray,
+    cx: int,
+    cy: int,
+) -> tuple[float, float] | None:
+    """A dark pupil under a brow, with iris around it and shadow rejected.
+
+    The pupil can sit beside the bright fur, not only straight below it.
+    A nose or an ear shadow is dark without a lighter ring, so it is skipped.
+    """
+
+    span = min(luma.shape)
+    side = max(4, int(round(0.14 * span)))
+    y0 = cy + max(6, int(round(0.08 * span)))
+    y1 = min(luma.shape[0] - 6, cy + int(round(0.30 * span)))
+    x0 = max(6, cx - side)
+    x1 = min(luma.shape[1] - 6, cx + side)
+    if y1 <= y0 or x1 <= x0:
+        return None
+    best: tuple[float, int, int] | None = None
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            here = float(luma[y, x])
+            if here > 0.20:
+                continue
+            ring = float(luma[y - 3 : y + 4, x - 3 : x + 4].mean())
+            if ring < 0.14 or ring > 0.45 or ring < here + 0.08:
+                continue
+            # A shadow is dark on one side. A pupil has iris on every side.
+            sides = (
+                float(luma[y - 5 : y - 2, x - 1 : x + 2].mean()),
+                float(luma[y + 3 : y + 6, x - 1 : x + 2].mean()),
+                float(luma[y - 1 : y + 2, x - 5 : x - 2].mean()),
+                float(luma[y - 1 : y + 2, x + 3 : x + 6].mean()),
+            )
+            if min(sides) < 0.12:
+                continue
+            if best is None or here < best[0]:
+                best = (here, x, y)
+    if best is None:
+        return None
+    level, x, y = best
+    core = luma[y - 3 : y + 4, x - 3 : x + 4] <= level + np.float32(0.06)
+    ys, xs = np.nonzero(core)
+    if ys.size < 2:
+        return (float(x), float(y))
+    return (x - 3 + float(xs.mean()), y - 3 + float(ys.mean()))
+
+
+def _drop_onto_iris(
+    pair: tuple[tuple, tuple],
+    colorful: np.ndarray,
+    luma: np.ndarray,
+) -> tuple[tuple, tuple]:
+    """Move a bright brow down onto the iris beneath it.
+
+    A sunlit iris is the colored pixels under the brow. A shaded iris is
+    the dark pupil below that brow, with lighter iris on every side.
+    """
+
+    reach = max(8, int(round(0.16 * min(luma.shape))))
+    dropped = []
+    for peak in pair:
+        cx = min(luma.shape[1] - 1, max(0, int(peak[0])))
+        cy = min(luma.shape[0] - 1, max(0, int(peak[1])))
+        landed = _colorful_iris(colorful, luma, cx, cy, reach)
+        if landed is None:
+            landed = _shaded_pupil(luma, cx, cy)
+        if landed is None:
+            dropped.append(peak)
+            continue
+        dropped.append((landed[0], landed[1], peak[2], peak[3], peak[4], peak[5]))
+    return (dropped[0], dropped[1])
+
+
+def _kept_spots(
+    mask: np.ndarray,
+    score_map: np.ndarray,
+) -> list[tuple[float, float, int, int, int, float]]:
+    region_area = int(mask.size)
+    kept: list[tuple[float, float, int, int, int, float]] = []
+    for cx, cy, area, spot_w, spot_h in _component_spots(mask):
+        if area < 4 or area > int(0.02 * region_area):
+            continue
+        aspect = spot_w / float(max(1, spot_h))
+        if aspect < 0.35 or aspect > 2.8:
+            continue
+        if spot_w > 0.22 * mask.shape[1] or spot_h > 0.22 * mask.shape[0]:
+            continue
+        iy = min(mask.shape[0] - 1, max(0, int(cy)))
+        ix = min(mask.shape[1] - 1, max(0, int(cx)))
+        kept.append((cx, cy, area, spot_w, spot_h, float(score_map[iy, ix])))
+    return kept
+
+
+def _best_eye_pair(
+    kept: list[tuple[float, float, int, int, int, float]],
+    span: float,
+    minimum: float,
+    ratio_limit: float = 2.5,
+    max_sep: float = 0.32,
+    min_sep: float = 0.04,
+    close_weight: float = 0.0,
+) -> tuple[tuple, tuple] | None:
+    best: tuple[tuple, tuple] | None = None
+    best_score = 0.0
+    for index, left in enumerate(kept):
+        for right in kept[index + 1 :]:
+            dx = abs(left[0] - right[0])
+            dy = abs(left[1] - right[1])
+            sep = (dx * dx + dy * dy) ** 0.5
+            if sep < min_sep * span or sep > max_sep * span:
+                continue
+            if dx < 1.0 or dy > dx * 0.9:
+                continue
+            ratio = max(left[2], right[2]) / float(max(1, min(left[2], right[2])))
+            if ratio > ratio_limit:
+                continue
+            score = left[5] + right[5] - close_weight * (sep / span)
+            if score > best_score:
+                best_score = score
+                best = (left, right)
+    if best is None or best_score < minimum:
+        return None
+    return best
+
+
+def _pair_to_boxes(
+    pair: tuple[tuple, tuple],
+    small_shape: tuple[int, int],
+    origin: tuple[int, int],
+    scale_y: float,
+    scale_x: float,
+    width: int,
+    height: int,
+    expand: float = 3.0,
+) -> list[tuple[float, float, float, float]]:
+    x0, y0 = origin
+    boxes: list[tuple[float, float, float, float]] = []
+    for cx, cy, _area, spot_w, spot_h, _score in pair:
+        eye_w = max(int(spot_w * expand), int(0.035 * small_shape[1]), 2)
+        eye_h = max(int(spot_h * expand), int(0.045 * small_shape[0]), 2)
+        full_cx = x0 + (cx + 0.5) * scale_x
+        full_cy = y0 + (cy + 0.5) * scale_y
+        full_w = max(2.0, eye_w * scale_x)
+        full_h = max(2.0, eye_h * scale_y)
+        ex = int(round(full_cx - full_w / 2.0))
+        ey = int(round(full_cy - full_h / 2.0))
+        ew = max(2, int(round(full_w)))
+        eh = max(2, int(round(full_h)))
+        ex = min(max(0, ex), max(0, width - ew))
+        ey = min(max(0, ey), max(0, height - eh))
+        boxes.append(_normalize((ex, ey, ew, eh), width, height))
+    return boxes
+
+
+def animal_eye_boxes(
+    luma: np.ndarray,
+    box: tuple[float, float, float, float],
+    width: int,
+    height: int,
+    color: np.ndarray | None = None,
+) -> list[tuple[float, float, float, float]]:
+    """Two eyes inside an animal, or nothing when no pair is there.
+
+    The search covers the whole animal. A lying cat does not keep its eyes
+    in the upper half of the box the way a human face does. A single dark
+    spot, such as a nose, is not a pair. Colored irises are preferred over
+    dark ears when the picture has color.
+    """
+
+    x, y, w, h = box
+    if w <= 0.0 or h <= 0.0 or w * h < 0.01 or w * h > 0.9:
+        return []
+    x0 = max(0, min(width - 1, int(x * width)))
+    y0 = max(0, min(height - 1, int(y * height)))
+    x1 = max(x0 + 1, min(width, int((x + w) * width)))
+    y1 = max(y0 + 1, min(height, int((y + h) * height)))
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        return []
+    crop = luma[y0:y1, x0:x1].astype(np.float32, copy=False)
+    if crop.size and float(np.max(crop)) > 1.5:
+        crop = crop / np.float32(255.0)
+    small, scale_y, scale_x = _shrink_luma(crop)
+    # Wider than a pupil, so the pupil is darker than the fur around it.
+    # A tight blur sits inside the pupil and the center no longer looks dark.
+    radius = max(4, int(round(0.08 * min(small.shape))))
+    if color is not None and getattr(color, "ndim", 0) == 3:
+        patch = np.asarray(color[y0:y1, x0:x1], dtype=np.float32)
+        if patch.size and float(patch.max()) > 1.5:
+            patch = patch / np.float32(255.0)
+        sat = np.max(patch, axis=2) - np.min(patch, axis=2)
+        small_sat, sat_scale_y, sat_scale_x = _shrink_luma(sat)
+        local_sat = _box_mean(small_sat, radius)
+        luma_gate = small
+        if luma_gate.shape != small_sat.shape:
+            luma_gate = luma_gate[: small_sat.shape[0], : small_sat.shape[1]]
+        colorful = (
+            (small_sat > local_sat + np.float32(0.10))
+            & (small_sat > np.float32(0.22))
+            & (luma_gate > np.float32(0.28))
+            & (luma_gate < np.float32(0.82))
+        )
+        peaks = _with_pupil(
+            _saturation_peaks(small_sat, colorful, 0.34),
+            luma_gate,
+            max(3, int(round(0.055 * min(small_sat.shape)))),
+        )
+        color_pair = _best_eye_pair(
+            peaks,
+            float(max(small_sat.shape)),
+            0.7,
+            ratio_limit=8.0,
+            max_sep=0.30,
+            min_sep=0.07,
+            close_weight=0.8,
+        )
+        ear_line = 0.28 * small_sat.shape[0]
+        if color_pair is not None and (color_pair[0][1] + color_pair[1][1]) * 0.5 < ear_line:
+            # The brightest pair is the ear tips. A lower pair can still be
+            # the eyes. Ear shadows are not a second try.
+            lower = [peak for peak in peaks if peak[1] >= ear_line]
+            color_pair = _best_eye_pair(
+                lower,
+                float(max(small_sat.shape)),
+                0.6,
+                ratio_limit=8.0,
+                max_sep=0.55,
+                min_sep=0.07,
+                close_weight=0.4,
+            )
+            if color_pair is None:
+                return []
+        if color_pair is not None:
+            color_pair = _drop_onto_iris(color_pair, colorful, luma_gate)
+            placed = _separate_eyes(
+                [
+                    box
+                    for box in _pair_to_boxes(
+                        color_pair,
+                        small_sat.shape,
+                        (x0, y0),
+                        sat_scale_y,
+                        sat_scale_x,
+                        width,
+                        height,
+                        expand=2.6,
+                    )
+                    if box[2] > 0.015 and box[3] > 0.015
+                ]
+            )
+            if placed:
+                return placed
+    local = _box_mean(small, radius)
+    # Pupils are dark. Orange or white fur around them is not.
+    dark = (small < local - np.float32(0.14)) & (small < np.float32(0.38))
+    pair = _best_eye_pair(_kept_spots(dark, local - small), float(max(small.shape)), 0.22)
+    if pair is None:
+        return []
+    boxes = _pair_to_boxes(pair, small.shape, (x0, y0), scale_y, scale_x, width, height)
+    return _separate_eyes([box for box in boxes if box[2] > 0.015 and box[3] > 0.015])
+
+
+def attach_animal_eyes(pixels: np.ndarray, detections: list[Detection]) -> list[Detection]:
+    """Add eye boxes for an animal that does not already have eyes inside it."""
+
+    # The smaller box is the body. A loose blob around it finds the sign
+    # or the ears, and those spots then block the real eyes.
+    animals = sorted(
+        (item for item in detections if item.category == "animal"),
+        key=lambda item: float(item.bbox[2]) * float(item.bbox[3]),
+    )
+    if not animals:
+        return list(detections)
+    view = np.asarray(pixels, dtype=np.float32)
+    if view.ndim == 3:
+        if view.size and float(view.max()) > 1.5:
+            view = view / np.float32(255.0)
+        luma = 0.2126 * view[..., 0] + 0.7152 * view[..., 1] + 0.0722 * view[..., 2]
+    else:
+        luma = view
+        if luma.size and float(luma.max()) > 1.5:
+            luma = luma / np.float32(255.0)
+    frame_h, frame_w = int(luma.shape[0]), int(luma.shape[1])
+    # A downsampled pass can mark ears. Search this picture again and keep
+    # a face detector's eyes when they already sit on the animal.
+    kept = [
+        item
+        for item in detections
+        if not (
+            item.category == "eye"
+            and item.source != "mediapipe"
+            and any(_center_inside(item.bbox, animal.bbox) for animal in animals)
+        )
+    ]
+    eyes = [item for item in kept if item.category == "eye"]
+    added: list[Detection] = []
+    color = view if view.ndim == 3 else None
+    searched: list[Detection] = []
+    for animal in animals:
+        if any(_center_inside(eye.bbox, animal.bbox) for eye in eyes + added):
+            continue
+        # A loose blob around a body we already searched would invent ears.
+        if any(
+            _center_inside(earlier.bbox, animal.bbox)
+            and earlier.bbox[2] * earlier.bbox[3] < animal.bbox[2] * animal.bbox[3] * 0.65
+            for earlier in searched
+        ):
+            continue
+        searched.append(animal)
+        for box in animal_eye_boxes(luma, animal.bbox, frame_w, frame_h, color=color):
+            added.append(Detection("eye", "eye", 0.66, box, "animal"))
+    if not added:
+        return kept
+    return kept + added
+
+
 def _box_blur(values: np.ndarray) -> np.ndarray:
     padded = np.pad(values, 1, mode="edge")
     total = np.zeros_like(values)
@@ -226,6 +684,20 @@ def heuristic_face_ok(pixels: np.ndarray, bbox: tuple[float, float, float, float
     return len(_separated_eyes(luma, bbox, width, height)) >= 2
 
 
+def _separate_eyes(boxes: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+    """Two boxes on the same spot are one mark, not a pair of eyes."""
+
+    if len(boxes) < 2:
+        return []
+    ax, ay, aw, ah = boxes[0]
+    bx, by, bw, bh = boxes[1]
+    if abs((ax + aw / 2.0) - (bx + bw / 2.0)) < max(aw, bw) * 0.6 and abs(
+        (ay + ah / 2.0) - (by + bh / 2.0)
+    ) < max(ah, bh) * 0.6:
+        return []
+    return boxes
+
+
 def _center_inside(box: tuple[float, float, float, float], face: tuple[float, float, float, float]) -> bool:
     cx = box[0] + box[2] * 0.5
     cy = box[1] + box[3] * 0.5
@@ -308,6 +780,19 @@ class HeuristicDetector:
                         label="eye",
                         category="eye",
                         confidence=0.62,
+                        bbox=box,
+                        source=self.name,
+                    )
+                )
+        if creature is not None and not any(
+            _center_inside(eye.bbox, creature[0]) for eye in eyes
+        ):
+            for box in animal_eye_boxes(luma, creature[0], width, height, color=small_pixels):
+                eyes.append(
+                    Detection(
+                        label="eye",
+                        category="eye",
+                        confidence=0.66,
                         bbox=box,
                         source=self.name,
                     )

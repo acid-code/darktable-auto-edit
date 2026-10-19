@@ -4,3 +4,4 @@
 ultralytics>=8.2
 mediapipe>=0.10
 ollama>=0.4
+onnxruntime>=1.20

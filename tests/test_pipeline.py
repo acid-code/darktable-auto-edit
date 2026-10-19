@@ -27,7 +27,8 @@ from PIL import Image, ImageDraw
 
 from ai_dt.advisors.combine import combine_atmospheres
 from ai_dt.cli import main
-from ai_dt.detectors.yolo import category_for
+from ai_dt.detectors.mediapipe_faces import faces_from_tasks
+from ai_dt.detectors.yolo import category_for, passes_confidence, predict_confidence
 from ai_dt.mapping import (
     DEFAULT_BLENDOP,
     colorbalance_params,
@@ -330,7 +331,51 @@ class CombineTests(unittest.TestCase):
         self.assertEqual(category_for("person"), "person")
         self.assertEqual(category_for("dog"), "animal")
         self.assertEqual(category_for("Left Eye"), "eye")
+        self.assertEqual(category_for("bicycle"), "subject")
+        self.assertEqual(category_for("train"), "subject")
         self.assertIsNone(category_for("chair"))
+
+    def test_a_partly_hidden_animal_stays_above_the_recall_floor(self) -> None:
+        self.assertTrue(passes_confidence("cat", 0.187))
+        self.assertTrue(passes_confidence("bicycle", 0.16))
+        self.assertTrue(passes_confidence("person", 0.2))
+        self.assertFalse(passes_confidence("cat", 0.10))
+        self.assertFalse(passes_confidence("book", 0.9))
+        self.assertFalse(passes_confidence("facade", 0.2))
+        self.assertTrue(passes_confidence("facade", 0.4))
+        self.assertFalse(passes_confidence("cat", 0.5, min_confidence=0.8))
+        self.assertEqual(predict_confidence(), 0.15)
+        self.assertEqual(predict_confidence(0.05), 0.05)
+        self.assertEqual(predict_confidence(0.8), 0.8)
+
+
+class FaceTaskTests(unittest.TestCase):
+    def test_task_faces_and_eyes_become_normalized_boxes(self) -> None:
+        from types import SimpleNamespace
+
+        points = [SimpleNamespace(x=0.5, y=0.5) for _ in range(478)]
+        points[33] = SimpleNamespace(x=0.20, y=0.30)
+        points[133] = SimpleNamespace(x=0.28, y=0.31)
+        points[159] = SimpleNamespace(x=0.24, y=0.28)
+        points[145] = SimpleNamespace(x=0.24, y=0.33)
+        points[362] = SimpleNamespace(x=0.60, y=0.30)
+        points[263] = SimpleNamespace(x=0.68, y=0.31)
+        points[386] = SimpleNamespace(x=0.64, y=0.28)
+        points[374] = SimpleNamespace(x=0.64, y=0.33)
+        detection = SimpleNamespace(
+            bounding_box=SimpleNamespace(origin_x=10, origin_y=20, width=40, height=30),
+            categories=[SimpleNamespace(score=0.91)],
+        )
+        found = faces_from_tasks(100, 100, [detection], [points])
+        faces = [item for item in found if item.category == "face"]
+        eyes = [item for item in found if item.category == "eye"]
+        self.assertEqual(len(faces), 1)
+        self.assertEqual(faces[0].bbox, (0.1, 0.2, 0.4, 0.3))
+        self.assertEqual(faces[0].source, "mediapipe")
+        self.assertEqual(len(eyes), 2)
+        centers = sorted(item.bbox[0] + item.bbox[2] / 2.0 for item in eyes)
+        self.assertLess(centers[0], 0.4)
+        self.assertGreater(centers[1], 0.5)
 
 
 class LuaJsonTests(unittest.TestCase):

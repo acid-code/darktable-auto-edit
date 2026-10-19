@@ -36,8 +36,8 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("separate", handoff["features"])
         self.assertIn("perch", handoff["features"])
         self.assertIn("original file stays unchanged", handoff["sentence"])
-        self.assertIn("half resolution", handoff["sentence"])
-        self.assertIn("does not contain these masks", handoff["sentence"])
+        self.assertIn("not on this photo", handoff["sentence"])
+        self.assertIn("edited.tif", handoff["sentence"])
 
     def test_full_resolution_is_named(self) -> None:
         handoff = build_handoff(

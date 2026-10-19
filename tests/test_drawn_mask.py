@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,7 +24,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ai_dt.drawn_mask import MaskSpliceError, eye_ellipse, main, splice_ellipse_exposure
+from ai_dt.drawn_mask import (
+    MaskSpliceError,
+    eye_ellipse,
+    main,
+    splice_ellipse_exposure,
+    splice_path_exposure,
+    splice_region_module,
+)
 from ai_dt.features import commit_waiting_step
 from ai_dt.mapping import DEFAULT_BLENDOP
 from ai_dt.revert import strip_ai_history
@@ -109,6 +118,60 @@ class SpliceTests(unittest.TestCase):
         self.assertIn('darktable:multi_priority="1"', added)
         self.assertNotIn("colorbalancergb", added)
 
+    def test_a_subject_outline_is_a_closed_path(self) -> None:
+        points = [
+            {"x": 0.30, "y": 0.20},
+            {"x": 0.70, "y": 0.22},
+            {"x": 0.68, "y": 0.75},
+            {"x": 0.40, "y": 0.80},
+            {"x": 0.28, "y": 0.50},
+        ]
+        result = splice_path_exposure(
+            _document(),
+            points=points,
+            exposure_ev=0.22,
+            name="Subject lift",
+        )
+        self.assertIn('darktable:mask_type="2"', result)
+        self.assertIn('darktable:mask_nb="5"', result)
+        self.assertIn('darktable:multi_name="Subject lift"', result)
+        self.assertIn('darktable:history_end="3"', result)
+        encoded = result.split('darktable:mask_type="2"', 1)[1].split('darktable:mask_points="', 1)[1].split('"', 1)[0]
+        blob = bytes.fromhex(encoded)
+        self.assertEqual(len(blob), 5 * 36)
+        x, y = struct.unpack("<ff", blob[:8])
+        self.assertAlmostEqual(x, 0.30)
+        self.assertAlmostEqual(y, 0.20)
+
+    def test_the_first_eye_uses_the_open_exposure_slot(self) -> None:
+        document = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<x:xmpmeta>\n"
+            " <rdf:RDF>\n"
+            '  <rdf:Description darktable:history_end="1" darktable:iop_order_version="4">\n'
+            "   <darktable:history>\n"
+            "    <rdf:Seq>\n"
+            '     <rdf:li darktable:num="0" darktable:operation="highlights" '
+            'darktable:multi_priority="0"/>\n'
+            "    </rdf:Seq>\n"
+            "   </darktable:history>\n"
+            "  </rdf:Description>\n"
+            " </rdf:RDF>\n"
+            "</x:xmpmeta>\n"
+        )
+        result = splice_ellipse_exposure(
+            document,
+            center_x=0.77,
+            center_y=0.68,
+            radius_x=0.04,
+            radius_y=0.03,
+            exposure_ev=0.2,
+        )
+        added = _added_item(result)
+        self.assertIn('darktable:multi_priority="0"', added)
+        self.assertIn('darktable:operation="exposure"', added)
+        self.assertIn('darktable:history_end="2"', result)
+
     def test_new_blend_binds_the_ellipse_and_leaves_the_other_blend_bytes(self) -> None:
         result = splice_ellipse_exposure(
             _document(),
@@ -185,17 +248,37 @@ class SpliceTests(unittest.TestCase):
         self.assertIn('darktable:history_end="2"', cleaned)
         self.assertNotIn('darktable:history_end="3"', cleaned)
 
-    def test_a_stack_that_does_not_match_history_end_is_refused(self) -> None:
-        original = _document(history_end="1")
-        with self.assertRaises(MaskSpliceError):
-            splice_ellipse_exposure(
-                original,
-                center_x=0.5,
-                center_y=0.5,
-                radius_x=0.1,
-                radius_y=0.1,
-                exposure_ev=0.1,
-            )
+    def test_an_undone_history_row_stays_when_the_eye_module_is_added(self) -> None:
+        result = splice_ellipse_exposure(
+            _document(history_end="1"),
+            center_x=0.5,
+            center_y=0.5,
+            radius_x=0.1,
+            radius_y=0.1,
+            exposure_ev=0.1,
+        )
+        self.assertIn(PHOTO_EXPOSURE, result)
+        self.assertIn('darktable:multi_name="portrait"', result)
+        self.assertIn('darktable:num="2"', result)
+        self.assertIn('darktable:mask_name="window"', result)
+        self.assertIn('darktable:mask_num="2"', result)
+        self.assertIn('darktable:multi_name="AI eyes"', result)
+        self.assertIn('darktable:num="1" darktable:operation="exposure"', result)
+        self.assertIn('darktable:history_end="2"', result)
+
+    def test_a_count_ahead_of_the_stack_still_receives_the_eye_module(self) -> None:
+        result = splice_ellipse_exposure(
+            _document(history_end="4"),
+            center_x=0.5,
+            center_y=0.5,
+            radius_x=0.1,
+            radius_y=0.1,
+            exposure_ev=0.1,
+        )
+        self.assertIn(PHOTO_EXPOSURE, result)
+        self.assertIn("portrait", result)
+        self.assertIn('darktable:multi_name="AI eyes"', result)
+        self.assertIn('darktable:history_end="3"', result)
 
     def test_a_document_without_history_is_refused(self) -> None:
         with self.assertRaises(MaskSpliceError):
@@ -247,6 +330,159 @@ class SpliceTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertFalse(destination.exists())
             self.assertEqual(source.read_text(encoding="utf-8"), "<x:xmpmeta></x:xmpmeta>")
+
+
+    def test_two_regions_become_one_masked_color_module(self) -> None:
+        from ai_dt.modules_extra import colorzones_hue_params
+
+        blob = colorzones_hue_params("red", center=0.075)
+        self.assertIsNotNone(blob)
+        assert blob is not None
+        result = splice_region_module(
+            _document(),
+            shapes=[
+                {"cx": 0.46, "cy": 0.48, "rx": 0.08, "ry": 0.07},
+                {"cx": 0.43, "cy": 0.78, "rx": 0.07, "ry": 0.06},
+            ],
+            params=blob,
+            operation="colorzones",
+            modversion=5,
+            name="Highlight the red",
+        )
+        self.assertEqual(result.count(PHOTO_EXPOSURE), 1)
+        self.assertEqual(result.count(PHOTO_COLOR), 1)
+        self.assertEqual(result.count(WINDOW), 1)
+        self.assertIn('darktable:history_end="3"', result)
+        self.assertIn('darktable:operation="colorzones"', result)
+        self.assertIn('darktable:multi_name="Highlight the red"', result)
+        self.assertEqual(result.count('darktable:mask_type="32"'), 2)
+        self.assertIn('darktable:mask_type="4"', result)
+        name_at = result.find('darktable:multi_name="Highlight the red"')
+        open_at = result.rfind("<rdf:li", 0, name_at)
+        added = result[open_at : result.find("/>", name_at) + 2]
+        encoded = added.split('darktable:blendop_params="', 1)[1].split('"', 1)[0]
+        raw = _decode_gz(encoded)
+        mode = struct.unpack_from("<I", raw, 0)[0]
+        mask_id = struct.unpack_from("<I", raw, 24)[0]
+        self.assertEqual(mode, 3)
+        self.assertIn(f'darktable:mask_id="{mask_id}" darktable:mask_type="4"', result)
+        cleaned, removed = strip_ai_history(result)
+        self.assertEqual(removed, 1)
+        self.assertNotIn("Highlight the red", cleaned)
+        self.assertIn(WINDOW, cleaned)
+        self.assertIn('darktable:history_end="2"', cleaned)
+
+    def test_the_first_color_module_uses_the_open_pipeline_slot(self) -> None:
+        from ai_dt.modules_extra import colorzones_hue_params
+
+        document = _document().replace(
+            'darktable:history_end="2"',
+            'darktable:history_end="2" darktable:iop_order_list="exposure,0,colorzones,0,sigmoid,0"',
+        ).replace(
+            'darktable:blendop_params="gzPORTRAIT"/>',
+            'darktable:blendop_params="gzPORTRAIT" darktable:blendop_version="14"/>',
+        )
+        blob = colorzones_hue_params("red", center=0.075)
+        assert blob is not None
+        result = splice_region_module(
+            document,
+            shapes=[{"cx": 0.46, "cy": 0.48, "rx": 0.08, "ry": 0.07}],
+            params=blob,
+            operation="colorzones",
+            modversion=5,
+            name="Highlight the red",
+        )
+        name_at = result.find('darktable:multi_name="Highlight the red"')
+        open_at = result.rfind("<rdf:li", 0, name_at)
+        added = result[open_at : result.find("/>", name_at) + 2]
+        self.assertIn('darktable:multi_priority="0"', added)
+        self.assertIn('darktable:blendop_version="14"', added)
+        self.assertEqual(result.count("colorzones,0"), 1)
+        self.assertNotIn("colorzones,1", result)
+
+    def test_a_second_color_module_is_added_beside_the_first_slot(self) -> None:
+        from ai_dt.modules_extra import colorzones_hue_params
+
+        document = _document(history_end="3").replace(
+            'darktable:history_end="3"',
+            'darktable:history_end="3" darktable:iop_order_list="exposure,0,colorzones,0"',
+        )
+        document = document.replace(
+            f"     {PHOTO_COLOR}\n",
+            f"     {PHOTO_COLOR}\n"
+            '     <rdf:li darktable:num="2" darktable:operation="colorzones" '
+            'darktable:multi_priority="0" darktable:params="cc"/>\n',
+        )
+        blob = colorzones_hue_params("red", center=0.075)
+        assert blob is not None
+        result = splice_region_module(
+            document,
+            shapes=[{"cx": 0.46, "cy": 0.48, "rx": 0.08, "ry": 0.07}],
+            params=blob,
+            operation="colorzones",
+            modversion=5,
+            name="Highlight the red",
+        )
+        self.assertIn('darktable:multi_priority="1"', result)
+        self.assertIn("colorzones,0,colorzones,1", result)
+
+    def test_a_count_ahead_of_the_stack_still_receives_the_color_module(self) -> None:
+        from ai_dt.modules_extra import colorzones_hue_params
+
+        blob = colorzones_hue_params("red", center=0.075)
+        assert blob is not None
+        result = splice_region_module(
+            _document(history_end="3"),
+            shapes=[{"cx": 0.46, "cy": 0.48, "rx": 0.08, "ry": 0.07}],
+            params=blob,
+            operation="colorzones",
+            modversion=5,
+            name="Highlight the red",
+        )
+        self.assertIn('darktable:operation="colorzones"', result)
+        self.assertIn('darktable:history_end="3"', result)
+        self.assertIn('darktable:num="2"', result)
+
+
+    def test_darktable_can_launch_the_script_by_path(self) -> None:
+        script = ROOT / "ai_dt" / "drawn_mask.py"
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        completed = subprocess.run(
+            [sys.executable, "-I", str(script), "--help"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tempfile.gettempdir(),
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("No module named", completed.stderr)
+
+    def test_an_empty_mask_list_still_receives_the_shapes(self) -> None:
+        from ai_dt.modules_extra import colorzones_hue_params
+
+        document = _document().replace(
+            "    <rdf:Seq>\n"
+            f"     {WINDOW}\n"
+            "    </rdf:Seq>\n",
+            "    <rdf:Seq/>\n",
+        )
+        self.assertIn("<rdf:Seq/>", document)
+        blob = colorzones_hue_params("red", center=0.075)
+        assert blob is not None
+        result = splice_region_module(
+            document,
+            shapes=[{"cx": 0.46, "cy": 0.48, "rx": 0.08, "ry": 0.07}],
+            params=blob,
+            operation="colorzones",
+            modversion=5,
+            name="Highlight the red",
+        )
+        self.assertIn('darktable:operation="colorzones"', result)
+        self.assertIn('darktable:mask_type="32"', result)
+        self.assertNotIn("<rdf:Seq/>", result)
+        self.assertIn("</rdf:Seq>", result)
 
 
 class EyeStepTests(unittest.TestCase):

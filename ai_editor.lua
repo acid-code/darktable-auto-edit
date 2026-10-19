@@ -74,9 +74,17 @@ end
 -- filmstrip move, so an existing folder must not start a process.
 local lfs_ok, lfs = pcall(require, "lfs")
 local made_dirs = {}
+local hidden_mkdir
 
 local function mkdir_p(path)
   if type(path) ~= "string" or path == "" or made_dirs[path] then
+    return nil
+  end
+  -- Renaming a folder onto itself succeeds when it is already there.
+  -- This build of Lua has no filesystem module, and mkdir on an existing
+  -- folder opens a command window and prints an error.
+  if os.rename(path, path) then
+    made_dirs[path] = true
     return nil
   end
   if lfs_ok and lfs.attributes and lfs.attributes(path, "mode") == "directory" then
@@ -99,6 +107,10 @@ local function mkdir_p(path)
       made_dirs[path] = true
       return nil
     end
+  end
+  if on_windows() and hidden_mkdir and hidden_mkdir(path) then
+    made_dirs[path] = true
+    return nil
   end
   if on_windows() then
     os.execute('mkdir "' .. path:gsub("/", "\\") .. '"')
@@ -603,6 +615,7 @@ local vibe_entry
 local scene_entry
 local scene_text
 local apply_masked_step
+local discard_history_redo
 local rewrite_scene_button
 local rewrite_scene_once = false
 local describe_image
@@ -634,7 +647,8 @@ local panel_is_busy = false
 local sync_waiting_step
 local continue_from_viewed_history
 
-local function duplicate_index_of(image)
+-- Global on purpose. The main chunk is already at Lua's 200-local limit.
+function duplicate_index_of(image)
   local index = tonumber(image.duplicate_index)
   if index == nil then
     return 0
@@ -642,12 +656,12 @@ local function duplicate_index_of(image)
   return index
 end
 
-local function library_path()
+function library_path()
   return join_path(dt.configuration.config_dir, "library.db")
 end
 
 -- Same layout as ai_dt.versions.version_work_dir: <image id>/v<duplicate index>
-local function work_dir_for(image)
+function work_dir_for(image)
   local root = join_path(dt.configuration.config_dir, "ai-editor-work")
   local folder = join_path(root, tostring(image.id))
   return join_path(folder, "v" .. tostring(duplicate_index_of(image)))
@@ -655,7 +669,7 @@ end
 
 -- An opened TIFF lives in the work folder that already holds output.json.
 -- Follow-up steers write there, so the camera file is read again.
-local function edit_work_dir(image)
+function edit_work_dir(image)
   local path = image_source_path(image)
   local lower = path:lower()
   local parent = path:match("^(.*)[/\\][^/\\]+$")
@@ -673,7 +687,7 @@ end
 
 -- current_view() pushes a module entry. view.id is the module name
 -- ("darkroom" or "lighttable"). Object identity is only a fallback.
-local function view_name(view)
+function view_name(view)
   if view == nil then
     return nil
   end
@@ -695,7 +709,7 @@ local function view_name(view)
   return nil
 end
 
-local function current_view_name()
+function current_view_name()
   if type(dt.gui.current_view) ~= "function" then
     return nil
   end
@@ -706,11 +720,11 @@ local function current_view_name()
   return view_name(view)
 end
 
-local function in_darkroom()
+function in_darkroom()
   return current_view_name() == "darkroom"
 end
 
-local function darkroom_image()
+function darkroom_image()
   if not in_darkroom() then
     return nil
   end
@@ -735,7 +749,7 @@ local LOOK_TITLES = {
   ["hold-reflection"] = "Hold the reflection",
 }
 
-local function look_title_of(record)
+function look_title_of(record)
   if type(record) ~= "table" then
     return ""
   end
@@ -749,7 +763,7 @@ local function look_title_of(record)
   return ""
 end
 
-local function read_version_record(image)
+function read_version_record(image)
   if image == nil then
     return nil
   end
@@ -766,7 +780,7 @@ end
 
 local set_version_name
 
-local function show_loaded_look(image)
+function show_loaded_look(image)
   if look_name_label == nil then
     return
   end
@@ -801,7 +815,7 @@ set_version_name = function(image, sentence)
   end)
 end
 
-local function fork_version(image)
+function fork_version(image)
   local function different(copy)
     return copy and tonumber(copy.id) ~= tonumber(image.id)
   end
@@ -825,7 +839,7 @@ end
 -- Select the new duplicate and open it. Reading a missing field on a
 -- Darktable view throws, so center_on stays inside pcall. A throw here
 -- used to leave the darkroom on the original and apply the look again.
-local function show_in_darkroom(image)
+function show_in_darkroom(image)
   pcall(function()
     if type(dt.gui.selection) == "function" then
       dt.gui.selection({ image })
@@ -854,7 +868,7 @@ local function show_in_darkroom(image)
   end
 end
 
-local function read_recipe(work_dir)
+function read_recipe(work_dir)
   local recipe_path = join_path(work_dir, "output.json")
   local contents, read_error = read_file(recipe_path)
   if not contents then
@@ -867,7 +881,7 @@ local function read_recipe(work_dir)
   return recipe
 end
 
-local function apply_step(image, work_dir)
+function apply_step(image, work_dir)
   -- One history module for the step just accepted. Skip writes no file.
   if continue_from_viewed_history then
     continue_from_viewed_history(image)
@@ -905,6 +919,7 @@ local function apply_step(image, work_dir)
     return nil, "Could not apply the step: " .. tostring(apply_error)
   end
   pcall(dt.styles.delete, style)
+  discard_history_redo(image)
   return true
 end
 
@@ -1222,20 +1237,16 @@ local function propose_image(image, index, total, vibe, steer)
   local steered = tostring(steer or ""):gsub("%s", "") ~= ""
   -- The camera XMP lists every copy, so it cannot say that this original already has the grade.
   local already = (not is_original(image)) and restore_picture_context(image, work)
-  if already and not steered then
-    local recipe = read_recipe(work)
-    if recipe then
-      recipe.chat = true
-      recipe.choices = {}
-      return recipe, nil, true
+  local existing = read_recipe(work)
+  -- Ask is a follow-up. It keeps the saved subjects and does not grade again.
+  -- Propose reads the photo even when this folder already has a plan.
+  local asking = run_button ~= nil and run_button.label == "Ask"
+  if asking and not steered then
+    if existing then
+      existing.chat = true
+      existing.choices = {}
+      return existing, nil, true
     end
-  end
-  local preview = join_path(work, "preview.jpg")
-  status_label.text = string.format("Exporting %s (%d of %d)…", image.filename or "image", index, total)
-  yield_ui()
-  local export_error = export_preview(image, preview, edge)
-  if export_error then
-    return nil, export_error
   end
   local options = processor_options(image, nil)
   options.scene = scene_text()
@@ -1243,11 +1254,10 @@ local function propose_image(image, index, total, vibe, steer)
     options.rewrite_scene = true
     rewrite_scene_once = false
   end
-  if already then
-    -- The open photo is the baseline. Ask for steps. Do not build looks.
+  if asking then
     show_progress("Asking for the steps…", 0.45)
     options.stage = "chat"
-    local _, run_error = run_processor(preview, work, image_source_path(image), vibe, steer, options)
+    local _, run_error = run_processor("", work, image_source_path(image), vibe, steer, options)
     close_progress()
     if run_error then
       return nil, failure_text(work, run_error)
@@ -1258,6 +1268,17 @@ local function propose_image(image, index, total, vibe, steer)
       recipe.choices = {}
     end
     return recipe, nil, true
+  end
+  if not steered and type(existing) == "table" and (already or existing.chat == true) then
+    existing.choices = {}
+    return existing, nil, false
+  end
+  local preview = join_path(work, "preview.jpg")
+  status_label.text = string.format("Exporting %s (%d of %d)…", image.filename or "image", index, total)
+  yield_ui()
+  local export_error = export_preview(image, preview, edge)
+  if export_error then
+    return nil, export_error
   end
   local _, run_error = run_staged(preview, work, image_source_path(image), vibe, steer, options)
   if run_error then
@@ -1309,6 +1330,14 @@ local function apply_image(image, vibe, steer, look)
     if look == "accept-feature" then
       local stepped, step_error = apply_step(image, work)
       if not stepped and step_error then
+        local restore = table.concat({
+          shell_quote(preference("python", "string")),
+          " ",
+          shell_quote(processor),
+          " --restore-step --output-dir ",
+          shell_quote(work),
+        })
+        run_captured(restore, work)
         close_progress()
         return nil, step_error
       end
@@ -1503,7 +1532,49 @@ local function looks_ready(recipe)
   return type(first) == "table" and type(first.id) == "string" and first.id ~= ""
 end
 
-local function history_flags(image)
+-- Names from step_history_name. Accept writes these instead of an "AI " prefix.
+local editor_history_names = {
+  "Subject lift",
+  "Shine the subject",
+  "Darken the foreground",
+  "Darken the bright gap",
+  "Darken the shafts",
+  "Warm the highlights",
+  "Highlight the color",
+  "Highlight the red",
+  "Highlight the orange",
+  "Highlight the yellow",
+  "Highlight the green",
+  "Highlight the blue",
+  "Recolor",
+  "Eyes",
+  "Vignette the subject",
+}
+
+local function sidecar_has_editor_history(body, recipe)
+  if body:find('darktable:multi_name="AI ', 1, true) then
+    return true
+  end
+  for _, name in ipairs(editor_history_names) do
+    if body:find('darktable:multi_name="' .. name .. '"', 1, true) then
+      return true
+    end
+  end
+  local plan = type(recipe) == "table" and recipe.plan or nil
+  local log = type(plan) == "table" and plan.step_log or nil
+  if type(log) ~= "table" then
+    return false
+  end
+  for _, item in ipairs(log) do
+    local name = type(item) == "table" and item.name or nil
+    if type(name) == "string" and name ~= "" and body:find('darktable:multi_name="' .. name .. '"', 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+local function history_flags(image, recipe)
   history_back = false
   history_next = false
   can_revert = false
@@ -1513,6 +1584,8 @@ local function history_flags(image)
     return
   end
   can_remove = not is_original(image)
+  local redo = read_file(join_path(edit_work_dir(image), "history-redo.json"))
+  history_next = type(redo) == "string" and redo:find('"history"', 1, true) ~= nil
   if type(sidecar_file) ~= "function" then
     return
   end
@@ -1525,13 +1598,8 @@ local function history_flags(image)
     return
   end
   local ending = tonumber(body:match('darktable:history_end="(%d+)"')) or 0
-  local count = 0
-  for _ in body:gmatch('darktable:operation="') do
-    count = count + 1
-  end
   history_back = ending > 0
-  history_next = count > ending
-  can_revert = body:find('darktable:multi_name="AI ', 1, true) ~= nil
+  can_revert = sidecar_has_editor_history(body, recipe)
 end
 
 local function refresh_controls(recipe)
@@ -1589,18 +1657,19 @@ end
 
 local function show_choices(recipe)
   shown_recipe = type(recipe) == "table" and recipe or nil
-  local chatting = type(recipe) == "table" and (recipe.chat == true or recipe._continued == true)
+  local follow_up = type(recipe) == "table" and recipe._continued == true
+  local chatting = type(recipe) == "table" and (recipe.chat == true or follow_up)
   local offer = type(recipe) == "table" and recipe.offer_looks == true and not chatting
   local choices = offer and recipe.choices or nil
   local slots = {}
   local next_id = type(recipe) == "table" and recipe.features_next or ""
   local next_title = type(recipe) == "table" and recipe.features_next_title or next_id
   if run_button then
-    run_button.label = chatting and "Ask" or "Propose"
+    run_button.label = follow_up and "Ask" or "Propose"
   end
   if steer_entry then
     pcall(function()
-      steer_entry.placeholder = chatting and "what should change on this photo?" or "rewrite the plan, then press Propose"
+      steer_entry.placeholder = follow_up and "what should change on this photo?" or "rewrite the plan, then press Propose"
     end)
   end
   if type(choices) == "table" then
@@ -1744,9 +1813,10 @@ local function apply_choice(index, forced_look)
     remember_pick(edit_work_dir(image), look, "editor", true)
     local text, failure = apply_image(image, vibe, steer, look)
     if not text then
-      status_label.text = string.format("%s failed.\n%s", image.filename or "Image", failure or "unknown error")
+      local shown = string.format("%s failed.\n%s", image.filename or "Image", failure or "unknown error")
+      status_label.text = shown
       dt.print("AI edit failed")
-      return
+      return false, shown
     end
     last = text
     local recipe = read_recipe(edit_work_dir(image))
@@ -1837,9 +1907,108 @@ local function wait_for_exit(exit_path, folder)
   return true
 end
 
+-- One hidden worker, started with Darktable, runs every queued command.
+-- dt.control.execute and io.popen each open a visible cmd window, so a click
+-- does not start one of those.
+local function queue_directory()
+  return join_path(join_path(script_directory(), "ai-editor-work"), "queue")
+end
+
+local function worker_is_ready()
+  return file_size(join_path(queue_directory(), "ready.txt")) > 0
+end
+
+local function start_hidden_commands(commands)
+  if not on_windows() or #commands == 0 then
+    return
+  end
+  local folder = join_path(script_directory(), "ai-editor-work")
+  if not os.rename(folder, folder) then
+    os.execute('mkdir "' .. folder:gsub("/", "\\") .. '"')
+  end
+  local lines = {}
+  for _, command in ipairs(commands) do
+    lines[#lines + 1] = 'CreateObject("Wscript.Shell").Run "' .. command:gsub('"', '""') .. '", 0, False'
+  end
+  local vbs_path = join_path(folder, "launch-once.vbs")
+  write_file(vbs_path, table.concat(lines, "\r\n") .. "\r\n")
+  os.execute("wscript //nologo //b " .. shell_quote(vbs_path))
+end
+
+local worker_ready = false
+
+local function worker_is_alive()
+  local beat = join_path(queue_directory(), "heartbeat.txt")
+  os.remove(beat)
+  if not (dt.control and type(dt.control.sleep) == "function") then
+    return false
+  end
+  dt.control.sleep(150)
+  return file_size(beat) > 0
+end
+
+local function ensure_worker()
+  if worker_ready then
+    return true
+  end
+  if worker_is_ready() and worker_is_alive() then
+    worker_ready = true
+    return true
+  end
+  local folder = queue_directory()
+  if not os.rename(folder, folder) then
+    os.execute('mkdir "' .. folder:gsub("/", "\\") .. '"')
+  end
+  write_file(join_path(folder, "owner.txt"), "restart\n")
+  if dt.control and type(dt.control.sleep) == "function" then
+    dt.control.sleep(400)
+  end
+  local vbs = join_path(script_directory(), "windows-hidden-worker.vbs")
+  start_hidden_commands({
+    "wscript //nologo //b " .. shell_quote(vbs) .. " " .. shell_quote(folder),
+  })
+  local tries = 0
+  while file_size(join_path(folder, "ready.txt")) < 1 and tries < 20 do
+    if not (dt.control and type(dt.control.sleep) == "function") then
+      break
+    end
+    dt.control.sleep(100)
+    tries = tries + 1
+  end
+  worker_ready = worker_is_ready()
+  return worker_ready
+end
+
+local function submit_hidden_job(lines, exit_path, status_folder)
+  local folder = queue_directory()
+  local request = join_path(folder, "request.txt")
+  local temp = join_path(folder, "request.tmp")
+  local write_error = write_file(temp, table.concat(lines, "\n") .. "\n")
+  if write_error then
+    return nil, write_error
+  end
+  os.remove(request)
+  if not os.rename(temp, request) then
+    return nil, "could not queue the command"
+  end
+  if not wait_for_exit(exit_path, status_folder) and file_size(exit_path) < 1 then
+    return nil, "The edit took too long and was stopped."
+  end
+  return true
+end
+
+hidden_mkdir = function(path)
+  if not ensure_worker() then
+    return false
+  end
+  local exit_path = join_path(queue_directory(), "mkdir.exit")
+  os.remove(exit_path)
+  local queued = submit_hidden_job({ "mkdir", path, exit_path }, exit_path, queue_directory())
+  return queued and os.rename(path, path) and true or false
+end
+
 -- Windows io.popen keeps a cmd window on screen for the whole run.
--- The starter script returns at once, so that window does not stay up
--- while Python loads. The hidden script runs the command and writes run.exit.
+-- The worker is already running, so this only writes the command file.
 local function run_hidden(command, work_dir)
   local folder = work_dir
   if type(folder) ~= "string" or folder == "" then
@@ -1856,40 +2025,17 @@ local function run_hidden(command, work_dir)
   if write_error then
     return nil, write_error
   end
-  local vbs = join_path(script_directory(), "windows-hidden-run.vbs")
-  if file_size(vbs) < 10 then
+  os.remove(join_path(folder, "status.txt"))
+  if not ensure_worker() then
     return run_popen('"' .. command .. '" < NUL 2>&1')
   end
-  os.remove(join_path(folder, "status.txt"))
-  local starter = join_path(script_directory(), "windows-start-hidden.vbs")
-  local can_wait = dt.control and type(dt.control.sleep) == "function" and file_size(starter) > 10
-  if can_wait then
-    run_blocking(table.concat({
-      "wscript //nologo //b ",
-      shell_quote(starter),
-      " ",
-      shell_quote(vbs),
-      " ",
-      shell_quote(cmd_path),
-      " ",
-      shell_quote(log_path),
-      " ",
-      shell_quote(exit_path),
-    }))
-    if not wait_for_exit(exit_path, folder) and file_size(exit_path) < 1 then
-      return nil, "The edit took too long and was stopped."
-    end
-  else
-    run_blocking(table.concat({
-      "wscript //nologo ",
-      shell_quote(vbs),
-      " ",
-      shell_quote(cmd_path),
-      " ",
-      shell_quote(log_path),
-      " ",
-      shell_quote(exit_path),
-    }))
+  local queued, queue_error = submit_hidden_job(
+    { "run", cmd_path, log_path, exit_path },
+    exit_path,
+    folder
+  )
+  if not queued then
+    return nil, queue_error
   end
   if file_size(exit_path) < 1 then
     return nil, "The edit did not finish. No exit code was written."
@@ -2138,14 +2284,13 @@ end
 -- "darkroom" until the GUI thread finishes that switch. execute() drops the
 -- Lua lock for one short process so the GUI can finish. This is not a poll.
 local function yield_view()
-  if not (dt.control and type(dt.control.execute) == "function") then
+  -- Sleep releases the Lua lock so the view can finish switching.
+  -- A process here would open a command window on every wait.
+  if dt.control and type(dt.control.sleep) == "function" then
+    pcall(dt.control.sleep, 50)
     return
   end
-  if on_windows() then
-    local vbs = join_path(script_directory(), "windows-hidden-run.vbs")
-    -- No arguments: the script quits immediately, and wscript has no console.
-    pcall(dt.control.execute, "wscript //nologo //b " .. shell_quote(vbs))
-  else
+  if dt.control and type(dt.control.execute) == "function" then
     pcall(dt.control.execute, "sleep 0.05")
   end
 end
@@ -2155,14 +2300,16 @@ local function leave_darkroom()
     return false
   end
   pcall(dt.gui.current_view, dt.gui.views.lighttable)
-  if current_view_name() == "lighttable" then
-    return true
+  -- The window moves before current_view() says lighttable. A short wait
+  -- used to return while the getter still said darkroom, and Back then
+  -- stopped on the lighttable without touching the history.
+  for _ = 1, 40 do
+    local name = current_view_name()
+    if name == "lighttable" or (name ~= nil and name ~= "darkroom") then
+      return true
+    end
+    yield_view()
   end
-  yield_view()
-  if current_view_name() == "lighttable" then
-    return true
-  end
-  yield_view()
   return current_view_name() == "lighttable"
 end
 
@@ -2171,17 +2318,51 @@ local function return_to_darkroom(image)
   if type(dt.gui.current_view) ~= "function" or not dt.gui.views or not dt.gui.views.darkroom then
     return
   end
-  pcall(dt.gui.current_view, dt.gui.views.darkroom)
-  if current_view_name() ~= "darkroom" then
+  for _ = 1, 40 do
+    if current_view_name() ~= "darkroom" then
+      pcall(dt.gui.current_view, dt.gui.views.darkroom)
+    end
     yield_view()
-    pcall(dt.gui.current_view, dt.gui.views.darkroom)
+    if in_darkroom() then
+      break
+    end
   end
-  local shown = darkroom_image()
-  if in_darkroom() and (not shown or shown.id ~= image.id) then
-    pcall(function()
-      dt.gui.views.darkroom.display_image(image)
-    end)
+  pcall(function()
+    dt.gui.views.darkroom.display_image(image)
+  end)
+end
+
+-- Develop keeps the open photo after the darkroom closes and writes that
+-- old stack back over the library. Parking on another photo makes the next
+-- open load the sidecar that was just applied.
+local function another_image(image)
+  local original = original_of(image)
+  if original and tonumber(original.id) ~= tonumber(image.id) then
+    return original
   end
+  if type(dt.database) == "table" then
+    for _, candidate in ipairs(dt.database) do
+      if candidate and tonumber(candidate.id) ~= tonumber(image.id) then
+        return candidate
+      end
+    end
+  end
+  return nil
+end
+
+local function park_develop(image)
+  local other = another_image(image)
+  if other == nil then
+    return false
+  end
+  show_in_darkroom(other)
+  if in_darkroom() then
+    leave_darkroom()
+  end
+  for _ = 1, 4 do
+    yield_view()
+  end
+  return current_view_name() ~= "darkroom"
 end
 
 sidecar_file = function(image)
@@ -2198,8 +2379,17 @@ sidecar_file = function(image)
   return nil
 end
 
--- History items after the one on screen are the redo stack. Drop them
--- before a new module, so the edit continues from the step being viewed.
+-- A new history row replaces the step Back removed, so Next must not splice it back.
+discard_history_redo = function(image)
+  if image == nil then
+    return
+  end
+  local folder = edit_work_dir(image)
+  mkdir_p(folder)
+  write_file(join_path(folder, "history-redo.json"), "{\"items\":[]}\n")
+end
+
+-- A new module is inserted at the active history marker. Later rows stay.
 function continue_from_viewed_history(image)
   local xmp = sidecar_file(image)
   if not xmp then
@@ -2274,6 +2464,17 @@ local function revert_via_sidecar(image)
     " --xmp-out ",
     shell_quote(cleaned),
   })
+  local recipe = read_recipe(work)
+  local plan = type(recipe) == "table" and recipe.plan or nil
+  local log = type(plan) == "table" and plan.step_log or nil
+  if type(log) == "table" then
+    for _, item in ipairs(log) do
+      local name = type(item) == "table" and item.name or nil
+      if type(name) == "string" and name ~= "" then
+        command = command .. " --also " .. shell_quote(name)
+      end
+    end
+  end
   status_label.text = string.format("Rewriting the sidecar for %s…", image_label(image))
   yield_ui()
   local output, exit_code = run_captured(command, work)
@@ -2354,12 +2555,19 @@ local function revert_via_sidecar(image)
 end
 
 apply_masked_step = function(image, work_dir, mask)
-  -- The ellipse lives in the sidecar, not in a style. Read the history
-  -- after the darkroom has written it, append one exposure, then load
+  -- The shapes live in the sidecar, not in a style. Read the history
+  -- after the darkroom has written it, append one module, then load
   -- that file back. A failed splice does not call apply_sidecar.
+  local regions = type(mask) == "table" and (mask.kind == "regions" or mask.kind == "path")
+  local what = "eye mask"
+  if type(mask) == "table" and mask.kind == "path" then
+    what = "object mask"
+  elseif type(mask) == "table" and mask.kind == "regions" then
+    what = "color mask"
+  end
   local xmp = sidecar_file(image)
   if not xmp then
-    return nil, "This photo has no XMP sidecar, so the eye mask was not written. The darkroom history was left as it is."
+    return nil, "This photo has no XMP sidecar, so the " .. what .. " was not written. The darkroom history was left as it is."
   end
   local script = join_path(script_directory(), join_path("ai_dt", "drawn_mask.py"))
   if file_size(script) < 10 then
@@ -2368,32 +2576,58 @@ apply_masked_step = function(image, work_dir, mask)
   if type(image.apply_sidecar) ~= "function" then
     return nil, "This Darktable build cannot apply a sidecar. The darkroom history was left as it is."
   end
-  local cx = tonumber(mask.cx)
-  local cy = tonumber(mask.cy)
-  local rx = tonumber(mask.rx)
-  local ry = tonumber(mask.ry)
-  local ev = tonumber(mask.exposure_ev)
-  if not cx or not cy or not rx or not ry or not ev then
-    return nil, "The eye ellipse is incomplete, so the history was left as it is."
+  local cx, cy, rx, ry, ev
+  if regions then
+    if type(mask.file) ~= "string" or file_size(mask.file) < 32 then
+      return nil, "The " .. what .. " is incomplete, so the history was left as it is."
+    end
+  else
+    cx = tonumber(mask.cx)
+    cy = tonumber(mask.cy)
+    rx = tonumber(mask.rx)
+    ry = tonumber(mask.ry)
+    ev = tonumber(mask.exposure_ev)
+    if not cx or not cy or not rx or not ry or not ev then
+      return nil, "The eye ellipse is incomplete, so the history was left as it is."
+    end
   end
   local stepped_aside = false
   if in_darkroom() then
-    status_label.text = string.format("Closing the darkroom to add the eye mask on %s…", image_label(image))
+    status_label.text = string.format("Closing the darkroom to add the %s on %s…", what, image_label(image))
     yield_ui()
     local left = leave_darkroom()
     if current_view_name() == "darkroom" then
-      return nil, "Could not close the darkroom, so the eye mask was not written."
+      return nil, "Could not close the darkroom, so the " .. what .. " was not written."
     end
     stepped_aside = true
     if not left then
       return_to_darkroom(image)
-      return nil, "The view changed before the eye mask could be written. The history was left as it is."
+      return nil, "The view changed before the " .. what .. " could be written. The history was left as it is."
+    end
+    -- The darkroom writes its open history just after the view changes.
+    -- Wait for that write, or it replaces the stack this function applies.
+    for _ = 1, 6 do
+      yield_view()
     end
   end
   mkdir_p(work_dir)
   local cleaned = join_path(work_dir, "masked.xmp")
   local backup = join_path(work_dir, "history-before-mask.xmp")
-  local command = table.concat({
+  local command
+  if regions then
+    command = table.concat({
+      shell_quote(preference("python", "string")),
+      " ",
+      shell_quote(script),
+      " --xmp ",
+      shell_quote(xmp),
+      " --xmp-out ",
+      shell_quote(cleaned),
+      " --mask-json ",
+      shell_quote(mask.file),
+    })
+  else
+    command = table.concat({
     shell_quote(preference("python", "string")),
     " ",
     shell_quote(script),
@@ -2412,22 +2646,24 @@ apply_masked_step = function(image, work_dir, mask)
     " --ev ",
     tostring(ev),
     " --name ",
-    shell_quote("AI eyes"),
+    shell_quote((type(mask.name) == "string" and mask.name ~= "") and mask.name or "AI eyes"),
   })
+  end
   local output, exit_code = run_captured(command, work_dir)
   if not output or exit_code ~= 0 or file_size(cleaned) < 32 then
     if stepped_aside then
       return_to_darkroom(image)
     end
-    return nil, "The eye mask was not written, so the darkroom history was left as it is.\n" .. tail(tostring(output or exit_code), 400)
+    return nil, "The " .. what .. " was not written, so the darkroom history was left as it is.\n" .. tail(tostring(output or exit_code), 400)
   end
   local source_body = read_file(xmp)
   if source_body and source_body ~= "" then
     write_file(backup, source_body)
   end
+  park_develop(image)
   local failure = nil
   if current_view_name() == "darkroom" then
-    failure = "Could not close the darkroom, so the eye mask was not written."
+    failure = "Could not close the darkroom, so the " .. what .. " was not written."
   else
     local applied, result = pcall(function()
       return image:apply_sidecar(cleaned)
@@ -2442,6 +2678,17 @@ apply_masked_step = function(image, work_dir, mask)
         local write_error = write_file(xmp, body)
         if write_error then
           failure = "Darktable replaced the history, but the rewritten sidecar could not be saved.\n" .. tostring(write_error)
+        else
+          -- Apply once more after the late darkroom write has had its turn.
+          for _ = 1, 4 do
+            yield_view()
+          end
+          local kept, kept_result = pcall(function()
+            return image:apply_sidecar(xmp)
+          end)
+          if not kept or kept_result ~= true then
+            failure = "Darktable did not keep the history stack.\n" .. tostring(kept_result)
+          end
         end
       end
     end
@@ -2452,6 +2699,7 @@ apply_masked_step = function(image, work_dir, mask)
   if failure then
     return nil, failure
   end
+  discard_history_redo(image)
   return true
 end
 
@@ -2461,6 +2709,9 @@ local function revert_one(image)
   local removed, failure = revert_via_sidecar(image)
   if removed == nil then
     return nil, "Could not revert the history.\n" .. tail(tostring(failure), 500)
+  end
+  if removed > 0 then
+    discard_history_redo(image)
   end
   pcall(function()
     image:drop_cache()
@@ -2580,6 +2831,77 @@ local function open_looks()
   return true
 end
 
+local function highlighted_history_end(image)
+  local xmp = sidecar_file(image)
+  if not xmp then
+    return nil
+  end
+  local body = read_file(xmp)
+  if not body or body == "" then
+    return nil
+  end
+  return tonumber(body:match('darktable:history_end="(%d+)"'))
+end
+
+-- Darktable's duplicate keeps every history row, including steps after the
+-- highlight. The copy should contain only the highlighted prefix.
+local function trim_copy_to_highlight(copy, ending, source)
+  if copy == nil or ending == nil or type(copy.apply_sidecar) ~= "function" then
+    return
+  end
+  local xmp = sidecar_file(copy)
+  local input = xmp
+  if not input and source then
+    input = sidecar_file(source)
+  end
+  if not input then
+    return
+  end
+  local body = read_file(input)
+  local file_end = body and tonumber(body:match('darktable:history_end="(%d+)"'))
+  local count = 0
+  if body then
+    for _ in body:gmatch('darktable:operation="') do
+      count = count + 1
+    end
+  end
+  if file_end and file_end < count then
+    ending = file_end
+  end
+  local work = edit_work_dir(copy)
+  mkdir_p(work)
+  local cleaned = join_path(work, "history-copy.xmp")
+  local script = join_path(script_directory(), join_path("ai_dt", "revert.py"))
+  local command = table.concat({
+    shell_quote(preference("python", "string")),
+    " ",
+    shell_quote(script),
+    " --keep-prefix --end ",
+    tostring(ending),
+    " --xmp ",
+    shell_quote(input),
+    " --xmp-out ",
+    shell_quote(cleaned),
+  })
+  local output, exit_code = run_captured(command, work)
+  local removed = output and tonumber(output:match("removed%s+(%d+)"))
+  if not output or exit_code ~= 0 or not removed or removed == 0 or file_size(cleaned) < 32 then
+    return
+  end
+  local applied, result = pcall(function()
+    return copy:apply_sidecar(cleaned)
+  end)
+  if not applied or result ~= true then
+    return
+  end
+  if xmp then
+    local body = read_file(cleaned)
+    if body and body ~= "" then
+      write_file(xmp, body)
+    end
+  end
+end
+
 local function duplicate_current()
   local images = target_images()
   local image = images[1]
@@ -2587,18 +2909,128 @@ local function duplicate_current()
     status_label.text = "Open a photo, then press Copy."
     return
   end
-  show_progress("Copying this photo…", 0.4)
+  local ending = highlighted_history_end(image)
+  show_progress("Copying the highlighted history…", 0.4)
   local copy, fork_error = fork_version(image)
   if not copy then
     close_progress()
     status_label.text = fork_error or "Darktable could not duplicate this image."
     return
   end
+  for _ = 1, 4 do
+    yield_view()
+  end
+  trim_copy_to_highlight(copy, ending, image)
   remember_applied_look(image, copy, edit_work_dir(image), "copy")
   close_progress()
   show_in_darkroom(copy)
-  status_label.text = "Working on a copy. The original was left as it is."
+  status_label.text = "Working on a copy of the highlighted history. The original was left as it is."
   dt.print("Working on a copy")
+end
+
+-- image:delete() only drops the database row. The darkroom filmstrip keeps that
+-- id, and opening the blank thumbnail crashes the darkroom. The library Remove
+-- button reloads the collection; a grouping toggle does the same reload.
+local function action_number(value)
+  return type(value) == "number" and value == value
+end
+
+local function library_has_image(imgid)
+  if not (dt.database and type(dt.database.get_image) == "function") then
+    return nil
+  end
+  local ok, found = pcall(dt.database.get_image, imgid)
+  if not ok then
+    return nil
+  end
+  return found ~= nil
+end
+
+local function wait_until_image_gone(imgid)
+  for _ = 1, 40 do
+    local present = library_has_image(imgid)
+    if present == false then
+      yield_ui()
+      return true
+    end
+    if present == nil then
+      return nil
+    end
+    yield_ui()
+  end
+  return false
+end
+
+local function images_acted_on()
+  if type(dt.gui.action_images) ~= "function" then
+    return nil
+  end
+  local ok, list = pcall(dt.gui.action_images)
+  if not ok or type(list) ~= "table" then
+    return nil
+  end
+  local ids = {}
+  for _, img in ipairs(list) do
+    local id_ok, imgid = pcall(function()
+      return tonumber(img.id)
+    end)
+    if id_ok and imgid then
+      ids[#ids + 1] = imgid
+    end
+  end
+  return ids
+end
+
+local function acts_only_on(ids, imgid)
+  return type(ids) == "table" and #ids == 1 and ids[1] == imgid
+end
+
+local function grouping_enabled()
+  if type(dt.gui.action) ~= "function" then
+    return nil
+  end
+  local ok, value = pcall(dt.gui.action, "global/grouping")
+  if not ok or not action_number(value) then
+    return nil
+  end
+  return value ~= 0
+end
+
+local function set_grouping(enabled)
+  if type(dt.gui.action) ~= "function" then
+    return false
+  end
+  local ok, value = pcall(dt.gui.action, "global/grouping", "", enabled and "on" or "off", 1)
+  yield_ui()
+  return ok and action_number(value)
+end
+
+-- Two toggles return grouping to the state they started from and force the
+-- filmstrip to rebuild from the library.
+local function reload_filmstrip()
+  local enabled = grouping_enabled()
+  if enabled == nil then
+    return false
+  end
+  if not set_grouping(not enabled) then
+    return false
+  end
+  return set_grouping(enabled)
+end
+
+local function finish_on_original(original)
+  yield_ui()
+  yield_ui()
+  if library_has_image(tonumber(original.id)) == false then
+    status_label.text = "The original is no longer in the library, so the darkroom was left closed."
+    return
+  end
+  show_in_darkroom(original)
+  local recipe = read_recipe(edit_work_dir(original))
+  history_flags(original, recipe)
+  refresh_controls(recipe)
+  status_label.text = "Duplicate removed. You are on the original."
+  dt.print("Back on the original")
 end
 
 local function remove_duplicate()
@@ -2608,10 +3040,6 @@ local function remove_duplicate()
     can_remove = false
     refresh_controls(shown_recipe)
     status_label.text = "Remove is only for a duplicate. The original stays."
-    return
-  end
-  if type(image.delete) ~= "function" then
-    status_label.text = "This Darktable build cannot remove a duplicate. The original was left as it is."
     return
   end
   local original = original_of(image)
@@ -2626,19 +3054,81 @@ local function remove_duplicate()
       return
     end
   end
-  local removed, remove_error = pcall(function()
-    image:delete()
-  end)
-  if not removed then
-    show_in_darkroom(original)
-    status_label.text = "The duplicate was not removed.\n" .. tostring(remove_error)
+
+  local duplicate_id = tonumber(image.id)
+  local grouping = grouping_enabled()
+  -- A collapsed group makes the library Remove button include the original.
+  if grouping == true and not set_grouping(false) then
+    show_in_darkroom(image)
+    status_label.text = "Could not separate this duplicate from its group, so it was left in place."
     return
   end
-  show_in_darkroom(original)
-  history_flags(original)
-  refresh_controls(read_recipe(edit_work_dir(original)))
-  status_label.text = "Duplicate removed. You are on the original."
-  dt.print("Back on the original")
+  select_image(image)
+  yield_ui()
+
+  local function restore_grouping()
+    if grouping == true then
+      set_grouping(true)
+    end
+  end
+
+  local removed = false
+  if acts_only_on(images_acted_on(), duplicate_id) and type(dt.gui.action) == "function" then
+    local ok, value = pcall(dt.gui.action, "lib/image/remove", 1)
+    if ok and action_number(value) then
+      local gone = wait_until_image_gone(duplicate_id)
+      if gone == false then
+        restore_grouping()
+        show_in_darkroom(image)
+        status_label.text = "The duplicate was left in place."
+        return
+      end
+      removed = gone ~= false
+    end
+  end
+
+  if not removed then
+    if type(image.delete) ~= "function" then
+      restore_grouping()
+      show_in_darkroom(image)
+      status_label.text = "This Darktable build cannot remove a duplicate. It was left in place."
+      return
+    end
+    -- Reload has to be possible before the row is dropped, or the blank
+    -- thumbnail stays in the filmstrip.
+    if grouping_enabled() == nil then
+      restore_grouping()
+      show_in_darkroom(image)
+      status_label.text = "The filmstrip cannot refresh, so this duplicate was left in place."
+      return
+    end
+    local deleted = pcall(function()
+      image:delete()
+    end)
+    local gone = deleted and wait_until_image_gone(duplicate_id)
+    if gone == nil then
+      gone = deleted
+    end
+    if not gone then
+      restore_grouping()
+      if library_has_image(duplicate_id) ~= false then
+        show_in_darkroom(image)
+      end
+      status_label.text = "The duplicate was not removed."
+      return
+    end
+    if not reload_filmstrip() then
+      restore_grouping()
+      status_label.text = "The duplicate was removed, but the filmstrip could not refresh. Stay on the lighttable and do not open a blank thumbnail."
+      return
+    end
+    removed = true
+  else
+    reload_filmstrip()
+  end
+
+  restore_grouping()
+  finish_on_original(original)
 end
 
 local function move_history(direction)
@@ -2662,15 +3152,15 @@ local function move_history(direction)
     status_label.text = direction == "back" and "Closing the darkroom to step back…" or "Closing the darkroom to step forward…"
     yield_ui()
     local left = leave_darkroom()
-    if current_view_name() == "darkroom" then
+    if not left and current_view_name() == "darkroom" then
       status_label.text = "Could not close the darkroom, so the history was left as it is."
       return
     end
     stepped_aside = true
-    if not left then
-      return_to_darkroom(image)
-      status_label.text = "The view changed before the history could move."
-      return
+    -- The darkroom writes its open history just after the view changes.
+    -- Wait for that write, or it puts the removed step back.
+    for _ = 1, 6 do
+      yield_view()
     end
   end
   local work = edit_work_dir(image)
@@ -2687,6 +3177,8 @@ local function move_history(direction)
     shell_quote(xmp),
     " --xmp-out ",
     shell_quote(cleaned),
+    " --redo ",
+    shell_quote(join_path(work, "history-redo.json")),
   })
   local output, exit_code = run_captured(command, work)
   local moved = output and output:match("moved%s+(%d+)")
@@ -2702,6 +3194,9 @@ local function move_history(direction)
     return
   end
   local name = output:match("name%s+([^\r\n]*)") or ""
+  if stepped_aside then
+    park_develop(image)
+  end
   local failure = nil
   if current_view_name() == "darkroom" then
     failure = "Could not close the darkroom, so the history was left as it is."
@@ -2715,6 +3210,15 @@ local function move_history(direction)
       local body = read_file(cleaned)
       if body and body ~= "" then
         write_file(xmp, body)
+      end
+      for _ = 1, 4 do
+        yield_view()
+      end
+      local kept, kept_result = pcall(function()
+        return image:apply_sidecar(xmp)
+      end)
+      if not kept or kept_result ~= true then
+        failure = "Darktable did not keep the history step.\n" .. tostring(kept_result)
       end
     end
   end
@@ -2746,8 +3250,8 @@ local function move_history(direction)
   if name ~= "" then
     lead = lead .. " " .. name .. "."
   end
-  history_flags(image)
-  refresh_controls(read_recipe(work))
+  history_flags(image, recipe)
+  refresh_controls(recipe)
   status_label.text = body ~= "" and (lead .. "\n" .. body) or lead
   if sync_waiting_step then
     sync_waiting_step(image)
@@ -2953,7 +3457,7 @@ steer_entry = dt.new_widget("entry") {
   text = stored_string("steer"),
   placeholder = "what should change on this photo?",
   editable = true,
-  tooltip = "The first time, Propose reads the photo and writes a plan. After that, type a change and press Ask. Looks opens the choices in their own window. Accept and Skip stay on this photo.",
+  tooltip = "Propose reads this photo and writes a plan, even when a plan is already stored. It does not open the looks window. Accept and Skip stay on this photo.",
 }
 
 -- text_view wraps at word and character breaks. A vertical box gives each
@@ -3036,7 +3540,7 @@ revert_button = dt.new_widget("button") {
 remove_button = dt.new_widget("button") {
   label = "Remove",
   sensitive = false,
-  tooltip = "Remove this duplicate from the library and open the original. The camera file stays. Off on the original.",
+  tooltip = "Remove this duplicate from the library, drop it from the filmstrip, and open the original. The camera file stays. Off on the original.",
   clicked_callback = function()
     set_panel_busy(true)
     local ok, failure = pcall(remove_duplicate)
@@ -3061,11 +3565,14 @@ local action_row = dt.new_widget("box") {
 back_button = dt.new_widget("button") {
   label = "Back",
   sensitive = false,
-  tooltip = "Move one history step back. This includes your own modules, not only AI steps. Next can put that step back if you change nothing.",
+  tooltip = "Remove the latest history step from the stack. Next puts that same step back.",
   clicked_callback = function()
     set_panel_busy(true)
     local ok, failure = pcall(move_history, "back")
     close_progress()
+    local images = target_images()
+    local image = images[1]
+    history_flags(image, image and read_recipe(edit_work_dir(image)) or nil)
     set_panel_busy(false)
     if not ok then
       status_label.text = "Failed: " .. tostring(failure)
@@ -3077,11 +3584,14 @@ back_button = dt.new_widget("button") {
 next_button = dt.new_widget("button") {
   label = "Next",
   sensitive = false,
-  tooltip = "Move one history step forward. Available only when Back has left a later step in place.",
+  tooltip = "Put back the history step Back removed. On only while that step is still waiting.",
   clicked_callback = function()
     set_panel_busy(true)
     local ok, failure = pcall(move_history, "next")
     close_progress()
+    local images = target_images()
+    local image = images[1]
+    history_flags(image, image and read_recipe(edit_work_dir(image)) or nil)
     set_panel_busy(false)
     if not ok then
       status_label.text = "Failed: " .. tostring(failure)
@@ -3099,15 +3609,17 @@ local history_row = dt.new_widget("box") {
 
 local function on_feature_click(look)
   set_panel_busy(true)
-  local ok, failure = pcall(apply_choice, nil, look)
+  local ok, applied, detail = pcall(apply_choice, nil, look)
   close_progress()
   set_panel_busy(false)
   if sync_waiting_step then
     sync_waiting_step(darkroom_image())
   end
   if not ok then
-    status_label.text = "Failed: " .. tostring(failure)
+    status_label.text = "Failed: " .. tostring(applied)
     dt.print("AI edit failed")
+  elseif applied == false then
+    status_label.text = detail
   end
 end
 
@@ -3151,22 +3663,44 @@ local panel = dt.new_widget("box") {
   status_row,
 }
 
-local registered, register_error = pcall(
-  dt.register_lib,
-  "ai_editor",
-  "AI Editor",
-  true,
-  false,
-  {
-    [dt.gui.views.lighttable] = { "DT_UI_CONTAINER_PANEL_RIGHT_CENTER", 100 },
-    [dt.gui.views.darkroom] = { "DT_UI_CONTAINER_PANEL_RIGHT_CENTER", 100 },
-  },
-  panel,
-  nil,
-  nil
-)
-if not registered then
-  print("AI editor could not register its panel: " .. tostring(register_error))
+local panel_registered = false
+
+local function register_panel()
+  if panel_registered then
+    return
+  end
+  local registered, register_error = pcall(
+    dt.register_lib,
+    "ai_editor",
+    "AI Editor",
+    true,
+    false,
+    {
+      [dt.gui.views.lighttable] = { "DT_UI_CONTAINER_PANEL_RIGHT_CENTER", 100 },
+      [dt.gui.views.darkroom] = { "DT_UI_CONTAINER_PANEL_RIGHT_CENTER", 100 },
+    },
+    panel,
+    nil,
+    nil
+  )
+  if not registered then
+    print("AI editor could not register its panel: " .. tostring(register_error))
+    return
+  end
+  panel_registered = true
+end
+
+-- 5.6 sets darktable_gui_safe only after the first real view. Registering
+-- the panel before that leaves it off the window. 5.4 has no flag.
+if darktable_gui_safe == false then
+  pcall(dt.register_event, script_data, "view-changed", function(event, old_view, new_view)
+    local id = new_view and (new_view.id or new_view.name)
+    if id == "lighttable" or id == "darkroom" then
+      register_panel()
+    end
+  end)
+else
+  register_panel()
 end
 
 local function recipe_for_image(image)
@@ -3191,8 +3725,8 @@ function sync_waiting_step(image)
     load_photo_steer(work)
     show_scene(read_recipe(work) or {})
   end
-  history_flags(image)
   local recipe = read_recipe(work)
+  history_flags(image, recipe)
   if type(recipe) == "table" and picture_has_look(work) then
     recipe.chat = true
     recipe.choices = {}
@@ -3264,18 +3798,36 @@ local function image_from_event(...)
   return nil
 end
 
+local function selected_image()
+  if type(dt.gui.action_images) ~= "function" then
+    return nil
+  end
+  local ok, images = pcall(dt.gui.action_images)
+  if ok and type(images) == "table" then
+    return images[1]
+  end
+  return nil
+end
+
 pcall(dt.register_event, script_data, "darkroom-image-loaded", function(...)
   local image = image_from_event(...)
   show_loaded_look(image)
   sync_waiting_step(image)
   maybe_apply_preview_pick()
 end)
-pcall(dt.register_event, script_data, "mouse-over-image-changed", function(...)
-  local image = image_from_event(...)
+-- Hovering a thumbnail is not a photo change. The lighttable selection is.
+pcall(dt.register_event, script_data, "selection-changed", function()
+  if in_darkroom() then
+    return
+  end
+  local image = selected_image()
+  show_loaded_look(image)
   if image ~= nil then
-    show_loaded_look(image)
     sync_waiting_step(image)
   end
+  maybe_apply_preview_pick()
+end)
+pcall(dt.register_event, script_data, "mouse-over-image-changed", function()
   maybe_apply_preview_pick()
 end)
 if type(dt.gui.action_images) == "function" then
@@ -3286,8 +3838,23 @@ if type(dt.gui.action_images) == "function" then
   end
 end
 
+local startup_commands = {}
+if on_windows() then
+  local queue = queue_directory()
+  startup_commands[#startup_commands + 1] = table.concat({
+    "wscript //nologo //b ",
+    shell_quote(join_path(script_directory(), "windows-hidden-worker.vbs")),
+    " ",
+    shell_quote(queue),
+  })
+end
 local warm_preview = preview_server_command()
 if warm_preview then
+  startup_commands[#startup_commands + 1] = warm_preview
+end
+if on_windows() then
+  start_hidden_commands(startup_commands)
+elseif warm_preview then
   start_detached(warm_preview)
 end
 

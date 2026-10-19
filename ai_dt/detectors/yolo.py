@@ -11,6 +11,9 @@ COCO model does not turn chairs and bottles into local edits.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
 
@@ -30,6 +33,12 @@ COCO_CATEGORIES = {
     "zebra": "animal",
     "giraffe": "animal",
     "bird": "animal",
+    "bicycle": "subject",
+    "motorcycle": "subject",
+    "train": "subject",
+    "bus": "subject",
+    "car": "subject",
+    "boat": "subject",
 }
 
 
@@ -44,6 +53,67 @@ def category_for(class_name: str) -> str | None:
     if "building" in key or "facade" in key or "architecture" in key:
         return "architecture"
     return None
+
+
+# yolov8n scores a partly hidden cat, bike, or person under the usual 0.35
+# bar. These categories stay, down to this floor. Architecture does not.
+_RECALL_FLOOR = {
+    "animal": 0.15,
+    "person": 0.15,
+    "face": 0.15,
+    "eye": 0.15,
+    "subject": 0.15,
+}
+
+
+def predict_confidence(min_confidence: float = 0.35) -> float:
+    """The threshold passed to the model. The model drops boxes before we see them."""
+
+    if min_confidence > 0.35:
+        return float(min_confidence)
+    return float(min(min_confidence, min(_RECALL_FLOOR.values())))
+
+
+def passes_confidence(class_name: str, confidence: float, min_confidence: float = 0.35) -> bool:
+    """Keep a mapped subject. A partly hidden one can sit under 0.35."""
+
+    category = category_for(class_name)
+    if category is None:
+        return False
+    if min_confidence > 0.35 or category not in _RECALL_FLOOR:
+        needed = min_confidence
+    else:
+        needed = min(min_confidence, _RECALL_FLOOR[category])
+    return float(confidence) >= needed
+
+
+def _model_dir() -> Path:
+    root = os.environ.get("LOCALAPPDATA")
+    base = Path(root) if root else Path.home()
+    path = base / "darktable" / "ai-editor-models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_weights(model_path: str) -> str:
+    """Load a bare model name from the editor cache, not the working directory."""
+
+    path = Path(model_path)
+    if path.is_absolute() and path.is_file():
+        return str(path)
+    if path.parent == Path("."):
+        cached = _model_dir() / path.name
+        stray = Path.cwd() / path.name
+        if cached.is_file():
+            if stray.is_file() and stray.resolve() != cached.resolve():
+                stray.unlink()
+            return str(cached)
+        if stray.is_file():
+            stray.replace(cached)
+            return str(cached)
+    if path.is_file():
+        return str(path.resolve())
+    return model_path
 
 
 class YoloDetector:
@@ -62,11 +132,16 @@ class YoloDetector:
                 "choose the heuristic detector."
             ) from exc
 
+        model_path = resolve_weights(self.model_path)
         try:
-            model = YOLO(self.model_path)
-            results = model.predict(source=np.asarray(image.convert("RGB")), verbose=False)
+            model = YOLO(model_path)
+            results = model.predict(
+                source=np.asarray(image.convert("RGB")),
+                conf=predict_confidence(self.min_confidence),
+                verbose=False,
+            )
         except Exception as exc:
-            raise DetectorUnavailable(f"YOLO model {self.model_path!r} failed: {exc}") from exc
+            raise DetectorUnavailable(f"YOLO model {model_path!r} failed: {exc}") from exc
 
         names = model.names or {}
         found: list[Detection] = []
@@ -76,10 +151,10 @@ class YoloDetector:
                 continue
             for box in boxes:
                 confidence = float(box.conf[0])
-                if confidence < self.min_confidence:
-                    continue
                 class_id = int(box.cls[0])
                 class_name = str(names.get(class_id, class_id))
+                if not passes_confidence(class_name, confidence, self.min_confidence):
+                    continue
                 category = category_for(class_name)
                 if category is None:
                     continue

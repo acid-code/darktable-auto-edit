@@ -196,6 +196,20 @@ class GrammarTests(unittest.TestCase):
             self.assertEqual(again["asks"][0]["target"], "reflection")
             self.assertNotIn(typo, again["ignored"])
 
+    def test_a_named_cat_and_its_eyes_are_the_request(self) -> None:
+        parsed = parse_steer("the cat is the main theme, fix the colors, and make his eyes pop")
+        asks = {(item["verb"], item["target"]) for item in parsed["asks"]}
+        self.assertIn(("lift", "subject"), asks)
+        self.assertIn(("lift", "eyes"), asks)
+        for word in ("cat", "theme", "eyes", "pop", "make", "his"):
+            self.assertNotIn(word, parsed["ignored"])
+        mountain = parse_steer("treat mount fuji as the main theme")
+        self.assertIn(("lift", "subject"), {(item["verb"], item["target"]) for item in mountain["asks"]})
+        self.assertNotIn("fuji", mountain["ignored"])
+        train = parse_steer("make the train more seen")
+        self.assertIn(("lift", "subject"), {(item["verb"], item["target"]) for item in train["asks"]})
+        self.assertNotIn("train", train["ignored"])
+
 
 class ReasonerTests(unittest.TestCase):
     def test_off_switch_skips_without_a_request(self) -> None:

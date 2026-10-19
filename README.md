@@ -58,11 +58,11 @@ That folder is used instead of `/tmp` so the same path is visible to Python when
 
 Exposure and color balance are appended as extra instances named **AI exposure** and **AI color**. They do not overwrite the exposure module already in the pipe. When a face, person, or animal is found, the exposure follows that subject instead of the frame average, so a dark background does not blow out a lit face, and skin is not treated as a white-balance error.
 
-Subject boxes are also stored under `local_edits` in `output.json`, including an ellipse in normalized coordinates. A `.dtstyle` file can carry module parameters, but it cannot carry a drawn mask (those live in a separate mask table). The vignette is the spatial edit that Darktable can apply from the style alone. A dark face also gets a small shadow lift in color balance rgb, because that actually changes the dark tones.
+Subject boxes are also stored under `local_edits` in `output.json`, including an ellipse in normalized coordinates. A `.dtstyle` file can carry module parameters, but it cannot carry a drawn mask (those live in the sidecar's `masks_history` table). The vignette is the spatial edit a style can apply by itself. A dark face also gets a small shadow lift in color balance rgb, because that actually changes the dark tones.
 
-The masked picture is `edited.tif`, not the style. Which masks are built, and how hard they push, comes from the guide for the picture type. The numbers in a guide are capped so one file cannot blow a photo out. A `.dtstyle` still cannot store a drawn mask.
+The guide's masked picture is `edited.tif`. Which of those masks are built, and how hard they push, comes from the guide for the picture type. The numbers in a guide are capped so one file cannot blow a photo out. An accepted step is different: it inserts one module into the photo's existing sidecar. Eyes and a highlighted hue are drawn ellipses. A whole-frame grade is still a style. See [Sidecar history and drawn masks](#sidecar-history-and-drawn-masks).
 
-The parameter layouts were checked against the exposure and color balance blobs in Darktable 5.4.1's own camera styles. Darktable upgrades exposure version 6 when it imports the style. You want **Darktable 5.0 or newer**.
+The parameter layouts were checked against the exposure and color balance blobs in Darktable 5.4.1's own camera styles. Darktable 5.6.2 still imports those blobs and upgrades exposure version 6 to version 7. You want **Darktable 5.0 or newer**.
 
 ## Detectors and advisors
 
@@ -397,10 +397,99 @@ python3 -m unittest discover -s tests -t . -v
 
 The tests build synthetic pictures, write a style, and check that the exposure bytes decode back to the value in the recipe. If a Lua interpreter is on `PATH`, they also parse `output.json` with the same decoder the plugin uses.
 
+## Sidecar history and drawn masks
+
+Darktable 5.6.2 keeps two copies of a photo's history. The history panel shows the library (`library.db`) and the stack develop is holding. The `.xmp` next to the camera file is a third copy. They can disagree. A correct sidecar does not change the panel until `image:apply_sidecar()` runs, and only after the darkroom has left that photo. Applying it while the photo is on screen deadlocks the pixelpipe. Develop can then write its old in-memory stack back over the library and the sidecar, so Accept parks develop on another photo, leaves, applies, writes the sidecar, applies once more, and only then returns to the darkroom.
+
+There is no Lua call that deletes one history row or attaches one shape. `image:reset()` replaces the whole stack. A style import appends module parameters and cannot store `masks_history`. The editor therefore edits the sidecar text and loads that file.
+
+This is the same idea as [Chemigram](https://github.com/chipi/chemigram): keep the existing sidecar, write the shape into `masks_history`, and point the module's blend blob at that shape. Chemigram checked ellipses, gradients, and rectangles against real 5.4.1 files. This repo implements the ellipse and the ellipse group. A gradient, a rectangle, a path, and a brush are not written yet.
+
+Darktable 5.6 adds an AI object mask in the mask manager. That tool is a click on the photo (SAM2.1 or SegNext). It stores a different shape, `DT_MASKS_OBJECT`, and Lua still cannot create it. Accept still writes the detected ellipse for eyes and for a hue. A subject step on a real preview uses the downloaded SAM 2.1 model the same way the mask tool does: the detector box is the prompt, and the silhouette is written as a closed path (type 2) on a Subject lift exposure. If that model is missing, the subject stays the vignette. A 5.6.2 import of a spliced sidecar kept the ellipse (mask version 6, type 32) and upgraded the exposure module from version 6 to version 7. The blend blob is still version 14 and 420 bytes.
+
+### Two mask paths
+
+| Path | What it changes | When it runs |
+| --- | --- | --- |
+| Painted TIFF | `edited.tif` pixels | Propose builds the guide's local grades (subject, background, and the rest). `masks_can_attach()` in `ai_dt/masks_xmp.py` stays false so that run does not replace history. |
+| Sidecar splice | One new history module plus its shapes | Accept, and only for the step that is waiting. |
+
+`local_edits` in `output.json` is the measurement. An ellipse there is not on the photo until Accept splices it. Coordinates are 0 to 1, origin at the top left. `cx`, `cy` are the center. `rx`, `ry` are the radii.
+
+### What Accept already writes
+
+Python `commit_waiting_step` (`ai_dt/features.py`) writes exactly one step into the work folder, then Lua applies it. A mask step sets `recipe.step_mask`. Anything else sets `recipe.step_style` and is imported as `step.dtstyle`.
+
+| Waiting step | History module | Shape |
+| --- | --- | --- |
+| Eyes | exposure, history name `AI eyes` | One ellipse around every detected eye box. `eye_ellipse` unions the boxes and uses the largest `exposure_ev`. |
+| Highlight one hue (red aprons, lanterns) | colorzones, name `Highlight the <hue>` | Up to four ellipses from `hue_sample` in `ai_dt/hue_mask.py`. Two or more are a group. `mask.json` holds the blob and the shapes. |
+| Recolor (too much of a color, or Gemini asking for a more pleasing color) | channelmixerrgb when warmth or tint moves, otherwise colorbalancergb. Name `Recolor` | None. Whole frame. |
+| Subject, foreground, opening, shafts, highlight warmth | exposure, vignette, or colorbalancergb | None, except a subject with a box, which is a vignette hole rather than a drawn mask. |
+
+`ai_dt/drawn_mask.py` is the splicer. Darktable launches it by path. The eye call is `--xmp`, `--xmp-out`, `--cx`, `--cy`, `--rx`, `--ry`, `--ev`, `--name`. A hue call passes `--mask-json`. The script inserts the module. It does not delete rows.
+
+`splice_region_module` accepts `colorzones` only, and a 520-byte parameter blob. A general mask on another module has to extend that function. The name must start with `AI ` or be one of the names in `accepted_step_names()` (`ai_dt/revert.py`), or the splice refuses it. Those names are duplicated in `editor_history_names` in `ai_editor.lua` so Back and Revert can find the row. Lua loads on the next Darktable start. Python loads on the next Accept.
+
+### How a shape is stored
+
+Live sidecars use blend version 14 and a 420-byte blend blob. Styles still say version 13. The splice copies the blend version already in the sidecar and starts from the default 420-byte blob.
+
+Inside that blob, byte 0 is the mask mode (`3`, drawn and enabled), byte 16 is opacity (`100`), and byte 24 is the mask id the module blends through. An id of 0 hides the module.
+
+Shapes go in `darktable:masks_history`. Ids start at `0x10000000`.
+
+- One ellipse is the blend mask. Type `32` (`1 << 5`), version `6`. Points are little-endian `ffffffI`: `cx`, `cy`, `rx`, `ry`, rotation `0`, border (`0.05` for eyes, `0.04` for a hue), flags `1` (proportional).
+- Two or more ellipses need a group, type `4`. The blend `mask_id` is the group id, not an ellipse id. Each member is `IIIf`: form id, group id, state `3` for the first member and `131` for each later one, opacity `1`. Every shape for that module shares the history item's `num` in `mask_num`.
+- After Revert, an empty mask list is `<rdf:Seq/>` with no closing tag. The splice turns that into a real list. A missing `masks_history` element is created.
+
+### Insert, and the slot Darktable will keep
+
+`history_end` is how many rows are active. Rows after it stay in the stack.
+
+- Insert the new module at that index. Add 1 to every later `darktable:num`, and to every mask `num` that is at least that index. Set `history_end` to the insert index plus 1.
+- When `history_end` is already at or past the number of items, append with `max(num) + 1`. Do not renumber. A gap must not turn an active row off. `history_end` sitting past the last row means Darktable counted a module and then dropped it.
+
+`multi_priority` has to match a pipeline slot. The default pipe already lists `exposure,0` and `colorzones,0`. A new instance at priority 1 has no slot unless `iop_order_list` gains that pair, and Darktable drops it on reload. The first instance of an operation that is not already in the history uses priority 0. A later instance uses `max(priority) + 1` and `_pipeline_slot` adds it to `iop_order_list` when that attribute exists. Many 5.4 sidecars have only `iop_order_version="4"` and no list, so priority 0 is what makes the first eye or the first color-zones module stay.
+
+### Work folder
+
+Accept's files live under `<darktable config>/ai-editor-work/<image id>/v<duplicate>/`.
+
+| File | What it is |
+| --- | --- |
+| `history.xmp` | Sidecar copied before the new module |
+| `history-before-mask.xmp` | Live sidecar after the splice succeeded, before `apply_sidecar` |
+| `masked.xmp` | Spliced sidecar Accept loads |
+| `mask.json` | Hue step: operation, params hex, and ellipse list |
+| `step.dtstyle` | Whole-frame step |
+| `history-step.xmp` | Sidecar after Back or Next |
+| `history-redo.json` | The row Back removed. Names only. The XML inside is not a second stack |
+
+A failed splice does not call `apply_sidecar`. The live sidecar stays as it was. `history-before-mask.xmp` is written only after the splice succeeds.
+
+Back removes the last active editor row from the sidecar and stores it in `history-redo.json`. Lowering `history_end` alone only moves the highlight. The row stays. Next splices that row back. Accept clears the redo file.
+
+The history panel reads the library, not the sidecar. Read it without writing, including while Darktable is open:
+
+```text
+.venv/Scripts/python.exe .cursor/skills/darktable-accept/scripts/read_library.py 8182
+.venv/Scripts/python.exe .cursor/skills/darktable-accept/scripts/read_accept.py WORKDIR
+.venv/Scripts/python.exe .cursor/skills/darktable-history/scripts/read_sidecar.py PATH.xmp
+```
+
+Do not write `library.db` or the open photo's sidecar while `darktable.exe` is running. Develop writes its stack back over both.
+
+### For a general mask
+
+Already done, and safe to call: ellipse points, the group wrapper, blend mode and mask id, history insert, priority 0 for the first instance, the Accept leave-and-apply sequence, and revert by history name.
+
+Still open: any module other than exposure (one ellipse) and colorzones (up to four ellipses), a gradient, a rectangle, a path, a brush, and a mask that follows an outline instead of an ellipse. A new shape should go through `drawn_mask.py` and the same Accept sequence. A style file still cannot carry it.
+
 ## Limits
 
 - Picking a look or accepting a feature opens a new copy of the masked picture. The original file stays unchanged.
 - The first eight selected images are processed. A large selection is cut short on purpose. Use `python3 -m ai_dt.batch` for a folder.
 - The panel blocks until Python returns. A RAW decode plus the background blur takes longer than the old preview pass. `run.log` in the work folder has the output.
-- The style still has no drawn mask. The masks, including accepted features, are in the TIFF Darktable opens. The style file is the global grade only.
+- A style still cannot store a drawn mask. Guide masks are painted into the TIFF. An accepted eye or hue step is spliced into the sidecar. See [Sidecar history and drawn masks](#sidecar-history-and-drawn-masks).
 - The TIFF uses the camera white balance, at half resolution unless you pass `--full-res`. A later steer on that opened picture rereads the camera file, so the masks are not applied twice.

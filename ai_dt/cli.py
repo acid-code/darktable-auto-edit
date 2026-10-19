@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Leave the waiting step out and show the one after it.",
     )
     parser.add_argument(
+        "--restore-step",
+        action="store_true",
+        help="Put the last accepted step back. The history write did not land.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         required=True,
@@ -178,11 +183,19 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         print("Plan aligned.")
         return 0
-    if args.commit_step or args.skip_step or args.stage == "chat":
-        from ai_dt.features import commit_waiting_step, plan_chat, skip_waiting_step
+    if args.commit_step or args.skip_step or args.restore_step or args.stage == "chat":
+        from ai_dt.features import (
+            commit_waiting_step,
+            plan_chat,
+            restore_waiting_step,
+            skip_waiting_step,
+        )
 
         try:
-            if args.skip_step:
+            if args.restore_step:
+                restore_waiting_step(Path(args.output_dir))
+                print("Step restored.")
+            elif args.skip_step:
                 skip_waiting_step(Path(args.output_dir))
                 print("Step skipped.")
             elif args.stage == "chat":

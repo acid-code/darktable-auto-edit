@@ -158,8 +158,50 @@ _REFLECTION_WORDS = {
 }
 _CLARITY = frozenset({"clearer", "clear", "clarify", "clarified", "clarity", "sharper", "sharpen", "sharp"})
 _CREATURE = frozenset({"bird", "birds", "animal", "creature", "wildlife"})
+# A sentence may name the thing. These words are the subject, not leftovers.
+NAMED_SUBJECTS = frozenset(
+    {
+        "cat",
+        "cats",
+        "dog",
+        "dogs",
+        "fox",
+        "foxes",
+        "heron",
+        "bird",
+        "birds",
+        "animal",
+        "creature",
+        "wildlife",
+        "person",
+        "man",
+        "bike",
+        "bicycle",
+        "cyclist",
+        "train",
+        "fuji",
+        "mountain",
+    }
+)
+_LIFT_CUES = frozenset(
+    {
+        "lift",
+        "light",
+        "seen",
+        "prominent",
+        "theme",
+        "pop",
+        "brighten",
+        "brighter",
+        "highlight",
+        "bright",
+        "catchlight",
+    }
+)
 # Glue inside a request. These are not a separate ignored list.
-_GLUE = frozenset({"with", "as", "to", "of", "for", "main", "make", "it", "be", "is", "on", "in", "so"})
+_GLUE = frozenset(
+    {"with", "as", "to", "of", "for", "main", "make", "it", "be", "is", "on", "in", "so", "his", "her", "their", "mount"}
+)
 
 _BIRD_REASON = "The bird is the subject, so it is lifted and not crushed."
 _WATER_REASON = "The water around the bird should go darker."
@@ -337,6 +379,46 @@ def _loose_clause(clause: str) -> tuple[list[dict], list[str]]:
             if word in {"subject", "main"}:
                 consumed.add(index)
 
+    named_at = [index for index, word in enumerate(tokens) if word in NAMED_SUBJECTS]
+    lifting = any(word in _LIFT_CUES or word == "subject" for word in tokens)
+    if named_at and lifting and not any(item.get("target") == "subject" for item in items):
+        word = tokens[named_at[0]]
+        items.append(
+            {
+                "kind": "ask",
+                "verb": "lift",
+                "target": "subject",
+                "reason": f"The {word} is the subject, so it is lifted.",
+            }
+        )
+    if named_at and lifting:
+        consumed.update(named_at)
+        for index, word in enumerate(tokens):
+            if word in _LIFT_CUES or word in {"subject", "main", "theme", "mount"}:
+                consumed.add(index)
+
+    eye_at = [index for index, word in enumerate(tokens) if word in {"eye", "eyes"}]
+    if eye_at and any(word in _LIFT_CUES or word in _CLARITY for word in tokens):
+        if not any(item.get("target") == "eyes" for item in items):
+            items.append(
+                {
+                    "kind": "ask",
+                    "verb": "lift",
+                    "target": "eyes",
+                    "reason": "The eyes are lifted.",
+                }
+            )
+        consumed.update(eye_at)
+        for index, word in enumerate(tokens):
+            if word in _LIFT_CUES or word in _CLARITY:
+                consumed.add(index)
+
+    if any(word in {"lantern", "lanterns"} for word in tokens) and any(word in _LIFT_CUES for word in tokens):
+        items.append({"kind": "hue", "name": "orange"})
+        for index, word in enumerate(tokens):
+            if word in {"lantern", "lanterns"} or word in _LIFT_CUES:
+                consumed.add(index)
+
     if items:
         for index, word in enumerate(tokens):
             if word in _GLUE:
@@ -383,6 +465,8 @@ def parse_steer(sentence: str) -> dict:
                 tools[str(parsed["name"])] = parsed["value"]
             elif parsed["kind"] == "scale":
                 scales.append({"stage": str(parsed["stage"]), "factor": float(parsed["factor"])})
+            elif parsed["kind"] == "hue":
+                continue
             else:
                 ask = {
                     "verb": parsed["verb"],

@@ -2,17 +2,30 @@
 
 The legacy ``mp.solutions`` API and the newer Tasks API do not ship the same
 call surface. This module uses whichever one is importable. Eye boxes come
-from Face Mesh landmarks when that solution exists; otherwise only the face
-box is returned. Install MediaPipe with ``requirements-ai.txt``.
+from face landmarks. Install MediaPipe with ``requirements-ai.txt``. The Tasks
+build downloads its two model files on first use.
 """
 
 from __future__ import annotations
+
+import os
+import urllib.request
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 from ai_dt.errors import DetectorUnavailable
 from ai_dt.schema import Detection
+
+_FACE_DETECTOR_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_detector/"
+    "blaze_face_full_range/float16/1/blaze_face_full_range.tflite"
+)
+_FACE_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/1/face_landmarker.task"
+)
 
 # Face Mesh landmark pairs that bound the two eyes, including the iris set
 # used when refine_landmarks is available.
@@ -27,6 +40,106 @@ def _bbox_from_relative(origin_x: float, origin_y: float, width: float, height: 
         max(0.0, min(1.0, width)),
         max(0.0, min(1.0, height)),
     )
+
+
+def _box_from_pixels(
+    origin_x: float,
+    origin_y: float,
+    width: float,
+    height: float,
+    frame_w: int,
+    frame_h: int,
+) -> tuple[float, float, float, float] | None:
+    if frame_w <= 0 or frame_h <= 0:
+        return None
+    x = max(0.0, min(1.0, float(origin_x) / float(frame_w)))
+    y = max(0.0, min(1.0, float(origin_y) / float(frame_h)))
+    box_w = max(0.0, min(1.0 - x, float(width) / float(frame_w)))
+    box_h = max(0.0, min(1.0 - y, float(height) / float(frame_h)))
+    if box_w < 0.01 or box_h < 0.01:
+        return None
+    return (x, y, box_w, box_h)
+
+
+def faces_from_tasks(
+    frame_w: int,
+    frame_h: int,
+    face_detections,
+    landmark_sets,
+    min_confidence: float = 0.5,
+) -> list[Detection]:
+    """Turn Tasks API faces and landmarks into normalized boxes."""
+
+    found: list[Detection] = []
+    for detection in face_detections or []:
+        box = getattr(detection, "bounding_box", None)
+        if box is None:
+            continue
+        normalized = _box_from_pixels(
+            getattr(box, "origin_x", 0),
+            getattr(box, "origin_y", 0),
+            getattr(box, "width", 0),
+            getattr(box, "height", 0),
+            frame_w,
+            frame_h,
+        )
+        if normalized is None:
+            continue
+        score = float(min_confidence)
+        categories = getattr(detection, "categories", None) or []
+        if categories:
+            try:
+                score = float(getattr(categories[0], "score", score) or score)
+            except (TypeError, ValueError):
+                score = float(min_confidence)
+        found.append(
+            Detection(
+                label="face",
+                category="face",
+                confidence=score,
+                bbox=normalized,
+                source="mediapipe",
+            )
+        )
+    for landmarks in landmark_sets or []:
+        for label, indices in (("left eye", _LEFT_EYE), ("right eye", _RIGHT_EYE)):
+            box = _eye_box(landmarks, indices)
+            if box is None:
+                continue
+            found.append(
+                Detection(
+                    label=label,
+                    category="eye",
+                    confidence=0.6,
+                    bbox=box,
+                    source="mediapipe",
+                )
+            )
+    return found
+
+
+def _model_dir() -> Path:
+    root = os.environ.get("LOCALAPPDATA")
+    base = Path(root) if root else Path.home()
+    path = base / "darktable" / "ai-editor-models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _cached_model(name: str, url: str) -> Path:
+    dest = _model_dir() / name
+    if dest.is_file() and dest.stat().st_size > 1000:
+        return dest
+    part = dest.with_name(name + ".part")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            part.write_bytes(response.read())
+        part.replace(dest)
+    except Exception as exc:
+        if part.exists():
+            part.unlink()
+        raise DetectorUnavailable(f"MediaPipe model {name} is not available: {exc}") from exc
+    return dest
 
 
 def _eye_box(landmarks, indices: tuple[int, ...]) -> tuple[float, float, float, float] | None:
@@ -66,11 +179,56 @@ class MediaPipeFaceDetector:
         rgb = np.asarray(image.convert("RGB"))
         if hasattr(mp, "solutions"):
             return self._detect_solutions(mp, rgb)
-        raise DetectorUnavailable(
-            "This MediaPipe build has no mp.solutions face detector. "
-            "Use the heuristic or YOLO detector, or install a MediaPipe "
-            "build that still ships the solutions API."
+        return self._detect_tasks(mp, rgb)
+
+    def _detect_tasks(self, mp, rgb: np.ndarray) -> list[Detection]:
+        height, width = int(rgb.shape[0]), int(rgb.shape[1])
+        pixels = np.ascontiguousarray(rgb)
+        try:
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=pixels)
+            detector_path = _cached_model("blaze_face_full_range.tflite", _FACE_DETECTOR_URL)
+            landmarker_path = _cached_model("face_landmarker.task", _FACE_LANDMARKER_URL)
+            from mediapipe.tasks.python.core.base_options import BaseOptions
+            from mediapipe.tasks.python.vision.core.vision_task_running_mode import (
+                VisionTaskRunningMode,
+            )
+            from mediapipe.tasks.python.vision.face_detector import FaceDetector, FaceDetectorOptions
+            from mediapipe.tasks.python.vision.face_landmarker import (
+                FaceLandmarker,
+                FaceLandmarkerOptions,
+            )
+        except DetectorUnavailable:
+            raise
+        except Exception as exc:
+            raise DetectorUnavailable(f"MediaPipe face tasks could not start: {exc}") from exc
+
+        detector = FaceDetector.create_from_options(
+            FaceDetectorOptions(
+                base_options=BaseOptions(model_asset_path=str(detector_path)),
+                running_mode=VisionTaskRunningMode.IMAGE,
+                min_detection_confidence=self.min_confidence,
+            )
         )
+        try:
+            detected = detector.detect(image)
+            faces = list(detected.detections or [])
+        finally:
+            detector.close()
+
+        landmarker = FaceLandmarker.create_from_options(
+            FaceLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=str(landmarker_path)),
+                running_mode=VisionTaskRunningMode.IMAGE,
+                num_faces=4,
+                min_face_detection_confidence=self.min_confidence,
+            )
+        )
+        try:
+            meshed = landmarker.detect(image)
+            landmarks = list(meshed.face_landmarks or [])
+        finally:
+            landmarker.close()
+        return faces_from_tasks(width, height, faces, landmarks, self.min_confidence)
 
     def _detect_solutions(self, mp, rgb: np.ndarray) -> list[Detection]:
         found: list[Detection] = []

@@ -71,6 +71,50 @@ def _parse_json(text: str) -> dict:
     return payload
 
 
+_SCENE_ORDER = ("subject", "light", "background")
+_LABELS = frozenset({"mood", "summary", "description", "subject", "light", "background", "rationale"})
+
+
+def _is_label(text: str) -> bool:
+    words = [word.strip(".,!?;:\"'").lower() for word in text.split()]
+    words = [word for word in words if word]
+    return len(words) == 1 and words[0] in _LABELS
+
+
+def _as_prose(value: object) -> str:
+    """A sentence, or sentences from a subject/light/background record."""
+
+    if isinstance(value, dict):
+        parts: list[str] = []
+        used: set[str] = set()
+        for key in _SCENE_ORDER:
+            if key not in value:
+                continue
+            used.add(key)
+            sentence = _as_prose(value.get(key))
+            if sentence:
+                parts.append(sentence)
+        for key, item in value.items():
+            if key in used or isinstance(item, (int, float, bool)):
+                continue
+            sentence = _as_prose(item)
+            if sentence:
+                parts.append(sentence)
+        return " ".join(parts)
+    if isinstance(value, (list, tuple)):
+        return " ".join(part for part in (_as_prose(item) for item in value) if part)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if not text or text in {"{}", "[]"}:
+        return ""
+    if text[-1] not in ".!?":
+        text += "."
+    if text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text
+
+
 def _content_of(payload: dict) -> str:
     choices = payload.get("choices") or []
     if not choices or not isinstance(choices[0], dict):
@@ -159,8 +203,14 @@ class MistralVisionAdvisor:
         parsed = _parse_json(_content_of(payload))
         mood = str(parsed.get("mood") or "").strip()
         rationale = str(parsed.get("rationale") or "").strip()
-        description = " ".join(str(parsed.get("description") or "").split())
-        summary = " ".join(str(parsed.get("summary") or "").split())
+        description = _as_prose(parsed.get("description"))
+        summary = _as_prose(parsed.get("summary"))
+        if _is_label(summary) or summary.strip(" .!?").lower() == mood.strip(" .!?").lower():
+            summary = ""
+        if not description:
+            description = _as_prose({key: parsed.get(key) for key in _SCENE_ORDER})
+        if not summary:
+            summary = description
         if len(description) > 1200:
             description = description[:1200].rstrip()
         if len(summary) > 500:

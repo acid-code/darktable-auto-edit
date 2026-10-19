@@ -90,6 +90,8 @@ highlights warms the bright range and adds a little local contrast, leaving a pe
 eyes is only the eyes of a person or animal the request already named. Do not use it for the whole subject.
 Use an id only when the request or the picture description supports it. The reason must point at those words. Do not invent an id outside this list. The id itself does not have to appear in the request.
 Return every stage the request needs, in the order they should be accepted. Several stages are allowed. Do not collapse them into one.
+Highlighting a colored object, such as red aprons, is a colorzones lift. Making the subject more prominent is a separate subject lift. Do not satisfy both with one exposure.
+A color change that would make the picture more pleasing, including too much of one color, is a recolor step on the whole frame. Do not mask that color and do not use colorzones for it.
 
 Also return the operations you choose, in the order they should run, using only ids from the supported list that follows:
 {"operations": [{"id": "subject", "action": "lift", "reason": "why"}]}

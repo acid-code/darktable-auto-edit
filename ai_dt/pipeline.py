@@ -14,7 +14,7 @@ from ai_dt.advisors.combine import combine_atmospheres
 from ai_dt.advisors.histogram import HistogramAdvisor, refine_for_subjects
 from ai_dt.advisors.mistral_vision import MistralVisionAdvisor
 from ai_dt.advisors.ollama_llava import OllamaLLaVAAdvisor
-from ai_dt.detectors.heuristic import HeuristicDetector, gate_faces
+from ai_dt.detectors.heuristic import HeuristicDetector, attach_animal_eyes, gate_faces
 from ai_dt.detectors.mediapipe_faces import MediaPipeFaceDetector
 from ai_dt.detectors.merge import merge_detections
 from ai_dt.detectors.yolo import YoloDetector
@@ -261,8 +261,8 @@ _IMPERATIVE = re.compile(
     re.IGNORECASE,
 )
 _INSTRUCTION = re.compile(
-    r"\b(should(?:\s+\w+){0,4}\s+(?:stand|be|stay|get|remain|look)|"
-    r"while keeping|maintain a|focusing on|minimal distraction|adjust the|enhance the)\b",
+    r"\b(should|while keeping|maintain a|focusing on|minimal distraction|"
+    r"adjust the|enhance the)\b",
     re.IGNORECASE,
 )
 
@@ -465,6 +465,7 @@ def analyze(
     image = loaded.image
     detections, detector_notes = _detect(image, detector, yolo_model)
     detections = gate_faces(loaded.pixels, detections)
+    detections = attach_animal_eyes(loaded.pixels, detections)
     stored = _stored_recipe(output_dir)
     stored_scene = stored.get("scene") if isinstance(stored.get("scene"), dict) else {}
     stored_stages = [

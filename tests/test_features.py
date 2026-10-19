@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -20,8 +21,11 @@ from PIL import Image
 from ai_dt.features import (
     align_plan_to_history,
     body_found,
+    cast_operations,
     commit_waiting_step,
+    hue_operation,
     plan_chat,
+    restore_waiting_step,
     select_mask_features,
 )
 from ai_dt.mapping import _choose_vignette_target, _vignette_for, step_style
@@ -147,6 +151,135 @@ class PanelTests(unittest.TestCase):
         self.assertIn("<multi_priority>4</multi_priority>", eyes or "")
         self.assertIn("Warm the highlights", highlights or "")
         self.assertIsNone(step_style("dehaze"))
+
+    def test_a_subject_with_a_body_is_a_vignette(self) -> None:
+        box = (0.30, 0.40, 0.25, 0.35)
+        placed = step_style("subject", box=box, size=(1280, 852))
+        self.assertIn("vignette", placed or "")
+        self.assertIn("Vignette the subject", placed or "")
+        self.assertNotIn("Subject lift", placed or "")
+        again = step_style("subject", again=True, box=box, size=(1280, 852))
+        self.assertIn("vignette", again or "")
+        self.assertNotIn("Shine the subject", again or "")
+
+    def test_two_statues_get_a_hole_around_them_not_a_flat_line(self) -> None:
+        box = (0.22, 0.35, 0.42, 0.40)
+        style = step_style("subject", box=box, size=(1280, 852))
+        blob = bytes.fromhex(style.split("<op_params>")[1].split("</op_params>")[0].strip())
+        scale, falloff, brightness, _saturation, _cx, _cy = struct.unpack("<ffffff", blob[:24])
+        whratio = struct.unpack_from("<f", blob, 28)[0]
+        self.assertGreater(scale, 40.0)
+        self.assertGreater(falloff, 15.0)
+        self.assertGreater(whratio, 0.7)
+        self.assertLess(whratio, 1.35)
+        self.assertLess(brightness, -0.15)
+        self.assertGreater(brightness, -0.5)
+
+    def test_accept_limits_a_hue_to_its_patches_and_vignettes_around_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            image = Image.new("RGB", (200, 160), (16, 16, 24))
+            pixels = image.load()
+            for x in range(40, 80):
+                for y in range(30, 70):
+                    pixels[x, y] = (188, 36, 32)
+            for x in range(90, 140):
+                for y in range(100, 145):
+                    pixels[x, y] = (196, 42, 36)
+            image.save(directory / "preview.jpg")
+            recipe = {
+                "chat": True,
+                "width": 200,
+                "height": 160,
+                "features_next": "colorzones",
+                "features_next_title": "lift red aprons",
+                "features_next_action": "lift",
+                "analysis": {
+                    "subjects": [
+                        {"category": "animal", "bbox": [0.20, 0.55, 0.40, 0.40]}
+                    ]
+                },
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["colorzones", "subject"],
+                    "operations": [
+                        {"id": "colorzones", "action": "lift", "reason": "lift red aprons"},
+                        {"id": "subject", "action": "lift", "reason": "make foxes more prominent"},
+                    ],
+                    "step_queue": [
+                        {"id": "colorzones", "action": "lift", "title": "lift red aprons"},
+                        {"id": "subject", "action": "lift", "title": "make foxes more prominent"},
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            colored = commit_waiting_step(directory)
+            mask = colored["step_mask"]
+            self.assertEqual(mask["kind"], "regions")
+            self.assertEqual(mask["name"], "Highlight the red")
+            self.assertFalse((directory / "step.dtstyle").exists())
+            spec = json.loads(Path(mask["file"]).read_text(encoding="utf-8"))
+            self.assertEqual(len(spec["shapes"]), 2)
+            self.assertEqual(spec["operation"], "colorzones")
+            placed = commit_waiting_step(directory)
+            style = (directory / "step.dtstyle").read_text(encoding="utf-8")
+            self.assertIn("vignette", style)
+            self.assertIn("Vignette the subject", style)
+            self.assertNotIn(">exposure<", style)
+            self.assertEqual(placed["plan"]["step_log"][-1]["name"], "Vignette the subject")
+            restored = restore_waiting_step(directory)
+            self.assertEqual(restored["features_next"], "subject")
+            self.assertNotIn("subject", restored["plan"]["features_done"])
+            self.assertEqual(restored["plan"]["step_log"][-1]["id"], "colorzones")
+            blob = bytes.fromhex(style.split("<op_params>")[1].split("</op_params>")[0].strip())
+            center_y = struct.unpack("<ffffff", blob[:24])[5]
+            self.assertLess(center_y, 0.35)
+
+    def test_a_large_subject_uses_the_object_outline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            Image.new("RGB", (640, 480), (20, 24, 28)).save(directory / "preview.jpg")
+            recipe = {
+                "chat": True,
+                "width": 640,
+                "height": 480,
+                "features_next": "subject",
+                "features_next_title": "lift the fox",
+                "features_next_action": "lift",
+                "analysis": {
+                    "subjects": [
+                        {"category": "animal", "bbox": [0.2, 0.2, 0.4, 0.5]}
+                    ]
+                },
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["subject"],
+                    "operations": [
+                        {"id": "subject", "action": "lift", "reason": "make the fox more prominent"}
+                    ],
+                    "step_queue": [
+                        {"id": "subject", "action": "lift", "title": "lift the fox"}
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            outline = [
+                (0.22, 0.24),
+                (0.58, 0.22),
+                (0.60, 0.68),
+                (0.40, 0.72),
+                (0.20, 0.50),
+            ]
+            with patch("ai_dt.object_segment.outline_box", return_value=outline):
+                placed = commit_waiting_step(directory)
+            mask = placed["step_mask"]
+            self.assertEqual(mask["kind"], "path")
+            self.assertEqual(mask["name"], "Subject lift")
+            self.assertFalse((directory / "step.dtstyle").exists())
+            spec = json.loads(Path(mask["file"]).read_text(encoding="utf-8"))
+            self.assertEqual(spec["kind"], "path")
+            self.assertEqual(len(spec["points"]), 5)
+            self.assertAlmostEqual(spec["exposure_ev"], 0.22)
 
     def test_a_person_in_a_landscape_is_the_vignette(self) -> None:
         box = (0.15, 0.2, 0.22, 0.45)
@@ -394,13 +527,80 @@ class PanelTests(unittest.TestCase):
             self.assertEqual(saved["plan"]["features_path"], ["eyes", "subject"])
             self.assertNotIn("Stages: eyes, subject, reflection, background.", saved["status_text"])
             self.assertIn("Steps: eyes, subject.", saved["status_text"])
-            self.assertIn("Not a history step: reflection, background.", saved["status_text"])
-            self.assertIn("color balance", saved["status_text"])
+            self.assertIn("Not on this photo: reflection, background.", saved["status_text"])
+            self.assertIn("stays off this photo", saved["status_text"])
             commit_waiting_step(directory)
             accepted = json.loads((directory / "output.json").read_text(encoding="utf-8"))
             self.assertEqual(accepted["features_next"], "subject")
             self.assertNotIn("plan is finished", accepted["feature_note"])
             self.assertIn("press Accept", accepted["handoff"]["sentence"])
+
+    def test_foxes_and_red_aprons_are_two_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = {
+                "features_next": "",
+                "reading": {"sentence": "Two stone fox statues with red aprons."},
+                "scene": {"summary": "Two stone fox statues with red aprons.", "source": "mistral"},
+                "analysis": {"atmosphere": {}},
+                "separation": {"stages_ran": ["grade"]},
+                "plan": {
+                    "guide_stages": ["grade", "subject"],
+                    "skip": [],
+                    "features_done": ["subject"],
+                    "features_path": [],
+                    "reasoning": {},
+                    "asks": [],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            reply = {
+                "ask_ollama": False,
+                "proposal": {
+                    "status": "gemini",
+                    "backend": "gemini-test",
+                    "paragraph": (
+                        "the request asks to make the two foxes and their red aprons "
+                        "prominent, so we lift the subject."
+                    ),
+                    "stages": [],
+                    "operations": [
+                        {
+                            "id": "subject",
+                            "action": "lift",
+                            "reason": "make the two foxes prominent",
+                        }
+                    ],
+                    "features": [],
+                },
+            }
+            steer = (
+                "the main theme are the two foxes and their red aprons. "
+                "make the aprons highlight and the foxes more prominent"
+            )
+            with patch("ai_dt.reasoner.propose_gemini", return_value=reply):
+                plan_chat(directory, steer)
+            saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["plan"]["features_path"], ["subject", "colorzones"])
+            self.assertIn("Steps: subject, colorzones.", saved["status_text"])
+            image = Image.new("RGB", (200, 160), (16, 16, 24))
+            pixels = image.load()
+            for x in range(40, 80):
+                for y in range(30, 70):
+                    pixels[x, y] = (188, 36, 32)
+            image.save(directory / "preview.jpg")
+            saved["analysis"] = {
+                "subjects": [{"category": "animal", "label": "fox", "bbox": [0.2, 0.2, 0.4, 0.5]}]
+            }
+            (directory / "output.json").write_text(json.dumps(saved), encoding="utf-8")
+            commit_waiting_step(directory)
+            waiting = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertEqual(waiting["features_next"], "colorzones")
+            self.assertTrue((directory / "step.dtstyle").is_file())
+            commit_waiting_step(directory)
+            masked = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertEqual(masked["step_mask"]["kind"], "regions")
+            self.assertFalse((directory / "step.dtstyle").is_file())
 
 
 class SeparateTests(unittest.TestCase):
@@ -614,10 +814,207 @@ class PlanCursorTests(unittest.TestCase):
             (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
             align_plan_to_history(directory, "AI eyes", "back")
             saved = commit_waiting_step(directory)
-            names = [item["name"] for item in saved["plan"]["step_log"]]
-            self.assertEqual(names, ["Eyes"])
-            self.assertTrue(saved["plan"]["step_log"][0]["active"])
+            self.assertIn("left off", saved["feature_note"])
             self.assertEqual(saved["features_next"], "subject")
+            self.assertFalse(
+                any(item.get("id") == "eyes" and item.get("active") for item in saved["plan"]["step_log"])
+            )
+
+
+class ExpertMaskTests(unittest.TestCase):
+    def test_the_cat_sentence_becomes_subject_and_eye_steps(self) -> None:
+        sentence = "make the cat more seen and make his eyes pop"
+        plan = revise_plan(empty_plan(["grade", "subject", "eyes"]), sentence)
+        chosen = select_mask_features(plan, {"stages": []}, [], sentence, "a cat on a roof", "")
+        self.assertEqual(chosen["features_path"], ["subject", "eyes"])
+        self.assertNotIn("could not be mapped", chosen["feature_note"])
+
+    def test_too_much_red_is_pulled_back_on_the_whole_frame(self) -> None:
+        sentence = "help me make the cats eyes pop and maybe fix the too much red of the picture"
+        operations = cast_operations(
+            [
+                {
+                    "id": "colorzones",
+                    "action": "include",
+                    "reason": "fix the too much red of the picture",
+                },
+                {"id": "eyes", "action": "lift", "reason": "make the cats eyes pop"},
+            ],
+            sentence,
+        )
+        zones = next(item for item in operations if item["id"] == "recolor")
+        self.assertEqual(zones["action"], "darken")
+        self.assertIn("too much red", zones["reason"])
+        self.assertEqual(operations[-1]["id"], "eyes")
+        pleasing = cast_operations(
+            [
+                {
+                    "id": "colorbalancergb",
+                    "action": "include",
+                    "reason": "a cooler balance would be more pleasing",
+                }
+            ],
+            "",
+        )
+        self.assertEqual(pleasing[0]["id"], "recolor")
+        routine = cast_operations(
+            [{"id": "colorbalancergb", "action": "include", "reason": "global base"}],
+            "make the eyes pop",
+        )
+        self.assertEqual(routine[0]["id"], "colorbalancergb")
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            image = Image.new("RGB", (200, 160), (40, 28, 24))
+            pixels = image.load()
+            for x, y in ((30, 20), (160, 100), (100, 50)):
+                for dx in range(28):
+                    for dy in range(28):
+                        pixels[x + dx, y + dy] = (190, 42, 32)
+            image.save(directory / "preview.jpg")
+            recipe = {
+                "chat": True,
+                "features_next": "colorzones",
+                "features_next_title": "fix the too much red of the picture",
+                "features_next_action": "lift",
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["colorzones", "eyes"],
+                    "step_queue": [
+                        {
+                            "id": "colorzones",
+                            "action": "lift",
+                            "title": "fix the too much red of the picture",
+                        },
+                        {"id": "eyes", "action": "lift", "title": "make the cats eyes pop"},
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            saved = commit_waiting_step(directory)
+            self.assertNotIn("step_mask", saved)
+            style = (directory / "step.dtstyle").read_text(encoding="utf-8")
+            self.assertIn("Recolor", style)
+            self.assertIn("channelmixerrgb", style)
+            self.assertNotIn("Highlight the red", style)
+            blob = bytes.fromhex(style.split("<op_params>")[1].split("</op_params>")[0].strip())
+            red, _green, blue = struct.unpack_from("<fff", blob, 0)[0], struct.unpack_from("<f", blob, 20)[0], struct.unpack_from("<f", blob, 40)[0]
+            self.assertLess(red, 1.0)
+            self.assertGreater(blue, 1.0)
+
+    def test_lanterns_are_an_orange_highlight(self) -> None:
+        found = hue_operation("brighten the lanterns", "a night alley")
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found["id"], "colorzones")
+        self.assertIn("orange", found["reason"])
+
+    def test_eyes_without_a_box_are_left_off(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = {
+                "chat": True,
+                "features_next": "eyes",
+                "features_next_title": "make his eyes pop",
+                "features_next_action": "lift",
+                "local_edits": [],
+                "analysis": {"subjects": []},
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["eyes", "subject"],
+                    "step_queue": [
+                        {"id": "eyes", "action": "lift", "title": "make his eyes pop"},
+                        {"id": "subject", "action": "lift", "title": "Lift the subject"},
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            saved = commit_waiting_step(directory)
+            self.assertNotIn("step_style", saved)
+            self.assertNotIn("step_mask", saved)
+            self.assertFalse((directory / "step.dtstyle").is_file())
+            self.assertEqual(saved["features_next"], "subject")
+            self.assertIn("left off", saved["feature_note"])
+            self.assertNotIn("eyes", saved["plan"]["features_done"])
+
+    def test_a_named_subject_without_a_box_is_left_off(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = {
+                "chat": True,
+                "features_next": "subject",
+                "features_next_title": "The fuji is the subject, so it is lifted.",
+                "features_next_action": "lift",
+                "analysis": {"subjects": []},
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["subject"],
+                    "step_queue": [
+                        {
+                            "id": "subject",
+                            "action": "lift",
+                            "title": "The fuji is the subject, so it is lifted.",
+                        }
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            saved = commit_waiting_step(directory)
+            self.assertNotIn("step_style", saved)
+            self.assertIn("left off", saved["feature_note"])
+            self.assertEqual(saved["features_next"], "")
+
+    def test_foreground_is_an_ellipse_along_the_bottom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            recipe = {
+                "chat": True,
+                "features_next": "foreground",
+                "features_next_title": "Darken the foreground",
+                "features_next_action": "darken",
+                "analysis": {
+                    "subjects": [
+                        {"category": "animal", "label": "cat", "bbox": [0.62, 0.35, 0.28, 0.55]}
+                    ]
+                },
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["foreground"],
+                    "step_queue": [
+                        {"id": "foreground", "action": "darken", "title": "Darken the foreground"}
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            saved = commit_waiting_step(directory)
+            mask = saved["step_mask"]
+            self.assertEqual(mask["name"], "AI foreground")
+            self.assertGreater(mask["cy"], 0.7)
+            self.assertLess(mask["ry"], 0.25)
+            self.assertLess(mask["cx"], 0.5)
+            self.assertFalse((directory / "step.dtstyle").is_file())
+
+    def test_a_red_highlight_without_a_patch_is_left_off(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            Image.new("RGB", (80, 60), (20, 20, 24)).save(directory / "preview.jpg")
+            recipe = {
+                "chat": True,
+                "features_next": "colorzones",
+                "features_next_title": "highlight the red",
+                "features_next_action": "lift",
+                "plan": {
+                    "features_done": [],
+                    "features_path": ["colorzones"],
+                    "step_queue": [
+                        {"id": "colorzones", "action": "lift", "title": "highlight the red"}
+                    ],
+                },
+            }
+            (directory / "output.json").write_text(json.dumps(recipe), encoding="utf-8")
+            saved = commit_waiting_step(directory)
+            self.assertNotIn("step_style", saved)
+            self.assertNotIn("step_mask", saved)
+            self.assertIn("left off", saved["feature_note"])
 
 
 if __name__ == "__main__":

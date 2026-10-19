@@ -26,14 +26,14 @@ def build_handoff(recipe: dict) -> dict:
     picture_name = Path(masked).name or "edited.tif"
     size = "full resolution" if resolution == "full" else "half resolution"
     if included:
-        body = f"It includes {', '.join(included)}. "
+        body = f"Painted grades for {', '.join(included)} are in {picture_name} only. "
     else:
-        body = "This frame kept the measured grade. "
+        body = f"{picture_name} keeps the measured grade. "
     sentence = (
-        f"The masked picture is {picture_name} (camera white balance, {size}). "
         f"{body}"
-        "The original file stays unchanged. "
-        "The style file is the global grade only and does not contain these masks."
+        f"The file is {size}. "
+        "They are not on this photo until Accept writes a mask into the history. "
+        "The original file stays unchanged."
     )
     return {
         "version": 1,

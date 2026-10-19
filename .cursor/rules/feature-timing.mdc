@@ -14,7 +14,7 @@ A new button, window, or plan step waits for the state that makes it valid. It d
 - **Back** is on when history can move back one step. **Next** is on only when a later step is still there.
 - **Revert AI edit** is on only when this photo's history contains an AI step.
 - **Copy** is on when a photo is open.
-- **Remove** is on only for a duplicate. It is off on the original. It removes that duplicate and opens the original. It does not delete the camera file.
+- **Remove** is on only for a duplicate. It is off on the original. It removes that duplicate from the library, reloads the filmstrip so the blank thumbnail is gone, and only then opens the original. It does not delete the camera file, and it does not remove the original when the copy is grouped with it.
 
 One refresh owns whether each control is enabled. A busy flag must not turn a control back on if its state is gone. Switching photos clears a pending look.
 

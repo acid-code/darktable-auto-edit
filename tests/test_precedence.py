@@ -72,6 +72,48 @@ class PrecedenceTests(unittest.TestCase):
         self.assertIn("eyes", resolved["skip"])
         self.assertEqual(resolved["skip_by"].get("eyes"), "user")
 
+    def test_red_aprons_stay_a_step_beside_the_subject_lift(self) -> None:
+        plan = empty_plan(["grade", "subject", "eyes"])
+        plan["features_done"] = ["subject"]
+        reading = type(
+            "Reading",
+            (),
+            {"sentence": "Two stone fox statues with red aprons.", "regions": []},
+        )()
+        proposal = {
+            "status": "gemini",
+            "backend": "gemini-test",
+            "paragraph": (
+                "the request asks to highlight the red aprons and make the foxes more "
+                "prominent, which requires a color-zones lift for the red aprons and a "
+                "subject lift for the foxes keeping the night dark."
+            ),
+            "stages": [
+                {"stage": "subject", "action": "lift", "reason": "make the foxes more prominent"}
+            ],
+            "operations": [
+                {"id": "exposure", "action": "lift", "reason": "base exposure for the scene"},
+                {"id": "colorzones", "action": "lift", "reason": "highlight the red aprons"},
+                {"id": "subject", "action": "lift", "reason": "make the foxes more prominent"},
+                {"id": "sigmoid", "action": "include", "reason": "faithful display transform"},
+            ],
+        }
+        resolved = resolve_plan(
+            plan,
+            proposal=proposal,
+            steer=(
+                "the main theme are the two fozes and their red aprons. "
+                "make the aprons highlight and the foxes more promenent"
+            ),
+            look="",
+            feature_look="",
+            picture=_portrait(),
+            reading=reading,
+            detections=[],
+            scene="Two stone fox statues with red aprons.",
+        )
+        self.assertEqual(resolved["features_path"], ["colorzones", "subject"])
+
 
 if __name__ == "__main__":
     unittest.main()

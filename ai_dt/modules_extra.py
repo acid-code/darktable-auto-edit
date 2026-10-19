@@ -162,6 +162,91 @@ def sigmoid_params(contrast: float) -> bytes:
     return blob
 
 
+_HUE_CENTER = {
+    "red": 0.0,
+    "orange": 0.08,
+    "yellow": 0.16,
+    "green": 0.33,
+    "blue": 0.66,
+}
+
+
+def colorzones_hue_params(
+    hue: str,
+    strength: float = 0.55,
+    center: float | None = None,
+    reduce: bool = False,
+) -> bytes | None:
+    """Lift lightness and chroma at one hue, or pull that chroma down.
+
+    ``center`` is the measured hue of the object, 0 to 1. Without it, the
+    named hue's usual place on the wheel is used. Mix stays at 0 so the
+    curve itself is the change, the way a hand-tuned color zone is.
+    ``reduce`` lowers chroma at that hue and leaves lightness alone, for
+    a picture that is already too red rather than an object to highlight.
+    """
+
+    if center is None:
+        found = _HUE_CENTER.get(str(hue or "").strip().lower())
+        if found is None:
+            return None
+        center = found
+    else:
+        center = float(center) % 1.0
+    if _near(strength):
+        return None
+    if reduce:
+        lift = 0.5
+        sink = 0.5
+        chroma = _clamp(0.5 - abs(strength) * 0.55, 0.15, 0.42)
+    else:
+        lift = _clamp(0.5 + abs(strength) * 0.62, 0.5, 0.88)
+        sink = _clamp(0.5 - abs(strength) * 0.26, 0.32, 0.5)
+        chroma = _clamp(0.5 + abs(strength) * 0.4, 0.5, 0.78)
+    buf = bytearray(COLORZONES_BYTES)
+    struct.pack_into("<i", buf, 0, 2)  # select by hue
+    _write_hue_curve(buf, 0, _hue_nodes(center, lift, sink))
+    _write_hue_curve(buf, 1, _hue_nodes(center, chroma, 0.5))
+    _write_hue_curve(buf, 2, [(0.0, 0.5), (1.0, 0.5)])
+    struct.pack_into("<f", buf, 508, 0.0)
+    struct.pack_into("<i", buf, 512, 0)
+    struct.pack_into("<i", buf, 516, 1)
+    return bytes(buf)
+
+
+def _hue_nodes(center: float, peak: float, shoulder: float) -> list[tuple[float, float]]:
+    raw = [
+        (center - 0.09, 0.5),
+        (center - 0.035, shoulder),
+        (center, peak),
+        (center + 0.035, shoulder),
+        (center + 0.09, 0.5),
+        (0.5, 0.5),
+    ]
+    if center < 0.04 or center > 0.96:
+        raw.extend(((0.0, peak), (1.0, peak)))
+    points = sorted(((x % 1.0), y) for x, y in raw)
+    merged: list[tuple[float, float]] = []
+    for position, height in points:
+        if merged and abs(merged[-1][0] - position) < 0.008:
+            if abs(height - 0.5) >= abs(merged[-1][1] - 0.5):
+                merged[-1] = (position, height)
+            continue
+        merged.append((position, height))
+    if merged[-1][0] < 0.999:
+        edge = merged[0][1] if merged[0][0] < 0.001 else 0.5
+        merged.append((1.0, edge))
+    return merged[:20]
+
+
+def _write_hue_curve(buf: bytearray, channel: int, nodes: list[tuple[float, float]]) -> None:
+    for node, (position, height) in enumerate(nodes):
+        offset = 4 + ((channel * 20 + node) * 8)
+        struct.pack_into("<ff", buf, offset, float(position), float(height))
+    struct.pack_into("<i", buf, 484 + channel * 4, len(nodes))
+    struct.pack_into("<i", buf, 496 + channel * 4, 1)
+
+
 def colorzones_params(saturation: float) -> bytes | None:
     """Chroma curve. Strength is the mix. A near-zero saturation adds nothing."""
 

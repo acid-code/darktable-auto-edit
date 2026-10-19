@@ -20,6 +20,7 @@ attach them without changing the detector or the advisor.
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
@@ -400,7 +401,11 @@ def build_modules(
 
     luma = luminance(image)
     frame_mean = float(luma.mean())
-    local_edits = [_local_edit(image, detection, frame_mean) for detection in detections[:6]]
+    eyes_first = [item for item in detections if item.category == "eye"]
+    others = [item for item in detections if item.category != "eye"]
+    local_edits = [
+        _local_edit(image, detection, frame_mean) for detection in (eyes_first + others)[:6]
+    ]
     adjusted = Atmosphere(**atmosphere.to_dict())
     extra_shadows = max((_shadow_lift(edit) for edit in local_edits), default=0.0)
     if extra_shadows:
@@ -487,6 +492,158 @@ def build_modules(
     return adjusted, modules, local_edits, blobs
 
 
+def _placed_vignette(box: tuple, size: tuple[int, int]) -> dict[str, float] | None:
+    """A vignette whose clear hole covers ``box``. None when the box cannot be one.
+
+    Darktable's scale is the clear zone as a percent of the frame. The
+    width/height control then shrinks the other axis: a value near 2
+    flattens that axis into a line and the darkening covers the subject.
+    """
+
+    if int(size[0]) < 2 or int(size[1]) < 2:
+        return None
+    try:
+        x, y, w, h = (float(part) for part in box)
+    except (TypeError, ValueError):
+        return None
+    if min(w, h) <= 0.0:
+        return None
+    cx = x + w * 0.5
+    cy = y + h * 0.5
+    w = min(0.96, w + 0.08)
+    h = min(0.96, h + 0.08)
+    span = max(w, h)
+    scale = clamp(100.0 * span, 18.0, 150.0)
+    if w >= h:
+        whratio = clamp(2.0 - (h / w), 1.0, 1.35)
+    else:
+        whratio = clamp(w / h, 0.65, 1.0)
+    return {
+        "scale": round(scale, 3),
+        "falloff_scale": 28.0,
+        "brightness": -0.32,
+        "saturation": 0.0,
+        "center_x": round(clamp(cx * 2.0 - 1.0, -1.0, 1.0), 4),
+        "center_y": round(clamp(cy * 2.0 - 1.0, -1.0, 1.0), 4),
+        "autoratio": False,
+        "whratio": round(whratio, 4),
+        "shape": 1.0,
+        "dithering": 0,
+        "unbound": True,
+    }
+
+
+def _named_hue(text: str) -> str | None:
+    words = set(str(text or "").lower().replace(",", " ").split())
+    for name in ("red", "orange", "yellow", "green", "blue"):
+        if name in words:
+            return name
+    return None
+
+
+_CAST_OFF = re.compile(
+    r"\btoo much\b(?:\s+\w+){0,6}\s+(red|orange|yellow|green|blue)\b"
+    r"|\btoo\s+(red|orange|yellow|green|blue)\b"
+    r"|\b(?:less|reduce|reduced|remove|removing|tone down|pull back)\b"
+    r"(?:\s+\w+){0,4}\s+(red|orange|yellow|green|blue)\b"
+    r"|\b(red|orange|yellow|green|blue)\b(?:\s+\w+){0,4}\s+too\s+(?:much|strong|saturated)\b",
+    re.IGNORECASE,
+)
+
+
+def cast_hue(text: str) -> str | None:
+    """The hue a request wants less of, such as too much red. A highlight is not one."""
+
+    match = _CAST_OFF.search(str(text or ""))
+    if match is None:
+        return None
+    for group in match.groups():
+        if group:
+            return group.lower()
+    return None
+
+
+_RECOLOR_REQUEST = re.compile(
+    r"\b(?:recolou?rs?|colou?rs?\s+correct(?:ion)?|fix\s+the\s+colou?rs?|white\s+balance|"
+    r"warmer|cooler|too\s+warm|too\s+cold|too\s+cool|more\s+pleasing|"
+    r"less\s+saturated|more\s+saturated|more\s+colou?rs?|less\s+colou?rs?)\b",
+    re.IGNORECASE,
+)
+_COLOR_THOUGHT = re.compile(
+    r"\b(?:colou?rs?|white\s+balance|warm|cool|tint|cast|saturat|pleasing|vivid|muted)\b",
+    re.IGNORECASE,
+)
+_OBJECT_COLOR = re.compile(
+    r"\b(?:highlight|outshine|apron|bib|lanterns?)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_recolor(text: str) -> bool:
+    """The user asked for the picture's color to change, not for one object to pop."""
+
+    if _OBJECT_COLOR.search(str(text or "")) and cast_hue(text) is None:
+        return False
+    return cast_hue(text) is not None or _RECOLOR_REQUEST.search(str(text or "")) is not None
+
+
+def color_thought(text: str) -> bool:
+    """Gemini's reason is about the picture's color, not a colored object."""
+
+    body = str(text or "")
+    return _COLOR_THOUGHT.search(body) is not None and _OBJECT_COLOR.search(body) is None
+
+
+def recolor_shift(
+    title: str,
+    action: str = "lift",
+    atmosphere: dict | None = None,
+) -> dict[str, float]:
+    """Warmth, tint, and saturation for one whole-frame recolor.
+
+    A named excess, such as too much red, sets the direction. Gemini's
+    measured shift can deepen that direction. A pleasing request with no
+    named hue uses Gemini's numbers, or a small saturation move.
+    """
+
+    hue = cast_hue(title)
+    lowered = str(title or "").lower()
+    warmth = 0.0
+    tint = 0.0
+    saturation = 0.0
+    if hue in {"red", "orange", "yellow"} or re.search(r"\b(?:too warm|cooler)\b", lowered):
+        warmth = -0.55
+    elif hue == "blue" or re.search(r"\b(?:warmer|too cold|too cool)\b", lowered):
+        warmth = 0.55
+    elif hue == "green":
+        tint = 0.45
+    measured = atmosphere if isinstance(atmosphere, dict) else {}
+    suggested_warmth = float(measured.get("temperature_shift") or 0.0)
+    suggested_tint = float(measured.get("tint") or 0.0)
+    suggested_saturation = float(measured.get("saturation") or 0.0)
+    if warmth == 0.0 and tint == 0.0 and hue is None:
+        warmth = suggested_warmth
+        tint = suggested_tint
+        saturation = suggested_saturation
+    else:
+        if warmth and suggested_warmth * warmth > 0:
+            warmth = _signed_max(warmth, suggested_warmth, 0.6)
+        if tint and suggested_tint * tint > 0:
+            tint = _signed_max(tint, suggested_tint, 0.5)
+    if abs(warmth) < 0.04 and abs(tint) < 0.04 and abs(saturation) < 0.04:
+        saturation = -0.1 if str(action or "").strip().lower() == "darken" else 0.08
+    return {
+        "warmth": clamp(warmth, -0.6, 0.6),
+        "tint": clamp(tint, -0.5, 0.5),
+        "saturation": clamp(saturation, -0.25, 0.25),
+    }
+
+
+def _signed_max(chosen: float, suggested: float, limit: float) -> float:
+    magnitude = min(limit, max(abs(chosen), abs(suggested)))
+    return magnitude if chosen > 0 else -magnitude
+
+
 def step_history_name(
     feature_id: str,
     *,
@@ -506,6 +663,11 @@ def step_history_name(
         return "Darken the shafts"
     if name == "highlights":
         return "Warm the highlights"
+    if name == "recolor":
+        return "Recolor"
+    if name == "colorzones":
+        hue = _named_hue(title) or "color"
+        return f"Highlight the {hue}"
     if name == "eyes":
         label = " ".join(str(title or "").split()) or "Eyes"
         if len(label) > 48:
@@ -520,13 +682,35 @@ def step_style(
     again: bool = False,
     title: str = "",
     action: str = "lift",
+    box: tuple | None = None,
+    size: tuple[int, int] | None = None,
+    center: float | None = None,
+    color: dict | None = None,
 ) -> str | None:
     """One history module for an accepted step. None when the id is unknown.
 
     ``again`` stacks a second subject lift instead of replacing the first.
+    A subject ``box`` becomes a vignette around that region. Without one,
+    the subject step stays a whole-frame exposure.
     """
 
     name = str(feature_id or "").strip()
+    if name == "subject" and box is not None and size:
+        vignette = _placed_vignette(box, size)
+        if vignette is not None:
+            label = "Vignette the subject"
+            priority = 3 if again else 2
+            plugins = [
+                _plugin(
+                    0,
+                    "vignette",
+                    VIGNETTE_VERSION,
+                    vignette_params(vignette),
+                    label,
+                    multi_priority=priority,
+                )
+            ]
+            return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
     exposure_steps = {
         "subject": ("Shine the subject" if again else "Subject lift", 0.22),
         "foreground": ("Darken the foreground", -0.18),
@@ -553,6 +737,38 @@ def step_style(
                 label,
                 multi_priority=2,
             )
+        ]
+        return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
+    if name == "recolor":
+        from ai_dt.modules_extra import CHANNELMIXER_VERSION, channelmixer_params
+
+        shift = recolor_shift(title, action, color)
+        label = step_history_name(name, again=again, title=title)
+        if abs(shift["warmth"]) >= 0.04 or abs(shift["tint"]) >= 0.04:
+            blob = channelmixer_params(shift["warmth"], shift["tint"])
+            operation, version = "channelmixerrgb", CHANNELMIXER_VERSION
+        else:
+            blob = colorbalance_params(
+                {
+                    "saturation_global": shift["saturation"],
+                    "vibrance": shift["saturation"] * 0.5,
+                }
+            )
+            operation, version = "colorbalancergb", COLORBALANCE_VERSION
+        if blob is None:
+            return None
+        plugins = [_plugin(0, operation, version, blob, label, multi_priority=6)]
+        return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
+    if name == "colorzones":
+        from ai_dt.modules_extra import colorzones_hue_params
+
+        hue = _named_hue(title) or "red"
+        blob = colorzones_hue_params(hue, center=center)
+        if blob is None:
+            return None
+        label = step_history_name(name, again=again, title=title)
+        plugins = [
+            _plugin(0, "colorzones", 5, blob, label, multi_priority=6)
         ]
         return render_style("AI accepted step", f"Accepted step: {label}.", plugins)
     if name == "eyes":

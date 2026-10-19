@@ -8,6 +8,7 @@ a path, a gap, or a trunk.
 
 from __future__ import annotations
 
+import json
 import re
 
 FEATURE_IDS = ("separate", "foreground", "opening", "shafts", "highlights", "eyes")
@@ -20,6 +21,7 @@ FEATURE_TITLES = {
     "highlights": "Warm the highlights",
     "subject": "Lift the subject",
     "eyes": "Eyes",
+    "recolor": "Recolor",
 }
 _STEP_FROM_STAGE = {
     "subject": "subject",
@@ -68,6 +70,27 @@ def background_amount(steer: str) -> float | None:
     return None
 
 
+def _user_lift_steps(plan: dict, skipped: list[str], done: list[str]) -> list[dict]:
+    """Subject and eye lifts the user named, in the order the sentence said them."""
+
+    steps: list[dict] = []
+    blocked = set(skipped) | set(done)
+    for item in plan.get("asks") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source") or "") not in {"user", ""}:
+            continue
+        verb = str(item.get("verb") or item.get("action") or "")
+        target = str(item.get("target") or item.get("stage") or "")
+        if verb != "lift" or target not in {"subject", "eyes"} or target in blocked:
+            continue
+        if any(str(step.get("id") or "") == target for step in steps):
+            continue
+        title = str(item.get("reason") or "").strip() or feature_title(target)
+        steps.append({"id": target, "action": "lift", "title": title})
+    return steps
+
+
 def select_mask_features(
     plan: dict,
     proposal: dict | None,
@@ -109,8 +132,8 @@ def select_mask_features(
     for item in plan.get("asks") or []:
         if not isinstance(item, dict):
             continue
-        stage = str(item.get("stage") or "")
-        action = str(item.get("action") or "")
+        stage = str(item.get("stage") or item.get("target") or "")
+        action = str(item.get("action") or item.get("verb") or "")
         if stage in OPTIONAL_IDS and action in _ASKS and stage not in asked:
             asked.append(stage)
     skip_by = plan.get("skip_by") if isinstance(plan.get("skip_by"), dict) else {}
@@ -134,6 +157,9 @@ def select_mask_features(
     else:
         queue = _steps_from_proposal(proposal, steer, reading_sentence)
         proposed_ids = [str(item.get("id") or "") for item in queue]
+    user_steps = _user_lift_steps(plan, skipped, done)
+    if feature_look not in {"accept-feature", "skip-feature"} and not queue and user_steps:
+        queue = user_steps
     path: list[str] = [str(item.get("id") or "") for item in queue if str(item.get("id") or "")]
     for name in proposed_ids + asked + reviewed:
         if name in OPTIONAL_IDS and name not in path and name not in committed and name not in skipped:
@@ -346,22 +372,352 @@ def align_plan_to_history(output_dir, name: str, direction: str) -> dict:
     return recipe
 
 
+def _plan_hue(recipe: dict) -> str | None:
+    plan = recipe.get("plan") if isinstance(recipe.get("plan"), dict) else {}
+    parts = [str(recipe.get("features_next_title") or "")]
+    for key in ("operations", "step_queue", "step_log"):
+        for item in plan.get(key) or []:
+            if isinstance(item, dict):
+                parts.append(str(item.get("reason") or ""))
+                parts.append(str(item.get("title") or ""))
+                parts.append(str(item.get("name") or ""))
+    return _named_hue(" ".join(parts).lower())
+
+
+def _names_a_thing(title: str) -> bool:
+    from ai_dt.steer import NAMED_SUBJECTS
+
+    words = set(re.findall(r"[a-z]+", str(title or "").lower()))
+    return bool(words & NAMED_SUBJECTS)
+
+
+def _body_boxes(recipe: dict) -> list[tuple[float, float, float, float]]:
+    analysis = recipe.get("analysis") if isinstance(recipe.get("analysis"), dict) else {}
+    title = str(recipe.get("features_next_title") or "").lower()
+    boxes = []
+    for item in analysis.get("subjects") or []:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category") or "")
+        label = str(item.get("label") or "").lower()
+        named = bool(label) and label in title
+        if category not in {"animal", "person", "face"} and not (category == "subject" and named):
+            continue
+        raw = item.get("bbox")
+        if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+            continue
+        try:
+            box = tuple(float(part) for part in raw)
+        except (TypeError, ValueError):
+            continue
+        if min(box[2], box[3]) <= 0.0:
+            continue
+        boxes.append(box)
+    return boxes
+
+
+def _overlaps(box: tuple[float, float, float, float], other: tuple[float, float, float, float], pad: float = 0.18) -> bool:
+    ax, ay, aw, ah = box
+    bx, by, bw, bh = other
+    return not (
+        bx + bw < ax - pad
+        or bx > ax + aw + pad
+        or by + bh < ay - pad
+        or by > ay + ah + pad
+    )
+
+
+def _union(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float]:
+    x0 = min(box[0] for box in boxes)
+    y0 = min(box[1] for box in boxes)
+    x1 = max(box[0] + box[2] for box in boxes)
+    y1 = max(box[1] + box[3] for box in boxes)
+    x0 = max(0.0, x0 - 0.03)
+    y0 = max(0.0, y0 - 0.03)
+    x1 = min(1.0, x1 + 0.03)
+    y1 = min(1.0, y1 + 0.03)
+    return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
+
+
+def _free_spans(blocked: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not blocked:
+        return [(0.0, 1.0)]
+    merged: list[list[float]] = []
+    for start, end in sorted(blocked):
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    free: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in merged:
+        if start > cursor:
+            free.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < 1.0:
+        free.append((cursor, 1.0))
+    return free
+
+
+def lower_band_ellipse(bodies: list[tuple[float, float, float, float]]) -> dict | None:
+    """A shallow ellipse on the bottom, kept off a body that reaches into it."""
+
+    cy = 0.86
+    ry = 0.12
+    blocked = []
+    for box in bodies:
+        x, y, width, height = box
+        if y + height < cy - ry:
+            continue
+        blocked.append((max(0.0, x - 0.04), min(1.0, x + width + 0.04)))
+    spans = _free_spans(blocked)
+    if not spans:
+        return None
+    start, end = max(spans, key=lambda span: span[1] - span[0])
+    width = end - start
+    if width < 0.18:
+        return None
+    cx = start + width / 2.0
+    rx = min(width / 2.0, 0.46, cx, 1.0 - cx)
+    if rx < 0.08:
+        return None
+    return {
+        "kind": "ellipse",
+        "cx": round(cx, 5),
+        "cy": cy,
+        "rx": round(rx, 5),
+        "ry": ry,
+        "exposure_ev": -0.18,
+        "name": "AI foreground",
+    }
+
+
+def _shape_box(shape: dict) -> tuple[float, float, float, float]:
+    return (
+        float(shape["cx"]) - float(shape["rx"]),
+        float(shape["cy"]) - float(shape["ry"]),
+        float(shape["rx"]) * 2.0,
+        float(shape["ry"]) * 2.0,
+    )
+
+
+def _open_preview(directory):
+    path = directory / "preview.jpg"
+    if not path.is_file():
+        return None
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return image.convert("RGB")
+
+
+def _hue_on_preview(recipe: dict, directory) -> dict | None:
+    hue = _plan_hue(recipe)
+    if not hue:
+        return None
+    preview = _open_preview(directory)
+    if preview is None:
+        return None
+    from ai_dt.hue_mask import hue_sample
+
+    return hue_sample(preview, hue)
+
+
+def _subject_outline(recipe: dict, directory, *, again: bool) -> dict | None:
+    """A path around the subject from Darktable's SAM model, when it can run.
+
+    A preview under 256px is the small picture the tests draw. The model
+    encodes the long side at 1024, so that picture stays on the vignette.
+    """
+
+    preview = _open_preview(directory)
+    box = _subject_box(recipe, directory)
+    if preview is None or box is None or max(preview.size) < 256:
+        return None
+    from ai_dt.mapping import step_history_name
+    from ai_dt.object_segment import outline_box
+
+    points = outline_box(preview, box)
+    if not points:
+        return None
+    name = step_history_name("subject", again=again)
+    spec = {
+        "kind": "path",
+        "name": name,
+        "exposure_ev": 0.22,
+        "points": [{"x": x, "y": y} for x, y in points],
+    }
+    path = directory / "mask.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    return {"kind": "path", "file": str(path), "name": name}
+
+
+def _subject_box(recipe: dict, directory) -> tuple[float, float, float, float] | None:
+    bodies = _body_boxes(recipe)
+    sample = _hue_on_preview(recipe, directory)
+    shapes = list(sample["shapes"]) if sample else []
+    chosen = list(bodies)
+    for shape in shapes:
+        box = _shape_box(shape)
+        if bodies and any(_overlaps(body, box) for body in bodies):
+            chosen.append(box)
+        elif not bodies and _named_hue(str(recipe.get("features_next_title") or "")):
+            chosen.append(box)
+    if not chosen:
+        return None
+    box = _union(chosen)
+    if box[2] <= 0.0 or box[3] <= 0.0:
+        return None
+    return box
+
+
+def _frame_size(recipe: dict, directory) -> tuple[int, int] | None:
+    preview = _open_preview(directory)
+    if preview is not None:
+        return preview.size
+    try:
+        width = int(recipe.get("width") or 0)
+        height = int(recipe.get("height") or 0)
+    except (TypeError, ValueError):
+        return None
+    if width > 1 and height > 1:
+        return width, height
+    return None
+
+
+def restore_waiting_step(output_dir) -> dict:
+    """Put the last accepted step back. Its history write did not land."""
+
+    _directory, path, recipe, plan = _load_recipe(output_dir)
+    log = [item for item in (plan.get("step_log") or []) if isinstance(item, dict)]
+    if not log or not log[-1].get("active"):
+        return recipe
+    last = log.pop()
+    plan["step_log"] = log
+    ident = str(last.get("id") or "")
+    done = [str(item) for item in (plan.get("features_done") or []) if str(item).strip()]
+    for index in range(len(done) - 1, -1, -1):
+        if done[index] == ident:
+            del done[index]
+            break
+    plan["features_done"] = done
+    queue = [item for item in (plan.get("step_queue") or []) if isinstance(item, dict)]
+    restored = {
+        "id": ident,
+        "action": str(last.get("action") or "lift"),
+        "title": str(last.get("title") or ident),
+    }
+    if ident and (not queue or str(queue[0].get("id") or "") != ident):
+        queue.insert(0, restored)
+    plan["step_queue"] = queue
+    plan["features_path"] = [str(item.get("id") or "") for item in queue if str(item.get("id") or "")]
+    plan["features_next"] = ident
+    recipe["features_next"] = ident
+    recipe["features_next_title"] = restored["title"]
+    recipe["features_next_action"] = restored["action"]
+    recipe["feature_note"] = "This step was not written. Accept tries it again."
+    _refresh_handoff(recipe)
+    _save_recipe(path, recipe)
+    return recipe
+
+
+def _leave_off(directory, path, recipe, plan, nxt: str, reason: str) -> dict:
+    """Move past a step that has no region. Do not write a whole-frame module."""
+
+    step_path = directory / "step.dtstyle"
+    if step_path.is_file():
+        step_path.unlink()
+    recipe.pop("step_style", None)
+    recipe.pop("step_mask", None)
+    skipped = [str(item) for item in (plan.get("features_skipped") or []) if str(item).strip()]
+    if nxt and nxt not in skipped:
+        skipped.append(nxt)
+    plan["features_skipped"] = skipped
+    if nxt:
+        _promote(plan, recipe, nxt)
+    recipe["feature_note"] = reason
+    _refresh_handoff(recipe)
+    _save_recipe(path, recipe)
+    return recipe
+
+
 def commit_waiting_step(output_dir) -> dict:
     """Write one history module for the waiting step. Do not rebuild the look."""
 
     from ai_dt.drawn_mask import eye_ellipse
     from ai_dt.mapping import step_history_name, step_style
+    from ai_dt.modules_extra import colorzones_hue_params
 
     directory, path, recipe, plan = _load_recipe(output_dir)
     nxt = str(recipe.get("features_next") or "").strip()
     step_path = directory / "step.dtstyle"
     again = "Another" in str(recipe.get("feature_note") or "")
+    title = str(recipe.get("features_next_title") or "")
+    if nxt == "subject" and _names_a_thing(title) and _subject_box(recipe, directory) is None:
+        return _leave_off(
+            directory,
+            path,
+            recipe,
+            plan,
+            nxt,
+            "No box was found for that subject, so this step was left off.",
+        )
     mask = eye_ellipse(list(recipe.get("local_edits") or [])) if nxt == "eyes" else None
-    history_name = "AI eyes" if mask else step_history_name(
-        nxt,
-        again=again,
-        title=str(recipe.get("features_next_title") or ""),
-    )
+    if nxt == "eyes" and mask is None:
+        return _leave_off(
+            directory,
+            path,
+            recipe,
+            plan,
+            nxt,
+            "No eye was found, so this step was left off.",
+        )
+    if nxt == "foreground":
+        band = lower_band_ellipse(_body_boxes(recipe))
+        if band is None:
+            return _leave_off(
+                directory,
+                path,
+                recipe,
+                plan,
+                nxt,
+                "The foreground is not clear of the subject, so this step was left off.",
+            )
+        mask = band
+    if nxt == "subject" and mask is None:
+        outline = _subject_outline(recipe, directory, again=again)
+        if outline is not None:
+            mask = outline
+    recoloring = nxt == "recolor" or (nxt == "colorzones" and _cast_hue(title) is not None)
+    style_id = "recolor" if recoloring else nxt
+    if nxt == "colorzones" and mask is None and not recoloring:
+        sample = _hue_on_preview(recipe, directory)
+        hue = _named_hue(title.lower()) or _plan_hue(recipe) or "red"
+        center = float(sample["center"]) if sample else None
+        blob = colorzones_hue_params(hue, center=center) if sample else None
+        if not sample or blob is None:
+            return _leave_off(
+                directory,
+                path,
+                recipe,
+                plan,
+                nxt,
+                "No color patch was found, so this step was left off.",
+            )
+        spec = {
+            "operation": "colorzones",
+            "modversion": 5,
+            "name": step_history_name("colorzones", title=title),
+            "params": blob.hex(),
+            "shapes": sample["shapes"],
+        }
+        spec_path = directory / "mask.json"
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        mask = {"kind": "regions", "file": str(spec_path), "name": spec["name"]}
+    if mask:
+        history_name = str(mask.get("name") or "AI eyes")
+    else:
+        history_name = step_history_name(style_id, again=again, title=title)
     if mask:
         if step_path.is_file():
             step_path.unlink()
@@ -369,16 +725,28 @@ def commit_waiting_step(output_dir) -> dict:
         recipe["step_mask"] = mask
     else:
         recipe.pop("step_mask", None)
+        placed = _subject_box(recipe, directory) if nxt == "subject" else None
+        hue_center = None
+        if nxt == "colorzones":
+            hue_center = (_hue_on_preview(recipe, directory) or {}).get("center")
         xml = (
             step_style(
-                nxt,
+                style_id,
                 again=again,
-                title=str(recipe.get("features_next_title") or ""),
-                action=str(recipe.get("features_next_action") or "lift"),
+                title=title,
+                action="darken" if recoloring and _cast_hue(title) else str(
+                    recipe.get("features_next_action") or "lift"
+                ),
+                box=placed,
+                size=_frame_size(recipe, directory) if placed else None,
+                center=hue_center,
+                color=_color_advice(recipe) if recoloring else None,
             )
             if nxt
             else None
         )
+        if xml and "<operation>vignette</operation>" in xml:
+            history_name = "Vignette the subject"
         if not xml:
             if step_path.is_file():
                 step_path.unlink()
@@ -503,8 +871,12 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
     if str(steer or "").strip():
         plan = revise_plan(plan, steer)
     operations = [item for item in ((proposal or {}).get("operations") or []) if isinstance(item, dict)]
-    plan = apply_operations(plan, operations, list((proposal or {}).get("dropped") or []))
     grounded = f"{sentence} {scene_for_model}".strip()
+    hue = hue_operation(steer, grounded)
+    if hue is not None and not any(str(item.get("id") or "") == "colorzones" for item in operations):
+        operations = [*operations, hue]
+    operations = cast_operations(operations, steer)
+    plan = apply_operations(plan, operations, list((proposal or {}).get("dropped") or []))
     merged = dict(proposal) if isinstance(proposal, dict) else {}
     extra = operation_features(operations)
     if extra:
@@ -535,6 +907,91 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
     return recipe
 
 
+def cast_operations(operations: list[dict], steer: str) -> list[dict]:
+    """A color change for the whole picture is one recolor step, not a hue mask."""
+
+    from ai_dt.mapping import color_thought, wants_recolor
+
+    hue = _cast_hue(steer)
+    asked = wants_recolor(steer)
+    rewritten: list[dict] = []
+    found = False
+    for item in operations:
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or "").strip().lower()
+        reason = " ".join(str(item.get("reason") or "").split())
+        action = str(item.get("action") or "include").strip().lower()
+        if ident in {"recolor", "colorbalancergb", "channelmixerrgb", "colorzones"} and (
+            asked or color_thought(reason)
+        ):
+            if ident == "colorzones" and not asked and not color_thought(reason):
+                rewritten.append(item)
+                continue
+            found = True
+            verb = action if action in {"lift", "darken", "hold"} else "include"
+            if hue or _cast_hue(reason):
+                verb = "darken"
+            rewritten.append(
+                {
+                    "id": "recolor",
+                    "action": verb,
+                    "reason": reason or (f"reduce the {hue}" if hue else "recolor"),
+                }
+            )
+            continue
+        rewritten.append(item)
+    if asked and not found:
+        rewritten.append(
+            {
+                "id": "recolor",
+                "action": "darken" if hue else "lift",
+                "reason": f"reduce the {hue}" if hue else "recolor",
+            }
+        )
+    return rewritten
+
+
+def _cast_hue(text: str) -> str | None:
+    from ai_dt.mapping import cast_hue
+
+    return cast_hue(text)
+
+
+def _color_advice(recipe: dict) -> dict:
+    analysis = recipe.get("analysis") if isinstance(recipe.get("analysis"), dict) else {}
+    for key in ("llm", "atmosphere"):
+        block = analysis.get(key)
+        if isinstance(block, dict):
+            return block
+    return {}
+
+
+def hue_operation(steer: str, picture: str = "") -> dict | None:
+    """A color-zones step when the request highlights one hue, such as red aprons."""
+
+    typed = str(steer or "").lower()
+    if re.search(r"\blanterns?\b", typed) and any(
+        word in typed for word in ("highlight", "brighten", "brighter", "lift", "saturate", "pop", "outshine")
+    ):
+        return {"id": "colorzones", "action": "lift", "reason": "highlight the orange lanterns"}
+    if not any(word in typed for word in ("highlight", "outshine", "saturate")):
+        return None
+    hue = _named_hue(typed)
+    if hue is None and any(word in typed for word in ("apron", "bib")):
+        hue = _named_hue(str(picture or "").lower())
+    if hue is None:
+        return None
+    return {"id": "colorzones", "action": "lift", "reason": f"highlight the {hue}"}
+
+
+def _named_hue(text: str) -> str | None:
+    for name in ("red", "orange", "yellow", "green", "blue"):
+        if re.search(rf"\b{name}\b", text):
+            return name
+    return None
+
+
 def _step_title(reason: str, step: str) -> str:
     title = " ".join(str(reason or "").split())
     if len(title) > 80:
@@ -551,6 +1008,8 @@ _HISTORY_STEP = {
     "opening": "opening",
     "shafts": "shafts",
     "highlights": "highlights",
+    "colorzones": "colorzones",
+    "recolor": "recolor",
 }
 _NOT_HISTORY = frozenset({"reflection", "background", "skin", "sky"})
 
@@ -586,6 +1045,8 @@ def history_steps(operations: list[dict] | None) -> tuple[list[dict], list[str]]
         seen.add(step)
         reason = " ".join(str(item.get("reason") or "").split())
         verb = action if action in {"lift", "darken", "hold"} else "lift"
+        if step == "recolor" and _cast_hue(reason):
+            verb = "darken"
         found.append({"id": step, "action": verb, "title": reason or feature_title(step)})
     return found, held
 

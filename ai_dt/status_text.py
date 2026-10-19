@@ -155,9 +155,9 @@ def panel_status(recipe: dict) -> str:
         held = [str(item) for item in (plan.get("not_history") or []) if str(item).strip()]
         if held:
             lines.append(
-                "Not a history step: "
+                "Not on this photo: "
                 + ", ".join(held)
-                + ". A mask cannot be stored on this run."
+                + ". Those grades are not written into the history."
             )
         if "eyes" in steps:
             if eye_ellipse(list(recipe.get("local_edits") or [])):
@@ -166,10 +166,7 @@ def panel_status(recipe: dict) -> str:
                     "Accept adds that shape to the history already on this photo."
                 )
             else:
-                lines.append(
-                    "Eyes is color balance on the whole frame. "
-                    "A mask on the eyes cannot be stored in the history."
-                )
+                lines.append("No eye was found, so Eyes stays off this photo.")
     else:
         survived = [stage for stage in active_stages(plan) if stage != "grade"]
         if survived and (paragraph or plan.get("catalog_chosen") or plan.get("operations")):
