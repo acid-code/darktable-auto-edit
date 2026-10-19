@@ -2517,7 +2517,9 @@ discard_history_redo = function(image)
   write_file(join_path(folder, "history-redo.json"), "{\"items\":[]}\n")
 end
 
--- A new module is inserted at the active history marker. Later rows stay.
+-- revert.py --collapse-xmp is a no-op now. A drawn-mask step discards rows
+-- past history_end itself (drawn_mask._prepare_insert, as darktable does on
+-- a new edit) and becomes the active top; dt.styles.apply does the same.
 function continue_from_viewed_history(image)
   local xmp = sidecar_file(image)
   if not xmp then
