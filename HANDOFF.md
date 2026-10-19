@@ -196,7 +196,7 @@ Patches: `/workspace/dt_patches/*.patch`; bundle:
 
 ## Fixes after the duck report (pushed to `origin/feature/ai-masks`)
 
-### Bug 1 — accepted step not the active top / later step loses the earlier mask
+### Bug 1 — accepted step not the active top / later step loses the earlier mask (`707e033`)
 
 Repro: duck photo, plan subject → mask_background → foreground. Step 1
 "Lift the subject" said done; its row was not the highlighted top and the
@@ -239,6 +239,33 @@ every AI module's mask id present in darktable's current snapshot, stale
 `history_end`, Back/Revert after the chain, `verify_top` refusals; 6 of 7
 fail on the old code), plus one in `tests/test_features.py`.
 
+### Bug 2 — a new plan repeated steps already applied
+
+Cause: `plan_chat` gave the planner no edit state, and
+`_install_history_steps` even moved a re-proposed step back out of
+`features_done`.
+
+Fix (`ai_dt/applied.py`, `features.plan_chat`, `reasoner._fill`):
+
+- Applied steps = active rows of the photo's sidecar (Lua now passes
+  `--history-xmp image.sidecar` on Ask; the CLI falls back to
+  `<original>.xmp`), names matched with `revert.accepted_step_names()` /
+  `step_log` names, plus active `step_log` entries (the sidecar can lag the
+  darkroom). Skipped steps = `features_skipped`.
+- The prompt gets an "Edit state:" block: "Already applied to this photo,
+  in order: subject (Subject lift)… Do not propose these again unless the
+  request explicitly asks to redo or strengthen them", and the skipped list.
+- `_drop_applied_steps` filters the new queue by id **or kind**
+  (`subject` ≈ `mask_animal`/`mask_animals`, `mask_background` ≈
+  `mask_animal_background`, `foreground` ≈ `mask_bottom_gradient`,
+  `mask_sky` ≈ `mask_sky_gradient`). "again/redo/repeat" keeps any repeat;
+  "more/stronger/…" keeps it only when the request names that step. A
+  skipped step stays out unless the request names it. The note says what
+  was left out, or that every proposed step is already on the photo.
+
+Tests: `tests/test_applied.py` (11; mock planner returning a repeat, prompt
+contains the applied and skipped steps, sidecar history, redo wording).
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -254,6 +281,7 @@ test runs instead of skipping).
 | After phase 2b (animals) | 389 | 1 | 0 | 0 |
 | After phase 3 | 418 | 1 | 0 | 0 |
 | After bug 1 fix | 426 | 1 | 0 | 0 |
+| After bug 2 fix | 437 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`

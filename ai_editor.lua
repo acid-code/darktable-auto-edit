@@ -428,6 +428,10 @@ local function run_processor(preview, work_dir, original, vibe, steer, options)
     parts[#parts + 1] = " --library "
     parts[#parts + 1] = shell_quote(options.library)
   end
+  if type(options.history_xmp) == "string" and options.history_xmp ~= "" then
+    parts[#parts + 1] = " --history-xmp "
+    parts[#parts + 1] = shell_quote(options.history_xmp)
+  end
   if type(options.stage) == "string" and options.stage ~= "" and options.stage ~= "all" then
     parts[#parts + 1] = " --stage "
     parts[#parts + 1] = shell_quote(options.stage)
@@ -1261,6 +1265,13 @@ local function propose_image(image, index, total, vibe, steer)
   if asking then
     show_progress("Asking for the steps…", 0.45)
     options.stage = "chat"
+    -- The planner leaves out steps whose rows are already in this sidecar.
+    local has_sidecar, sidecar = pcall(function()
+      return image.sidecar
+    end)
+    if has_sidecar and type(sidecar) == "string" and sidecar ~= "" then
+      options.history_xmp = sidecar
+    end
     local _, run_error = run_processor("", work, image_source_path(image), vibe, steer, options)
     close_progress()
     if run_error then

@@ -33,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Move the plan with one history step. Use --direction back or next.",
     )
+    parser.add_argument(
+        "--history-xmp",
+        default=None,
+        help="Sidecar of the photo being planned; its active rows are the applied steps.",
+    )
     parser.add_argument("--history-name", default="", help="History instance name that crossed the cursor.")
     parser.add_argument("--direction", default="", help="back or next, with --align-history.")
     parser.add_argument(
@@ -199,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                 skip_waiting_step(Path(args.output_dir))
                 print("Step skipped.")
             elif args.stage == "chat":
-                plan_chat(Path(args.output_dir), args.steer, args.scene)
+                history_xmp = args.history_xmp or (f"{args.original}.xmp" if args.original else None)
+                plan_chat(Path(args.output_dir), args.steer, args.scene, history_xmp=history_xmp)
                 print("Plan ready.")
             else:
                 commit_waiting_step(Path(args.output_dir))

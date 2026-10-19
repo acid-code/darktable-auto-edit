@@ -847,10 +847,22 @@ def skip_waiting_step(output_dir) -> dict:
     return recipe
 
 
-def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
-    """Turn one sentence into the next steps. Do not grade the photo again."""
+def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) -> dict:
+    """Turn one sentence into the next steps. Do not grade the photo again.
+
+    Steps already on the photo (``history_xmp`` rows and the plan's log) and
+    steps skipped this session are told to the planner, and a repeated one
+    is dropped from the new queue unless the request asks to redo it.
+    """
 
     import json
+
+    from ai_dt.applied import (
+        applied_prompt_text,
+        applied_steps,
+        history_names_from_xmp,
+        skipped_steps,
+    )
 
     from ai_dt.catalog import apply_operations, operation_features, technical_brief
     from ai_dt.reasoner import propose_gemini, propose_ollama
@@ -897,7 +909,13 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
     ]
     brief = technical_brief(atmosphere, stages=ran)
     recipe["technical_brief"] = brief
-    asked = propose_gemini(sentence, vibe, preset, steer, scene=scene_for_model, brief=brief)
+    applied = applied_steps(plan, history_names_from_xmp(history_xmp))
+    skipped_before = skipped_steps(plan)
+    edit_state = applied_prompt_text(applied, skipped_before)
+    recipe["applied_steps"] = applied
+    asked = propose_gemini(
+        sentence, vibe, preset, steer, scene=scene_for_model, brief=brief, applied=edit_state
+    )
     proposal = asked.get("proposal") if isinstance(asked.get("proposal"), dict) else None
     if asked.get("ask_ollama"):
         asked = propose_ollama(
@@ -909,6 +927,7 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
             gemini_tried=bool(asked.get("gemini_tried")),
             scene=scene_for_model,
             brief=brief,
+            applied=edit_state,
         )
         proposal = asked.get("proposal") if isinstance(asked.get("proposal"), dict) else None
     (directory / "proposal.json").write_text(json.dumps(asked, indent=2) + "\n", encoding="utf-8")
@@ -942,6 +961,7 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
         merged["features"] = [item for item in (merged.get("features") or []) if isinstance(item, dict)] + extra
     plan = select_mask_features(plan, merged, [], steer, grounded, "")
     plan = _install_history_steps(plan, operations)
+    plan = _drop_applied_steps(plan, applied, skipped_before, steer)
     recipe["plan"] = plan
     nxt = str(plan.get("features_next") or "")
     recipe["features_next"] = nxt
@@ -964,6 +984,47 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
     recipe["status_text"] = panel_status(recipe)
     _save_recipe(path, recipe)
     return recipe
+
+
+def _drop_applied_steps(plan: dict, applied: list[dict], skipped: list[str], steer: str) -> dict:
+    """Remove steps already on the photo (or skipped) from a freshly proposed queue."""
+
+    from ai_dt.applied import drop_repeated
+
+    queue = [dict(item) for item in (plan.get("step_queue") or []) if isinstance(item, dict)]
+    nxt = str(plan.get("features_next") or "")
+    if not queue and nxt:
+        queue = [
+            {
+                "id": nxt,
+                "title": str(plan.get("features_next_title") or ""),
+                "action": str(plan.get("features_next_action") or ""),
+            }
+        ]
+    kept, dropped = drop_repeated(queue, applied, skipped, steer)
+    done = [str(item) for item in (plan.get("features_done") or []) if str(item).strip()]
+    for item in applied:
+        if item["id"] and item["id"] not in done and item["id"] not in {str(q.get("id")) for q in kept}:
+            done.append(item["id"])
+    plan["features_done"] = done
+    if not dropped:
+        return plan
+    follow = kept[0] if kept else {}
+    plan["step_queue"] = kept
+    plan["features_path"] = [str(item.get("id") or "") for item in kept if str(item.get("id") or "")]
+    plan["features_next"] = str(follow.get("id") or "")
+    plan["features_next_title"] = str(follow.get("title") or "")
+    plan["features_next_action"] = str(follow.get("action") or "")
+    plan["features_repeated"] = dropped
+    names = ", ".join(dict.fromkeys(dropped))
+    if kept:
+        plan["feature_note"] = f"Already on this photo, left out of the new plan: {names}."
+    else:
+        plan["feature_note"] = (
+            f"Every proposed step is already on this photo ({names}). "
+            "Ask to redo or strengthen one, or type another change."
+        )
+    return plan
 
 
 def cast_operations(operations: list[dict], steer: str) -> list[dict]:

@@ -222,6 +222,7 @@ def _fill(
     *,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> str:
     text = (
         _PROMPT.replace("{description}", description or "No description.")
@@ -239,6 +240,8 @@ def _fill(
     lessons = few_shot_text(guess_type(description, scene, steer, preset))
     if lessons:
         parts.append(lessons)
+    if str(applied or "").strip():
+        parts.append(str(applied).strip())
     parts.append(
         "Run state: include an operation only when this photo still needs it. "
         "Caps stay closed unless the request itself says strong or epic."
@@ -424,6 +427,7 @@ def _ask_ollama(
     *,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> dict | None:
     """One text chat. No image is sent."""
 
@@ -437,7 +441,7 @@ def _ask_ollama(
             "messages": [
                 {
                     "role": "user",
-                    "content": _fill(description, vibe, preset, steer, scene=scene, brief=brief),
+                    "content": _fill(description, vibe, preset, steer, scene=scene, brief=brief, applied=applied),
                 }
             ],
         },
@@ -495,6 +499,7 @@ def _ask_gemini_model(
     *,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> dict:
     """One generateContent call. ``model`` is set when the reply has a plan."""
 
@@ -510,7 +515,7 @@ def _ask_gemini_model(
                 "parts": [
                     {
                         "text": _fill(
-                            description, vibe, preset, steer, scene=scene, brief=brief
+                            description, vibe, preset, steer, scene=scene, brief=brief, applied=applied
                         )
                     }
                 ]
@@ -557,6 +562,7 @@ def _ask_gemini(
     *,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> dict | None:
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -564,7 +570,7 @@ def _ask_gemini(
     tried: list[str] = []
     for model in _reason_models():
         reply = _ask_gemini_model(
-            model, description, vibe, preset, steer, key, scene=scene, brief=brief
+            model, description, vibe, preset, steer, key, scene=scene, brief=brief, applied=applied
         )
         error = str(reply.get("error") or "").strip()
         if not error and (
@@ -634,6 +640,7 @@ def propose_gemini(
     *,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> dict:
     """Ask only Gemini. Ollama is a later stage when ``ask_ollama`` is set."""
 
@@ -646,7 +653,7 @@ def propose_gemini(
         }
     if not os.environ.get("GEMINI_API_KEY", "").strip():
         return {"ask_ollama": True, "gemini_tried": False, "failure": "", "proposal": None}
-    reply = _ask_gemini(description, vibe, preset, steer, scene=scene, brief=brief)
+    reply = _ask_gemini(description, vibe, preset, steer, scene=scene, brief=brief, applied=applied)
     error = str(reply.get("error") or "").strip() if isinstance(reply, dict) else "no reply"
     model = str(reply.get("model") or "").strip() if isinstance(reply, dict) else ""
     plan = _from_reply(
@@ -673,12 +680,13 @@ def propose_ollama(
     gemini_tried: bool = False,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> dict:
     """Ask only Ollama. A Gemini failure is copied onto the plan."""
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
         return {"ask_ollama": False, "proposal": skipped("Reasoning was skipped.")}
-    reply = _ask_ollama(description, vibe, preset, steer, scene=scene, brief=brief)
+    reply = _ask_ollama(description, vibe, preset, steer, scene=scene, brief=brief, applied=applied)
     if reply is not None:
         result = _from_reply(
             reply,
@@ -714,6 +722,7 @@ def propose_stages(
     *,
     scene: str = "",
     brief: str = "",
+    applied: str = "",
 ) -> dict:
     """Ask Gemini when a key is set, then Ollama. Skip when neither answers.
 
@@ -724,7 +733,7 @@ def propose_stages(
 
     if os.environ.get("AI_EDITOR_REASONER") == "off":
         return skipped("Reasoning was skipped.")
-    gemini = propose_gemini(description, vibe, preset, steer, scene=scene, brief=brief)
+    gemini = propose_gemini(description, vibe, preset, steer, scene=scene, brief=brief, applied=applied)
     if not gemini.get("ask_ollama") and isinstance(gemini.get("proposal"), dict):
         return gemini["proposal"]
     ollama = propose_ollama(
@@ -735,7 +744,7 @@ def propose_stages(
         failure=str(gemini.get("failure") or ""),
         gemini_tried=bool(gemini.get("gemini_tried")),
         scene=scene,
-        brief=brief,
+        brief=brief, applied=applied,
     )
     proposal = ollama.get("proposal")
     if isinstance(proposal, dict):
