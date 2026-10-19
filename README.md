@@ -233,6 +233,13 @@ python3 preview_server.py
 
 Open http://127.0.0.1:8741. Leave the vibe blank, then try `moody dark` on the portrait and `crisp building` on the facade.
 
+## Supported darktable versions
+
+- **darktable 5.6**: tested, including in the darkroom.
+- **darktable 5.4**: supported in the code. The plugin reads the running darktable version and passes it to the Python side, which leaves 5.6-only pipeline modules (such as `colorharmonizer`) out of the order it writes. One darktable-cli render on 5.4.1 worked, but it has not been tested in the 5.4 darkroom yet.
+
+If the version can't be read, the plugin assumes 5.6.
+
 ## Install the Python side
 
 From this directory:
