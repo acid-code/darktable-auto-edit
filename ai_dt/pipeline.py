@@ -14,7 +14,7 @@ from ai_dt.advisors.combine import combine_atmospheres
 from ai_dt.advisors.histogram import HistogramAdvisor, refine_for_subjects
 from ai_dt.advisors.mistral_vision import MistralVisionAdvisor
 from ai_dt.advisors.ollama_llava import OllamaLLaVAAdvisor
-from ai_dt.detectors.heuristic import HeuristicDetector, attach_animal_eyes, gate_faces
+from ai_dt.detectors.heuristic import HeuristicDetector, attach_animal_eyes, drop_animal_heads, gate_faces
 from ai_dt.detectors.mediapipe_faces import MediaPipeFaceDetector
 from ai_dt.detectors.merge import merge_detections
 from ai_dt.detectors.yolo import YoloDetector
@@ -277,7 +277,9 @@ def _sentence_is_instruction(sentence: str) -> bool:
 def _observations(text: str) -> str:
     """Sentences that say what is in the picture. Edit orders are left out."""
 
-    parts = re.split(r"(?<=[.!?])\s+", " ".join(str(text or "").split()))
+    from ai_dt.text_io import clean_text
+
+    parts = re.split(r"(?<=[.!?])\s+", " ".join(clean_text(str(text or "")).split()))
     return " ".join(part for part in parts if part and not _sentence_is_instruction(part))
 
 
@@ -491,6 +493,7 @@ def analyze(
     image = loaded.image
     detections, detector_notes = _detect(image, detector, yolo_model)
     detections = gate_faces(loaded.pixels, detections)
+    detections = drop_animal_heads(detections)
     detections = attach_animal_eyes(loaded.pixels, detections)
     stored = _stored_recipe(output_dir)
     stored_scene = stored.get("scene") if isinstance(stored.get("scene"), dict) else {}
@@ -540,6 +543,22 @@ def analyze(
         )
         measured.source = _measured.source if suggestion is None else measured.source
     atmosphere = combine_atmospheres(measured, suggestion)
+    # The reading, an edited description or the request can name the animal
+    # a person box was put on (the duck's head was a YOLO "person").
+    from ai_dt.animal_plan import retype_from_text
+
+    words_for_subject = " ".join(
+        part
+        for part in (
+            user_scene,
+            "" if rewrite_scene else stored_summary,
+            getattr(suggestion, "scene_description", "") if suggestion is not None else "",
+            getattr(suggestion, "scene_summary", "") if suggestion is not None else "",
+            steer,
+        )
+        if str(part or "").strip()
+    )
+    picture, detections, _retyped = retype_from_text(picture, detections, words_for_subject)
     guide_match = match_guide(picture.type, directory=guides_dir)
     reading = read_frame(loaded.pixels, picture, detections, subject_name=subject_name)
     recommendations = mark_recommendations(recommend_looks(picture, reading), look)
@@ -579,8 +598,14 @@ def analyze(
             ]
             plan["features_skipped"] = [str(item) for item in (previous.get("features_skipped") or [])]
             plan["features_done"] = [str(item) for item in (previous.get("features_done") or [])]
-            plan["features_next"] = str(previous.get("features_next") or "")
-            plan["features_path"] = [str(item) for item in (previous.get("features_path") or [])]
+            # An edited description is a new plan: the waiting steps came from
+            # the old one. Done and skipped steps still hold.
+            edited = bool(user_scene) and " ".join(user_scene.lower().split()) != " ".join(
+                stored_summary.lower().split()
+            )
+            if not edited:
+                plan["features_next"] = str(previous.get("features_next") or "")
+                plan["features_path"] = [str(item) for item in (previous.get("features_path") or [])]
     scene = scene_from_detections(detections)
     if scene_override and picture.type == "night":
         scene = "night"
@@ -639,6 +664,19 @@ def analyze(
                 "analysis": analysis,
             }
         return _write_description(output_dir, scene, grade_brief, picture_line, analysis)
+    from ai_dt.animal_plan import bright_ground, subject_is_animal, subject_line
+
+    animal_subject = subject_is_animal(picture.type, detections, f"{words_for_subject} {scene_for_model}")
+    ground_bright = bright_ground(loaded.pixels) if animal_subject else False
+    water_seen = bool(re.search(r"\b(water|pond|lake|river|sea|stream|canal)\b", f"{words_for_subject} {scene_for_model}", re.IGNORECASE)) or any(
+        region.get("role") == "reflection" for region in reading.regions
+    )
+    if animal_subject:
+        from ai_dt.animal_plan import animal_noun
+
+        grade_brief = f"{grade_brief}\n" + subject_line(
+            animal_noun(steer, f"{words_for_subject} {scene_for_model}"), ground_bright, water_seen
+        )
     if proposal is None:
         _status(output_dir, "Asking Gemini…")
     chosen = (
@@ -666,6 +704,18 @@ def analyze(
         detections=detections,
         scene=scene_for_model,
     )
+    if animal_subject:
+        from ai_dt.animal_plan import animal_plan
+
+        plan = animal_plan(
+            plan,
+            steer=steer,
+            description=f"{words_for_subject} {scene_for_model}",
+            animals=max(1, sum(1 for item in detections if item.category == "animal")),
+            ground=ground_bright,
+            water=water_seen,
+        )
+        plan["subject_water"] = water_seen
     reasoning = reason_about(
         picture,
         detections,
@@ -900,7 +950,7 @@ def analyze(
     accepted_step = waiting_step if feature_look == "accept-feature" and waiting_step else ""
     if output_dir is not None:
         step_path = Path(output_dir) / "step.dtstyle"
-        again = "Another lift" in str(plan.get("feature_note") or "")
+        again = bool(plan.get("subject_again")) or "Another lift" in str(plan.get("feature_note") or "")
         xml = step_style(accepted_step, again=again) if accepted_step else None
         if xml:
             step_path.write_text(xml, encoding="utf-8")
@@ -913,6 +963,9 @@ def analyze(
             step_path.unlink()
     recipe["handoff"] = build_handoff(recipe)
     recipe["plan_request"] = " ".join(str(steer or "").split())
+    scene_used = recipe.get("scene") if isinstance(recipe.get("scene"), dict) else {}
+    recipe["plan_description"] = " ".join(str(scene_used.get("summary") or "").split())
+    recipe["plan_description_source"] = str(scene_used.get("source") or "")
     recipe["status_text"] = panel_status(recipe)
     recipe["accept_skip"] = accept_skip_lines(recipe)
     recipe["_plugins"] = plugins

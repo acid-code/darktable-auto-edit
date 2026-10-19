@@ -112,6 +112,30 @@ def request_changed(recipe: dict, typed: str | None) -> bool:
     return request_key(typed) != request_key(recipe.get("plan_request"))
 
 
+def description_changed(recipe: dict, typed: str | None) -> bool:
+    """Whether the description box no longer holds the description this plan came from."""
+
+    if typed is None or not isinstance(recipe, dict) or "plan_description" not in recipe:
+        return False
+    return request_key(typed) != request_key(recipe.get("plan_description"))
+
+
+def plan_origin(recipe: dict) -> str:
+    """Which inputs the current plan came from: the request, the description, or both."""
+
+    asked = " ".join(str(recipe.get("plan_request") or "").split())
+    source = str(recipe.get("plan_description_source") or "")
+    has_description = bool(" ".join(str(recipe.get("plan_description") or "").split()))
+    described = ""
+    if has_description:
+        described = "your edited description" if source == "user" else "the photo description"
+    if asked and described:
+        return f"request \u201c{asked}\u201d + {described}"
+    if asked:
+        return f"request \u201c{asked}\u201d"
+    return described
+
+
 def waiting_step_label(recipe: dict) -> str:
     """The step Accept and Skip act on, as the panel names it ("" when none)."""
 
@@ -123,13 +147,13 @@ def waiting_step_label(recipe: dict) -> str:
     return " ".join(str(recipe.get("features_next_title") or "").split()) or feature_title(nxt)
 
 
-def _state_line(step: str, changed: bool) -> str:
+def _state_line(step: str, changed: bool, what: str = "Request") -> str:
     if not step:
         if changed:
-            return "Request changed — press Ask for a new plan. No step is waiting, so Accept and Skip are off."
+            return f"{what} changed — press Ask for a new plan. No step is waiting, so Accept and Skip are off."
         return "No step is waiting, so Accept and Skip are off. Type a change and press Ask for a plan."
     if changed:
-        return f"Request changed — press Ask for a new plan; Accept/Skip still apply to: {step}"
+        return f"{what} changed — press Ask for a new plan; Accept/Skip still apply to: {step}"
     return f"Accept/Skip apply to: {step}"
 
 
@@ -154,6 +178,7 @@ def accept_skip_lines(recipe: dict) -> dict:
         "step": step,
         "line": _state_line(step, False),
         "changed_line": _state_line(step, True),
+        "description_changed_line": _state_line(step, True, "Description"),
     }
 
 
@@ -167,8 +192,8 @@ def _plan_sheet(recipe: dict) -> str:
     nxt = str(recipe.get("features_next") or "").strip()
     if not done and not path and not nxt and not queue:
         return ""
-    asked = " ".join(str(recipe.get("plan_request") or "").split())
-    rows = [f"Current plan (from \u201c{asked}\u201d)" if asked else "Current plan"]
+    origin = plan_origin(recipe)
+    rows = [f"Current plan (from {origin})" if origin else "Current plan"]
     for item in done:
         rows.append(f"done — {feature_title(item)}")
     if queue:

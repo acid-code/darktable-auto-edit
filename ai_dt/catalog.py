@@ -82,6 +82,18 @@ def catalog_text() -> str:
     lines.append("Drawn-mask steps written into the photo's history on Accept (one module each, its own mask):")
     lines.extend(f"- {name}: {note}" for name, note in MASKS)
     lines.append(
+        "When the subject is an animal or a bird: never use skin, face, person or mask_people. "
+        "Use mask_animal (a small lift on its outline; mask_animals for several), then "
+        "mask_animal_background (darken and mute everything around it), then mask_bottom_gradient "
+        "or mask_ground when a bright ledge, sand or ground sits under it, then mask_edge_burn; "
+        "mask_glow only as a subtle option. subject, background and foreground mean those steps "
+        "for an animal. Call it the bird or the animal (or the user's word) unless the species is certain."
+    )
+    lines.append(
+        "Name regions by what each step touches: the background step darkens whatever is behind "
+        "the subject (water, a wall); do not also say that region stays untouched."
+    )
+    lines.append(
         "Leave these out: diffuse, blurs, and retouch, while a drawn mask cannot attach; "
         "a custom white-balance illuminant; opening caps unless the user wrote strong or epic."
     )

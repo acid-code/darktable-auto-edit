@@ -549,11 +549,26 @@ def attach_animal_eyes(pixels: np.ndarray, detections: list[Detection]) -> list[
         ):
             continue
         searched.append(animal)
-        for box in animal_eye_boxes(luma, animal.bbox, frame_w, frame_h, color=color):
+        for box in animal_eye_boxes(luma, _eye_search_box(animal), frame_w, frame_h, color=color):
             added.append(Detection("eye", "eye", 0.66, box, "animal"))
     if not added:
         return kept
     return kept + added
+
+
+def _eye_search_box(animal: Detection) -> tuple[float, float, float, float]:
+    """Where an animal's eyes can be. A standing bird keeps them in the head.
+
+    A tall detector "bird" box runs down to the feet, and two orange feet on
+    a ledge read as a coloured eye pair (the duck photo). The head is in the
+    upper part of that box. Other animals keep the whole box: a lying cat
+    does not hold its eyes high.
+    """
+
+    x, y, w, h = (float(value) for value in animal.bbox)
+    if str(animal.label or "").lower() == "bird" and animal.source != "heuristic" and h > 1.3 * w:
+        return (x, y, w, h * 0.45)
+    return (x, y, w, h)
 
 
 def _box_blur(values: np.ndarray) -> np.ndarray:
@@ -1013,3 +1028,38 @@ class HeuristicDetector:
             bbox=_normalize((x, y, max(1, x2 - x), max(1, y2 - y)), width, height),
             source=self.name,
         )
+
+
+def drop_animal_heads(detections: list[Detection]) -> list[Detection]:
+    """Drop a person or face box that is really the head of a detected animal.
+
+    YOLO keeps people down to 0.15 confidence for recall. On a duck it put a
+    0.17 (0.49 at full size) "person" on the head inside a 0.9 "bird" box,
+    and that box then made the photo a portrait (skin, person, face steps).
+    A person or face whose centre sits inside a confident detector animal,
+    that is clearly smaller than the animal and less certain than it, is
+    the animal's head. A rider or a person holding a pet is larger or
+    surer than that and stays.
+    """
+
+    animals = [
+        item
+        for item in detections
+        if item.category == "animal" and item.source != "heuristic" and float(item.confidence) >= 0.5
+    ]
+    if not animals:
+        return list(detections)
+    kept: list[Detection] = []
+    for item in detections:
+        if item.category in {"person", "face"} and item.source != "mediapipe":
+            area = float(item.bbox[2]) * float(item.bbox[3])
+            head = any(
+                _center_inside(item.bbox, animal.bbox)
+                and area < 0.5 * float(animal.bbox[2]) * float(animal.bbox[3])
+                and float(item.confidence) < max(0.5, float(animal.confidence) - 0.2)
+                for animal in animals
+            )
+            if head:
+                continue
+        kept.append(item)
+    return kept

@@ -208,9 +208,17 @@ def select_mask_features(
     if not nxt and lift and "subject" not in skipped and "subject" not in done:
         nxt = "subject"
     elif reopen:
+        # "Another lift" read like a repeat on a first plan. Say it only when
+        # a subject lift is already on the photo, and keep a flag for Accept.
+        again = "subject" in done or "subject" in [str(name) for name in (plan.get("features_done") or [])]
         done = [name for name in done if name != "subject"]
         nxt = "subject"
-        note = "Another lift, for this request."
+        plan["subject_again"] = again
+        note = (
+            "A second, gentler subject lift is planned, because this request asks for more on the subject."
+            if again
+            else ""
+        )
     elif feature_look == "accept-feature" and not nxt and waiting == "subject":
         note = "The subject lift is now on this photo."
     elif feature_look == "accept-feature" and not nxt and waiting:
@@ -664,7 +672,7 @@ def commit_waiting_step(output_dir) -> dict:
     directory, path, recipe, plan = _load_recipe(output_dir)
     nxt = str(recipe.get("features_next") or "").strip()
     step_path = directory / "step.dtstyle"
-    again = "Another" in str(recipe.get("feature_note") or "")
+    again = bool((recipe.get("plan") or {}).get("subject_again")) or "Another" in str(recipe.get("feature_note") or "")
     title = str(recipe.get("features_next_title") or "")
     if nxt == "subject" and _names_a_thing(title) and _subject_box(recipe, directory) is None:
         return _leave_off(
@@ -909,6 +917,19 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
         if str(item).strip()
     ]
     brief = technical_brief(atmosphere, stages=ran)
+    from ai_dt.animal_plan import animal_noun, subject_is_animal, subject_line
+
+    picture_record = recipe.get("picture") if isinstance(recipe.get("picture"), dict) else {}
+    subject_words = f"{scene_for_model} {steer}"
+    animal_subject = plan.get("subject_kind") == "animal" or subject_is_animal(
+        str(picture_record.get("type") or ""), [], subject_words
+    )
+    ground_bright = bool(plan.get("bright_ground"))
+    water_seen = bool(plan.get("subject_water")) or bool(
+        re.search(r"\b(water|pond|lake|river|sea|stream|canal)\b", scene_for_model, re.IGNORECASE)
+    )
+    if animal_subject:
+        brief = f"{brief}\n" + subject_line(animal_noun(steer, scene_for_model), ground_bright, water_seen)
     recipe["technical_brief"] = brief
     applied = applied_steps(plan, history_names_from_xmp(history_xmp))
     skipped_before = skipped_steps(plan)
@@ -971,6 +992,23 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
     plan = select_mask_features(plan, merged, [], steer, grounded, "")
     plan = _install_history_steps(plan, operations)
     plan = _drop_applied_steps(plan, applied, skipped_before, steer)
+    if animal_subject:
+        from ai_dt.animal_plan import animal_plan
+
+        animal_count = sum(
+            1 for item in ((recipe.get("analysis") or {}).get("subjects") or [])
+            if isinstance(item, dict) and str(item.get("category") or "") == "animal"
+        )
+        plan = animal_plan(
+            plan,
+            steer=steer,
+            description=scene_for_model,
+            animals=max(1, animal_count),
+            ground=ground_bright,
+            water=water_seen,
+            applied=[str(item.get("id") or "") for item in applied if isinstance(item, dict)] + list(skipped_before or []),
+        )
+        plan["subject_water"] = water_seen
     plan = _keep_current_plan(plan, previous, applied)
     recipe["plan"] = plan
     nxt = str(plan.get("features_next") or "")
@@ -992,6 +1030,8 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
         step_path.unlink()
     recipe.pop("step_style", None)
     recipe["plan_request"] = " ".join(str(steer or "").split())
+    recipe["plan_description"] = " ".join(str(scene.get("summary") or "").split())
+    recipe["plan_description_source"] = str(scene.get("source") or "")
     recipe["status_text"] = panel_status(recipe)
     _save_recipe(path, recipe)
     return recipe

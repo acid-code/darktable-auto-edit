@@ -361,7 +361,8 @@ class PanelTests(unittest.TestCase):
         )
         self.assertEqual(chosen["features_next"], "subject")
         self.assertNotIn("subject", chosen["features_done"])
-        self.assertIn("Another lift", chosen["feature_note"])
+        self.assertIn("A second, gentler subject lift", chosen["feature_note"])
+        self.assertTrue(chosen["subject_again"])
 
     def test_an_eyes_request_becomes_a_step_after_the_subject_is_done(self) -> None:
         plan = empty_plan(["grade", "subject"])
@@ -546,14 +547,16 @@ class PanelTests(unittest.TestCase):
                 plan_chat(directory, "highlight the eyes and make them pop")
             saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["features_next"], "eyes")
-            self.assertEqual(saved["plan"]["features_path"], ["eyes", "subject"])
+            # A cat is an animal: the lift is the animal outline step, and the
+            # eyes the request names stay first.
+            self.assertEqual(saved["plan"]["features_path"], ["eyes", "mask_animal"])
             self.assertNotIn("Stages: eyes, subject, reflection, background.", saved["status_text"])
-            self.assertIn("Steps: eyes, subject.", saved["status_text"])
+            self.assertIn("Steps: eyes, mask_animal.", saved["status_text"])
             self.assertIn("Not on this photo: reflection, background.", saved["status_text"])
             self.assertIn("stays off this photo", saved["status_text"])
             commit_waiting_step(directory)
             accepted = json.loads((directory / "output.json").read_text(encoding="utf-8"))
-            self.assertEqual(accepted["features_next"], "subject")
+            self.assertEqual(accepted["features_next"], "mask_animal")
             self.assertNotIn("plan is finished", accepted["feature_note"])
             self.assertIn("press Accept", accepted["handoff"]["sentence"])
 

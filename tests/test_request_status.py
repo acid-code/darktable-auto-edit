@@ -79,7 +79,7 @@ class AcceptSkipStateTests(unittest.TestCase):
 
     def test_panel_marks_the_current_plan_and_names_the_step(self) -> None:
         text = panel_status(WAITING)
-        self.assertIn("Current plan (from \u201cfinish the duck\u201d)", text)
+        self.assertIn("Current plan (from request \u201cfinish the duck\u201d)", text)
         self.assertIn("now — Quiet the water around the duck", text)
         self.assertTrue(text.endswith("Accept/Skip apply to: Quiet the water around the duck"))
         lines = accept_skip_lines(WAITING)

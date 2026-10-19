@@ -388,18 +388,24 @@ local function run_processor(preview, work_dir, original, vibe, steer, options)
   if type(vibe) ~= "string" then
     vibe = preference("vibe", "string")
   end
-  if vibe ~= "" then
-    parts[#parts + 1] = " --vibe "
-    parts[#parts + 1] = shell_quote(vibe)
+  -- Typed text goes through a UTF-8 file. On Windows io.popen runs cmd.exe
+  -- in the ANSI code page, which turned "duck’s" into "duckÔÇÖs" in argv.
+  local function text_arg(flag, value, file_name)
+    if type(value) ~= "string" or value == "" then
+      return
+    end
+    local file = join_path(work_dir, file_name)
+    if write_file(file, value) == nil then
+      parts[#parts + 1] = " " .. flag .. "-file "
+      parts[#parts + 1] = shell_quote(file)
+    else
+      parts[#parts + 1] = " " .. flag .. " "
+      parts[#parts + 1] = shell_quote(value)
+    end
   end
-  if type(steer) == "string" and steer ~= "" then
-    parts[#parts + 1] = " --steer "
-    parts[#parts + 1] = shell_quote(steer)
-  end
-  if type(options.scene) == "string" and options.scene ~= "" then
-    parts[#parts + 1] = " --scene "
-    parts[#parts + 1] = shell_quote(options.scene)
-  end
+  text_arg("--vibe", vibe, "arg-vibe.txt")
+  text_arg("--steer", steer, "arg-request.txt")
+  text_arg("--scene", options.scene, "arg-description.txt")
   if options.rewrite_scene == true then
     parts[#parts + 1] = " --rewrite-scene"
   end
@@ -1007,6 +1013,14 @@ function request_ui.changed(recipe)
   return request_ui.key(typed) ~= request_ui.key(recipe.plan_request)
 end
 
+-- Same rule as status_text.description_changed.
+function request_ui.described(recipe)
+  if type(recipe) ~= "table" or type(recipe.plan_description) ~= "string" or type(scene_text) ~= "function" then
+    return false
+  end
+  return request_ui.key(scene_text()) ~= request_ui.key(recipe.plan_description)
+end
+
 function request_ui.waiting(recipe)
   if type(recipe) ~= "table" or type(recipe.features_next) ~= "string" or recipe.features_next == "" then
     return ""
@@ -1026,13 +1040,24 @@ local function plan_status(recipe)
     return body
   end
   local state = recipe.accept_skip
-  local changed = request_ui.changed(recipe)
+  local asked_changed = request_ui.changed(recipe)
+  local described_changed = (not asked_changed) and request_ui.described(recipe)
+  local changed = asked_changed or described_changed
   if type(state) == "table" and type(state.line) == "string" and type(state.changed_line) == "string" then
-    local wanted = changed and state.changed_line or state.line
-    local other = changed and state.line or state.changed_line
-    local at, finish = body:find(other, 1, true)
-    if at then
-      return body:sub(1, at - 1) .. wanted .. body:sub(finish + 1)
+    local described_line = type(state.description_changed_line) == "string" and state.description_changed_line or state.changed_line
+    local wanted = state.line
+    if asked_changed then
+      wanted = state.changed_line
+    elseif described_changed then
+      wanted = described_line
+    end
+    for _, other in ipairs({ state.line, state.changed_line, described_line }) do
+      if other ~= wanted then
+        local at, finish = body:find(other, 1, true)
+        if at then
+          return body:sub(1, at - 1) .. wanted .. body:sub(finish + 1)
+        end
+      end
     end
     if body:find(wanted, 1, true) then
       return body
@@ -1321,7 +1346,16 @@ local function propose_image(image, index, total, vibe, steer)
   -- Ask is a follow-up. It keeps the saved subjects and does not grade again.
   -- Propose reads the photo even when this folder already has a plan.
   local asking = run_button ~= nil and run_button.label == "Ask"
-  if asking and not steered then
+  -- An edited description is a new plan even with the request box empty.
+  local described = false
+  if type(existing) == "table" and type(scene_text) == "function" then
+    local before = existing.plan_description
+    if type(before) ~= "string" then
+      before = type(existing.scene) == "table" and existing.scene.summary or ""
+    end
+    described = scene_text() ~= "" and request_ui.key(scene_text()) ~= request_ui.key(before)
+  end
+  if asking and not steered and not described then
     if existing then
       existing.chat = true
       existing.choices = {}
@@ -1831,7 +1865,7 @@ local function show_choices(recipe)
       choice_ids[index] = nil
     end
   end
-  request_ui.was_changed = request_ui.changed(shown_recipe)
+  request_ui.was_changed = request_ui.changed(shown_recipe) or request_ui.described(shown_recipe)
   refresh_controls(shown_recipe)
 end
 
@@ -3965,7 +3999,7 @@ function request_ui.refresh()
   if panel_is_busy or preview_applying or type(shown_recipe) ~= "table" or not status_label then
     return
   end
-  local changed = request_ui.changed(shown_recipe)
+  local changed = request_ui.changed(shown_recipe) or request_ui.described(shown_recipe)
   if changed == request_ui.was_changed then
     return
   end

@@ -98,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="The photo description the user confirmed. Empty keeps the stored description.",
     )
+    parser.add_argument("--steer-file", default=None, help="UTF-8 file holding --steer (the Lua panel writes it).")
+    parser.add_argument("--scene-file", default=None, help="UTF-8 file holding --scene (the Lua panel writes it).")
+    parser.add_argument("--vibe-file", default=None, help="UTF-8 file holding --vibe (the Lua panel writes it).")
     parser.add_argument(
         "--rewrite-scene",
         action="store_true",
@@ -178,6 +181,11 @@ def _analyze_kwargs(args) -> dict:
 def main(argv: list[str] | None = None) -> int:
     load_project_env()
     args = build_parser().parse_args(argv)
+    from ai_dt.text_io import read_text_arg
+
+    args.steer = read_text_arg(args.steer, args.steer_file)
+    args.scene = read_text_arg(args.scene, args.scene_file)
+    args.vibe = read_text_arg(args.vibe, args.vibe_file)
     if args.align_history:
         from ai_dt.features import align_plan_to_history
 

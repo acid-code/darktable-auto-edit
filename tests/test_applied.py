@@ -134,7 +134,9 @@ class PlanChatRepeatTests(unittest.TestCase):
             saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
             self.assertNotEqual(saved["features_next"], "subject")
             self.assertNotIn("subject", saved["plan"]["features_path"])
-            self.assertIn("mask_background", saved["plan"]["features_path"])
+            # The duck is an animal: the background step is the animal one.
+            self.assertIn("mask_animal_background", saved["plan"]["features_path"])
+            self.assertNotIn("mask_animal", saved["plan"]["features_path"])
             self.assertIn("subject", saved["plan"]["features_done"])
             self.assertIn("Already on this photo", saved["feature_note"])
 
@@ -148,7 +150,7 @@ class PlanChatRepeatTests(unittest.TestCase):
                 plan_chat(directory, "finish the edit", history_xmp=str(xmp))
             self.assertIn("mask_background (Quiet the background)", ask.call_args.kwargs["applied"])
             saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved["plan"]["features_path"], ["foreground"])
+            self.assertEqual(saved["plan"]["features_path"], ["mask_bottom_gradient"])
 
     def test_skipped_steps_reach_the_prompt_and_stay_out(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,7 +161,8 @@ class PlanChatRepeatTests(unittest.TestCase):
                 plan_chat(directory, "finish the edit")
             self.assertIn("Skipped by the photographer in this session: mask_background", ask.call_args.kwargs["applied"])
             saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved["features_next"], "foreground")
+            self.assertEqual(saved["features_next"], "mask_bottom_gradient")
+            self.assertNotIn("mask_animal_background", saved["plan"]["features_path"])
 
     def test_a_plan_of_only_repeats_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,7 +181,7 @@ class PlanChatRepeatTests(unittest.TestCase):
             with patch("ai_dt.reasoner.propose_gemini", return_value=_reply("subject")):
                 plan_chat(directory, "lift the subject again, stronger")
             saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved["features_next"], "subject")
+            self.assertEqual(saved["features_next"], "mask_animal")
 
 
 if __name__ == "__main__":

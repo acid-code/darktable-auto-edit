@@ -294,6 +294,77 @@ panel cannot react to each keystroke. What changed:
 Tests: `tests/test_request_status.py` (9, including a lua5.4 run of the
 real `plan_status` block from `ai_editor.lua` against the Python lines).
 
+## Duck test 2: animal routing, animal steps, encoding, plan label
+
+Report: mallard on a bright concrete ledge by green water, "Make the duck
+the main theme" → Stages subject, skin, eyes, background; "Painted grades
+for separate, person"; "Another lift, for this request."; plan text said
+"eider"; after editing the description and re-proposing: same, plus
+"duckÔÇÖs" and a stale "Current plan (from …request…)" header.
+
+Cause (confirmed with real YOLO on `uploads/duck.jpg` in `/workspace/yolo-venv`):
+YOLO keeps people down to 0.15 for recall and put a 0.49 "person" box on the
+duck's head, inside its 0.90 "bird" box. `decide_picture` lets people win,
+so the photo became a portrait and the portrait guide planned skin/person.
+Nothing re-read the type from the words, so an edited description could not
+fix it. The heuristic eye search also put "eyes" on the orange feet.
+
+Changes:
+- `detectors/heuristic.drop_animal_heads` (after `gate_faces`): a non-MediaPipe
+  person/face whose centre is inside a confident animal box, smaller than half
+  of it and less confident, is dropped. `_eye_search_box` keeps the animal-eye
+  search in the top 45% of a tall bird box.
+- `animal_plan.retype_from_text` (pipeline, before `match_guide`): request,
+  edited description, Mistral reading. A portrait/group/street/general type
+  becomes `animal` when the words name an animal and no person (and there is
+  no MediaPipe face); person boxes (or, without YOLO, the heuristic subject
+  box) become a `reading` animal box so `segment_animals` has somewhere to look.
+  Statues/toys/decoys are not animals.
+- `animal_plan.animal_plan` (pipeline after `resolve_plan`; Ask after
+  `_drop_applied_steps`): person steps are dropped (eyes unless asked);
+  subject/separate → `mask_animal` (`mask_animals` for 2+), background →
+  `mask_animal_background`, foreground → `mask_bottom_gradient`. A general
+  emphasis request fills the default recipe in order: `mask_animal` →
+  `mask_animal_background` → `mask_bottom_gradient` (only with a bright
+  ground band, `bright_ground`) → `mask_edge_burn`; steps already applied or
+  skipped (either naming) are not re-added. Titles are concrete actions
+  ("Lift the duck a little and crisp its feathers", …), never the request.
+- Planner prompt: `catalog_text` lists the animal steps, the order, and the
+  generic→animal mapping; the brief gets a `subject_line` (noun, ledge/water
+  regions). The reasoning paragraph is cleaned: species words become the
+  user's word or "the duck"/"the bird" (`generic_species`), and "keeping the
+  water/ledge untouched" is replaced by what the steps actually touch
+  (`consistent_regions`).
+- "Another lift, for this request." is gone: only when a subject lift is
+  already on the photo the note says "A second, gentler subject lift is
+  planned, because this request asks for more on the subject."
+  (`plan.subject_again` flag).
+- Encoding: Lua `run_processor` writes the vibe/request/description to
+  UTF-8 files (`arg-vibe.txt`, `arg-request.txt`, `arg-description.txt` in the
+  work folder) and passes `--vibe-file/--steer-file/--scene-file` (argv is
+  the fallback); `cmd.exe` no longer re-encodes them. `ai_dt/text_io.clean_text`
+  repairs cp850/cp437/cp1252 mojibake and turns smart quotes into ASCII, on
+  the CLI args and on stored observations.
+- Plan label: recipes record `plan_description` and
+  `plan_description_source`; the header says
+  `Current plan (from request “…” + the photo description)` /
+  `(from your edited description)`. A Propose with an edited description
+  does not carry over the old waiting steps. Lua: Ask with an empty request
+  but a changed description builds a new plan; the Accept/Skip line says
+  "Description changed — press Ask for a new plan…".
+
+End to end on the real duck (offline, Mistral/Gemini mocked with the
+portrait-style plan subject/skin/eyes/background): YOLO → `animal`; plan
+`mask_animal, mask_animal_background, mask_bottom_gradient, mask_edge_burn`;
+the `mask_animal` outline covers the duck (head to feet) with nothing outside
+its box — `/workspace/diag/duck_mask.png`. Without YOLO (heuristic only) the
+reading box gives the same plan and a slightly looser outline —
+`/workspace/diag/duck_mask_heuristic.png`.
+
+Tests: `tests/test_animal_routing.py` (19). Updated expectations in
+`test_applied.py`, `test_features.py`, `test_request_status.py`: animal
+photos now get animal step ids, and the header names request/description.
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -311,6 +382,7 @@ test runs instead of skipping).
 | After bug 1 fix | 426 | 1 | 0 | 0 |
 | After bug 2 fix | 437 | 1 | 0 | 0 |
 | After bug 3 fix | 446 | 1 | 0 | 0 |
+| After duck test 2 (animal routing) | 465 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`
@@ -318,7 +390,8 @@ expects `separation.eyes >= 1`. It passes at `d5115dd` and fails at
 `dd888ef`: the reworked heuristic animal-eye search (`animal_eye_boxes`,
 pairs only) no longer finds the single profile eye of the synthetic bird.
 Decide whether the test or the heuristic is right; I did not change the
-detector.
+detector. It is not related to the animal routing (that photo is already typed
+wildlife/animal; only the eye count fails), so it is still left as is.
 
 ## Known risks / unverified against real darktable 5.6
 
