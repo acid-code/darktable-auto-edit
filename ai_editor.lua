@@ -3639,28 +3639,77 @@ steer_entry = dt.new_widget("entry") {
 -- text_view wraps at word and character breaks. A vertical box gives each
 -- status line its own height. A horizontal row stayed one line tall, and
 -- the status is not ellipsized.
--- The status box must never hold the keyboard focus. darktable 5.6 gives
--- the focused widget the first look at a key and runs a shortcut for any key
--- it does not consume (gui/accelerators.c, dt_shortcut_dispatcher). A
--- read-only text view consumes nothing, so after a click on the status box
--- a capital letter became a view switch, a tethering toast or the exposure
--- popup. An insensitive widget cannot take the focus. It stays a text view
--- (a Lua label does not wrap) and the text is still readable, a little dim.
--- The request entry is a real GtkEntry, so letters typed there are consumed
--- and never reach a shortcut. Lua has no grab or key filter beyond that.
--- Asaf still has to confirm this in the darkroom.
-status_label = dt.new_widget("text_view") {
-  text = "Open a photo. The description is written when that box is empty. Ask writes a plan. Looks opens the choices.",
-  editable = false,
-  sensitive = false,
+-- The status box must never hold the keyboard focus. darktable (5.4 and
+-- 5.6) gives the focused widget the first look at a key and runs a shortcut
+-- for any key it does not consume (gui/accelerators.c). A read-only
+-- text_view consumes nothing, so after a click on it capital letters became
+-- shortcuts; making it insensitive fixed that but drew the text dim grey.
+-- A label cannot take the focus and draws normal text. A Lua label does not
+-- wrap and its setter turns on end-ellipsis, so the text is wrapped here at
+-- word breaks and ellipsis is turned off again after every set: long plans
+-- stay complete. status_label keeps the old ``.text =`` interface.
+request_ui.status_columns = 46
+
+function request_ui.wrap_status(text)
+  local out = {}
+  for line in (tostring(text or "") .. "\n"):gmatch("(.-)\n") do
+    local row = ""
+    for word in line:gmatch("%S+") do
+      while #word > request_ui.status_columns do
+        if row ~= "" then
+          out[#out + 1] = row
+          row = ""
+        end
+        out[#out + 1] = word:sub(1, request_ui.status_columns)
+        word = word:sub(request_ui.status_columns + 1)
+      end
+      if row == "" then
+        row = word
+      elseif #row + 1 + #word <= request_ui.status_columns then
+        row = row .. " " .. word
+      else
+        out[#out + 1] = row
+        row = word
+      end
+    end
+    out[#out + 1] = row
+  end
+  return table.concat(out, "\n")
+end
+
+request_ui.status_widget = dt.new_widget("label") {
+  label = "",
+  halign = "start",
+  selectable = false,
 }
+request_ui.status_text = ""
+status_label = setmetatable({}, {
+  __index = function(_, key)
+    if key == "text" then
+      return request_ui.status_text
+    end
+    return request_ui.status_widget[key]
+  end,
+  __newindex = function(_, key, value)
+    if key == "text" then
+      request_ui.status_text = tostring(value or "")
+      request_ui.status_widget.label = request_ui.wrap_status(request_ui.status_text)
+      pcall(function()
+        request_ui.status_widget.ellipsize = "none"
+      end)
+      return
+    end
+    request_ui.status_widget[key] = value
+  end,
+})
+status_label.text = "Open a photo. The description is written when that box is empty. Ask writes a plan. Looks opens the choices."
 look_name_label = dt.new_widget("label") {
   label = "Look: —",
   halign = "start",
 }
 local status_row = dt.new_widget("box") {
   orientation = "vertical",
-  status_label,
+  request_ui.status_widget,
 }
 
 run_button = dt.new_widget("button") {
