@@ -46,3 +46,38 @@ class BoxlessSubjectLiftTests(unittest.TestCase):
             saved = commit_waiting_step(directory)
             self.assertIn("step_mask", saved)
             self.assertFalse((directory / "step.dtstyle").is_file())
+
+
+class SceneryIsNotASubjectTests(unittest.TestCase):
+    """A model that returns a patch of water running off the frame is overruled."""
+
+    def test_edge_patch_from_a_model_falls_back_to_the_local_finder(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+        from PIL import Image
+
+        from ai_dt import mask_steps
+        from ai_dt.segment import SegmentResult
+
+        rng = np.random.default_rng(5)
+        pixels = np.full((240, 320, 3), (0.45, 0.45, 0.4), dtype=np.float32) + rng.random((240, 320, 3)) * 0.05
+        pixels[100:150, 130:160] = (0.2, 0.5, 0.2)
+        water = np.zeros((240, 320), np.float32)
+        water[60:, 200:] = 1.0
+
+        def fake(image, classes, **_kw):
+            result = SegmentResult()
+            if "subject" in classes:
+                result.masks["subject"] = water
+                result.sources["subject"] = "rembg"
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            Image.fromarray((np.clip(pixels, 0, 1) * 255).astype("uint8")).save(Path(tmp) / "preview.jpg")
+            with patch("ai_dt.segment.segment", fake):
+                drawn = mask_steps.write_step_mask({}, Path(tmp), "mask_animal", action="lift")
+        self.assertIsNotNone(drawn)
+        self.assertTrue(drawn["source"].endswith("heuristic"))

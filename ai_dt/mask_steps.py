@@ -445,12 +445,22 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
 
         subject = segment(image, ["subject"], boxes=subject_boxes(recipe), backend=chosen_backend)
         mask = subject.get("subject")
+        source = str(subject.sources.get("subject", ""))
+        if mask is not None and not _plausible_subject(mask):
+            # A model can return a patch of water or foreground running off the
+            # frame. Fall back to the local-contrast finder, which skips those.
+            mask, source = None, ""
         if mask is None:
-            return None, ""
+            from ai_dt.segment.heuristic import HeuristicSegmenter
+
+            mask = HeuristicSegmenter().segment(image, ["subject"], boxes=[]).get("subject")
+            source = "heuristic"
+            if mask is None or not _plausible_subject(mask):
+                return None, ""
         fallback = mask_to_forms(mask, border=0.015, max_paths=6, max_points=48, min_area=0.004)
         if not fallback:
             return None, ""
-        return fallback, "subject (no animal detected): " + str(subject.sources.get("subject", ""))
+        return fallback, "subject (no animal detected): " + source
     region_forms: list[dict] = []
     source = ""
     box = _main_box(recipe) if step.region == "subject" else None
@@ -473,6 +483,18 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
     if step.builder == "glow":
         return glow_forms(box, region_forms), source or "subject box"
     return None, ""
+
+
+def _plausible_subject(mask) -> bool:
+    """False for a mask that looks like scenery: very large, or running along the frame edge."""
+
+    import numpy as np
+
+    binary = np.asarray(mask) >= 0.5
+    if not binary.any() or binary.mean() > 0.35:
+        return False
+    border = np.concatenate([binary[0], binary[-1], binary[:, 0], binary[:, -1]])
+    return float(border.mean()) <= 0.08
 
 
 def write_step_mask(recipe: dict, directory, step_id: str, *, action: str = "", image=None, backend: str = "") -> dict | None:
