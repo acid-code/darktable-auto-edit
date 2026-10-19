@@ -529,3 +529,12 @@ Done on `feature/ai-masks`: path outlines, gradients and groups on exposure, col
 - The panel blocks until Python returns. A RAW decode plus the background blur takes longer than the old preview pass. `run.log` in the work folder has the output.
 - A style still cannot store a drawn mask. Guide masks are painted into the TIFF. An accepted eye or hue step is spliced into the sidecar. See [Sidecar history and drawn masks](#sidecar-history-and-drawn-masks).
 - The TIFF uses the camera white balance, at half resolution unless you pass `--full-res`. A later steer on that opened picture rereads the camera file, so the masks are not applied twice.
+
+### New plan
+
+**New plan** forgets this photo's saved plan and starts fresh. It deletes only
+the plan files in the photo's work folder
+(`<darktable config dir>/ai-editor-work/<image id>/v<duplicate>`; on Windows
+`%LOCALAPPDATA%\darktable\ai-editor-work\<id>\v0`). The darktable history,
+the XMP sidecar and the camera file stay as they are. Then type a request, or
+leave it blank, and press **Ask**.
