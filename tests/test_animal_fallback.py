@@ -81,3 +81,33 @@ class SceneryIsNotASubjectTests(unittest.TestCase):
                 drawn = mask_steps.write_step_mask({}, Path(tmp), "mask_animal", action="lift")
         self.assertIsNotNone(drawn)
         self.assertTrue(drawn["source"].endswith("heuristic"))
+
+
+class AnimalOnSceneryTests(unittest.TestCase):
+    """An "animal" outline on water is replaced when a clear subject sits elsewhere."""
+
+    def test_water_animal_is_replaced_by_the_subject(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import numpy as np
+        from PIL import Image
+
+        from ai_dt import mask_steps
+
+        rng = np.random.default_rng(5)
+        pixels = np.full((240, 320, 3), (0.45, 0.45, 0.4), dtype=np.float32) + rng.random((240, 320, 3)) * 0.05
+        pixels[100:150, 130:160] = (0.2, 0.5, 0.2)
+        water = np.zeros((240, 320), np.float32)
+        water[60:, 200:] = 1.0
+        found = SimpleNamespace(animals=[SimpleNamespace(mask=water, source="darktable-sam")], notes=[],
+                                union=lambda size: water)
+        with tempfile.TemporaryDirectory() as tmp:
+            Image.fromarray((np.clip(pixels, 0, 1) * 255).astype("uint8")).save(Path(tmp) / "preview.jpg")
+            with patch("ai_dt.segment.animals.segment_animals", lambda *a, **k: found), \
+                 patch("ai_dt.segment.animals.animal_forms", lambda f, which: [{"type": "path", "points": [[0.7, 0.3], [1, 0.3], [1, 1]]}]):
+                drawn = mask_steps.write_step_mask({}, Path(tmp), "mask_animal", action="lift")
+        self.assertIsNotNone(drawn)
+        self.assertIn("no animal detected", drawn["source"])

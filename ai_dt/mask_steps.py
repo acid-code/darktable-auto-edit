@@ -436,6 +436,13 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
         found = segment_animals(image, subject_boxes(recipe), backend=chosen_backend)
         forms = animal_forms(found, which="main" if step.builder == "animal_main" else "all")
         kinds = sorted({animal.source for animal in found.animals})
+        union = found.union(image.size) if found.animals else None
+        if forms and union is not None and not _plausible_subject(union) and _clear_subject_elsewhere(image, union):
+            # A detector box on water or foreground made SAM outline scenery
+            # while a clear subject sits somewhere else. A close-up animal that
+            # fills the frame is kept: the finder skips edge regions, so it
+            # finds nothing apart from it.
+            forms = None
         if forms:
             return forms, ", ".join(kinds)
         # The plan says there is an animal (from the picture model, the typed
@@ -495,6 +502,24 @@ def _plausible_subject(mask) -> bool:
         return False
     border = np.concatenate([binary[0], binary[-1], binary[:, 0], binary[:, -1]])
     return float(border.mean()) <= 0.08
+
+
+def _clear_subject_elsewhere(image, mask) -> bool:
+    """True when the local-contrast finder sees a subject that the mask mostly misses."""
+
+    import numpy as np
+    from PIL import Image as _Image
+
+    from ai_dt.segment.heuristic import HeuristicSegmenter
+
+    found = HeuristicSegmenter().segment(image, ["subject"], boxes=[]).get("subject")
+    if found is None:
+        return False
+    other = np.asarray(_Image.fromarray((np.asarray(mask) >= 0.5).astype(np.uint8) * 255).resize(found.shape[::-1])) > 127
+    subject = found >= 0.5
+    if not subject.any():
+        return False
+    return float((subject & other).sum()) / float(subject.sum()) < 0.2
 
 
 def write_step_mask(recipe: dict, directory, step_id: str, *, action: str = "", image=None, backend: str = "") -> dict | None:

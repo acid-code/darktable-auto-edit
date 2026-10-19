@@ -257,6 +257,49 @@ def _span_fill(blob: np.ndarray, axis: int) -> np.ndarray:
     return (index >= first) & (index <= last)
 
 
+def _grow(binary: np.ndarray, radius: int) -> np.ndarray:
+    out = binary.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dy * dy + dx * dx <= radius * radius:
+                out |= np.roll(np.roll(binary, dy, 0), dx, 1)
+    return out
+
+
+def _refine_subject(image: Image.Image, coarse: np.ndarray, work: int = 640) -> np.ndarray | None:
+    """Tighten a coarse subject blob at a higher resolution.
+
+    Pixels near the blob whose colour is far from the surrounding background
+    (a ring just outside the blob) are kept, so the mask follows the subject's
+    own edge instead of spilling into water or sky around it.
+    """
+
+    scale = min(1.0, work / float(max(image.size)))
+    size = (max(8, int(round(image.width * scale))), max(8, int(round(image.height * scale))))
+    pixels = np.asarray(image.convert("RGB").resize(size, Image.BILINEAR), dtype=np.float32) / 255.0
+    seed = np.asarray(Image.fromarray(coarse.astype(np.uint8) * 255).resize(size, Image.NEAREST)) > 127
+    unit = max(1, int(round(max(size) / 160.0)))
+    near = _grow(seed, 4 * unit)
+    ring = _grow(seed, 9 * unit) & ~_grow(seed, 6 * unit)
+    if ring.sum() < 20:
+        return None
+    background = pixels[ring]
+    mean = background.mean(axis=0)
+    spread = background.std(axis=0) + 0.02
+    distance = np.sqrt((((pixels - mean) / spread) ** 2).sum(axis=2))
+    fine = near & (distance > 3.0)
+    labels, count = label_components(fine)
+    if count == 0:
+        return None
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    sizes[0] = 0
+    fine = (sizes >= 0.05 * sizes.max())[labels]
+    fine = fine | (_span_fill(fine, 1) & _span_fill(fine, 0))
+    if fine.sum() < 0.3 * seed.sum() * 0.25:
+        return None
+    return fine
+
+
 def _saliency_subject(pixels: np.ndarray) -> np.ndarray | None:
     """The patch that stands out most from its own surroundings, near the middle.
 
@@ -327,6 +370,10 @@ class HeuristicSegmenter:
                     found = blob if found is None else (found | blob)
             if found is None:
                 found = _saliency_subject(pixels)
+                if found is not None:
+                    refined = _refine_subject(image, found)
+                    if refined is not None:
+                        found = refined
             if found is not None:
                 out["subject"] = found.astype(np.float32)
         if "people" in wanted:
