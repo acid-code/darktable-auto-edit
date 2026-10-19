@@ -244,23 +244,64 @@ def _box_mask(pixels: np.ndarray, box: tuple[float, float, float, float]) -> np.
     return _close(blob, 1)
 
 
+def _span_fill(blob: np.ndarray, axis: int) -> np.ndarray:
+    """Fill each row (axis=1) or column (axis=0) between its first and last set pixel."""
+
+    index = np.arange(blob.shape[axis])
+    shape = [1, 1]
+    shape[axis] = -1
+    index = index.reshape(shape)
+    big = blob.shape[axis]
+    first = np.where(blob, index, big).min(axis=axis, keepdims=True)
+    last = np.where(blob, index, -1).max(axis=axis, keepdims=True)
+    return (index >= first) & (index <= last)
+
+
 def _saliency_subject(pixels: np.ndarray) -> np.ndarray | None:
+    """The patch that stands out most from its own surroundings, near the middle.
+
+    Local contrast (each pixel against a wide blur of its neighbourhood) keeps a
+    large area that merely differs from the border colour, such as a patch of
+    water, from beating a small bird in front of it.
+    """
+
     height, width = pixels.shape[:2]
-    border = np.concatenate([pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]])
-    mean = border.mean(axis=0)
-    distance = np.sqrt(((pixels - mean) ** 2).sum(axis=2))
+    local = np.stack([_blur(pixels[..., c], 12) for c in range(3)], axis=-1)
+    distance = np.sqrt(((pixels - local) ** 2).sum(axis=2))
     yy, xx = np.mgrid[0:height, 0:width]
     center = np.exp(-(((xx / width - 0.5) / 0.35) ** 2 + ((yy / height - 0.5) / 0.35) ** 2))
     score = _blur((distance * center).astype(np.float32), 2)
-    threshold = float(score.mean() + score.std())
-    blob = score > threshold
+    blob = score > float(score.mean() + 2.0 * score.std())
     if not blob.any():
         return None
-    blob = _largest(blob, (0.5, 0.5))
-    cover = float(blob.mean())
-    if cover < 0.02 or cover > 0.6:
+    labels, count = label_components(blob)
+    edge = set(np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])).tolist())
+    best, best_score = 0, 0.0
+    for index in range(1, count + 1):
+        if index in edge:
+            continue
+        part = labels == index
+        size = int(part.sum())
+        if size < 0.004 * blob.size:
+            continue
+        ys, xs = np.nonzero(part)
+        span_x, span_y = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+        # A wide flat band (a shoreline, a hedge, a horizon) is not a subject.
+        if max(span_x, span_y) > 4 * min(span_x, span_y):
+            continue
+        strength = float(score[part].mean()) * size ** 0.25
+        if strength > best_score:
+            best, best_score = index, strength
+    if not best:
         return None
-    return _close(blob, 1)
+    blob = _close(labels == best, 1)
+    # Local contrast lights up a flat subject's outline more than its middle,
+    # so fill whatever the outline encloses.
+    blob = blob | _span_fill(blob, 1) | _span_fill(blob, 0)
+    cover = float(blob.mean())
+    if cover < 0.005 or cover > 0.6:
+        return None
+    return blob
 
 
 class HeuristicSegmenter:

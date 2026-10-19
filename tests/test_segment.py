@@ -260,3 +260,20 @@ class OptionalBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SaliencyPrefersTheSubjectTests(unittest.TestCase):
+    """A big patch running off the frame (water, foreground) must not beat a small subject."""
+
+    def test_small_subject_beats_edge_patch(self) -> None:
+        import numpy as np
+        from PIL import Image
+
+        rng = np.random.default_rng(5)
+        pixels = np.full((240, 320, 3), (0.45, 0.45, 0.4), dtype=np.float32) + rng.random((240, 320, 3)) * 0.05
+        pixels[40:240, 200:320] = (0.6, 0.6, 0.55)  # a lighter patch of water on the right edge
+        pixels[100:150, 130:160] = (0.2, 0.5, 0.2)  # a small green bird left of centre
+        image = Image.fromarray((np.clip(pixels, 0, 1) * 255).astype("uint8"))
+        mask = segment(image, ["subject"], backend="heuristic").masks["subject"]
+        self.assertGreater(region(mask, slice(105, 145), slice(135, 155)), 0.8)
+        self.assertLess(region(mask, slice(60, 240), slice(230, 320)), 0.05)
