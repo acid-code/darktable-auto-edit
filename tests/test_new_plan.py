@@ -1,4 +1,4 @@
-"""The New plan button forgets the saved plan only (no darktable history, no sidecar)."""
+"""The Clear plan button forgets the saved plan only (no darktable history, no sidecar)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class NewPlanTests(unittest.TestCase):
     def test_label_and_tooltip(self) -> None:
         block = LUA[LUA.index("request_ui.new_plan_button = dt.new_widget(\"button\")"):]
         block = block[: block.index("\n}\n")]
-        self.assertIn('label = "New plan",', block)
+        self.assertIn('label = "Clear plan",', block)
         self.assertIn(
             "tooltip = \"Forget this photo's saved plan and start fresh. Your darktable edits stay as they are.\"",
             block,

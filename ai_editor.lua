@@ -1359,7 +1359,7 @@ local function propose_image(image, index, total, vibe, steer)
   -- Ask reads the photo even when this folder already has a plan.
   local asking = run_button ~= nil and run_button.label == "Ask"
   -- A follow-up needs the saved reading. With none (a new photo, or after
-  -- New plan) Ask reads the photo and plans from scratch.
+  -- Clear plan) Ask reads the photo and plans from scratch.
   if asking and (type(existing) ~= "table" or type(existing.plan) ~= "table") then
     asking = false
   end
@@ -3795,7 +3795,7 @@ remove_button = dt.new_widget("button") {
 }
 
 -- Plan files in this photo's work folder (<config dir>/ai-editor-work/<id>/v<n>).
--- New plan removes only these. The darktable history, the sidecar, the
+-- Clear plan removes only these. The darktable history, the sidecar, the
 -- camera file and an opened edited.tif stay.
 request_ui.plan_files = {
   "output.json", "proposal.json", "stage.json", "step.dtstyle", "edit.dtstyle", "mask.json",
@@ -3806,7 +3806,7 @@ request_ui.plan_files = {
 function request_ui.new_plan()
   local image = target_images()[1]
   if image == nil then
-    status_label.text = "Open a photo, then press New plan."
+    status_label.text = "Open a photo, then press Clear plan."
     return
   end
   local work = edit_work_dir(image)
@@ -3832,12 +3832,12 @@ function request_ui.new_plan()
 end
 
 request_ui.new_plan_button = dt.new_widget("button") {
-  label = "New plan",
+  label = "Clear plan",
   tooltip = "Forget this photo's saved plan and start fresh. Your darktable edits stay as they are.",
   clicked_callback = function()
     local ok, failure = pcall(request_ui.new_plan)
     if not ok then
-      status_label.text = "New plan failed: " .. tostring(failure)
+      status_label.text = "Clear plan failed: " .. tostring(failure)
     end
   end,
 }
