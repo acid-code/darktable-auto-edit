@@ -94,6 +94,69 @@ def plan_backend_line(reasoning: dict | None) -> str:
     return "Plan: not used"
 
 
+def request_key(text: str | None) -> str:
+    """A typed request, compared without case or spacing differences."""
+
+    return " ".join(str(text or "").split()).casefold()
+
+
+def request_changed(recipe: dict, typed: str | None) -> bool:
+    """Whether the request box no longer holds the request this plan came from.
+
+    ``None`` (not known) and a recipe without ``plan_request`` (written before
+    plans recorded it) count as unchanged.
+    """
+
+    if typed is None or not isinstance(recipe, dict) or "plan_request" not in recipe:
+        return False
+    return request_key(typed) != request_key(recipe.get("plan_request"))
+
+
+def waiting_step_label(recipe: dict) -> str:
+    """The step Accept and Skip act on, as the panel names it ("" when none)."""
+
+    if not isinstance(recipe, dict):
+        return ""
+    nxt = str(recipe.get("features_next") or "").strip()
+    if not nxt:
+        return ""
+    return " ".join(str(recipe.get("features_next_title") or "").split()) or feature_title(nxt)
+
+
+def _state_line(step: str, changed: bool) -> str:
+    if not step:
+        if changed:
+            return "Request changed — press Ask for a new plan. No step is waiting, so Accept and Skip are off."
+        return "No step is waiting, so Accept and Skip are off. Type a change and press Ask for a plan."
+    if changed:
+        return f"Request changed — press Ask for a new plan; Accept/Skip still apply to: {step}"
+    return f"Accept/Skip apply to: {step}"
+
+
+def accept_skip_state(recipe: dict, typed: str | None = None) -> dict:
+    """Whether Accept/Skip are on, which step they apply to, and the status line.
+
+    Every state names the step, or says there is none and the buttons are
+    off. A request edited but not asked keeps the current plan and says so.
+    """
+
+    step = waiting_step_label(recipe)
+    changed = request_changed(recipe, typed)
+    return {"enabled": bool(step), "step": step, "changed": changed, "line": _state_line(step, changed)}
+
+
+def accept_skip_lines(recipe: dict) -> dict:
+    """Both lines, stored on the recipe for Lua to swap while the request box is edited."""
+
+    step = waiting_step_label(recipe)
+    return {
+        "enabled": bool(step),
+        "step": step,
+        "line": _state_line(step, False),
+        "changed_line": _state_line(step, True),
+    }
+
+
 def _plan_sheet(recipe: dict) -> str:
     """The steps still ahead, and how a typed sentence rewrites them."""
 
@@ -104,7 +167,8 @@ def _plan_sheet(recipe: dict) -> str:
     nxt = str(recipe.get("features_next") or "").strip()
     if not done and not path and not nxt and not queue:
         return ""
-    rows = ["Plan"]
+    asked = " ".join(str(recipe.get("plan_request") or "").split())
+    rows = [f"Current plan (from \u201c{asked}\u201d)" if asked else "Current plan"]
     for item in done:
         rows.append(f"done — {feature_title(item)}")
     if queue:
@@ -206,4 +270,6 @@ def panel_status(recipe: dict) -> str:
     feature_note = str(recipe.get("feature_note") or "").strip()
     if feature_note and feature_note not in lines:
         lines.append(feature_note)
+    if recipe.get("chat") or recipe.get("features_next") or plan_sheet:
+        lines.append(accept_skip_state(recipe)["line"])
     return "\n".join(lines)

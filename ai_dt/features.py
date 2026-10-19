@@ -253,12 +253,13 @@ def _load_recipe(output_dir):
 def _save_recipe(path, recipe) -> None:
     import json
 
-    from ai_dt.status_text import panel_status
+    from ai_dt.status_text import accept_skip_lines, panel_status
 
     recipe["chat"] = True
     recipe["offer_looks"] = False
     recipe["choices"] = []
     recipe["status_text"] = panel_status(recipe)
+    recipe["accept_skip"] = accept_skip_lines(recipe)
     path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8")
 
 
@@ -931,6 +932,14 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
         )
         proposal = asked.get("proposal") if isinstance(asked.get("proposal"), dict) else None
     (directory / "proposal.json").write_text(json.dumps(asked, indent=2) + "\n", encoding="utf-8")
+    previous = {
+        key: plan.get(key)
+        for key in ("step_queue", "features_path", "features_next", "features_next_title", "features_next_action")
+    }
+    if not previous["features_next"]:
+        previous["features_next"] = str(recipe.get("features_next") or "")
+        previous["features_next_title"] = str(recipe.get("features_next_title") or "")
+        previous["features_next_action"] = str(recipe.get("features_next_action") or "")
     plan["features_next"] = ""
     plan["features_path"] = []
     if isinstance(proposal, dict):
@@ -962,6 +971,7 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
     plan = select_mask_features(plan, merged, [], steer, grounded, "")
     plan = _install_history_steps(plan, operations)
     plan = _drop_applied_steps(plan, applied, skipped_before, steer)
+    plan = _keep_current_plan(plan, previous, applied)
     recipe["plan"] = plan
     nxt = str(plan.get("features_next") or "")
     recipe["features_next"] = nxt
@@ -981,9 +991,33 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
     if step_path.is_file():
         step_path.unlink()
     recipe.pop("step_style", None)
+    recipe["plan_request"] = " ".join(str(steer or "").split())
     recipe["status_text"] = panel_status(recipe)
     _save_recipe(path, recipe)
     return recipe
+
+
+def _keep_current_plan(plan: dict, previous: dict, applied: list[dict]) -> dict:
+    """A request that adds no step leaves the waiting plan in place.
+
+    The plan on screen stays the current plan until Ask returns a new one,
+    so Accept and Skip keep applying to the step they named.
+    """
+
+    from ai_dt.applied import step_kind
+
+    if plan.get("features_next") or not previous.get("features_next"):
+        return plan
+    waiting = str(previous["features_next"])
+    if step_kind(waiting) in {step_kind(item["id"]) for item in applied}:
+        return plan
+    for key, value in previous.items():
+        plan[key] = value
+    title = str(previous.get("features_next_title") or "") or feature_title(waiting)
+    note = str(plan.get("feature_note") or "").strip()
+    keep = f"This request did not add a new step, so the current plan stays: {title}."
+    plan["feature_note"] = f"{note} {keep}".strip() if note else keep
+    return plan
 
 
 def _drop_applied_steps(plan: dict, applied: list[dict], skipped: list[str], steer: str) -> dict:

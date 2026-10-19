@@ -239,7 +239,7 @@ every AI module's mask id present in darktable's current snapshot, stale
 `history_end`, Back/Revert after the chain, `verify_top` refusals; 6 of 7
 fail on the old code), plus one in `tests/test_features.py`.
 
-### Bug 2 — a new plan repeated steps already applied
+### Bug 2 — a new plan repeated steps already applied (`1167eaa`)
 
 Cause: `plan_chat` gave the planner no edit state, and
 `_install_history_steps` even moved a re-proposed step back out of
@@ -266,6 +266,34 @@ Fix (`ai_dt/applied.py`, `features.plan_chat`, `reasoner._fill`):
 Tests: `tests/test_applied.py` (11; mock planner returning a repeat, prompt
 contains the applied and skipped steps, sidecar history, redo wording).
 
+### Bug 3 — editing the request hid the plan; Accept/Skip were ambiguous
+
+darktable 5.6's Lua `entry` has no change signal (`src/lua/widget/entry.c`
+registers only `text`, `placeholder`, `is_password`, `editable`), so the
+panel cannot react to each keystroke. What changed:
+
+- The plan stays the **current plan** until Ask returns a new one. The
+  sheet header reads `Current plan (from “<request>”)`; `plan_chat` and the
+  pipeline record `plan_request`. An Ask that adds no step keeps the waiting
+  plan ("This request did not add a new step, so the current plan stays: …").
+- `status_text.accept_skip_state/accept_skip_lines` (Python, tested) give
+  the line for every state: `Accept/Skip apply to: <step>`,
+  `Request changed — press Ask for a new plan; Accept/Skip still apply to:
+  <step>`, or "No step is waiting, so Accept and Skip are off…". They are
+  stored on the recipe as `accept_skip`.
+- Lua `plan_status()` swaps the line when the request box differs from
+  `plan_request` (same normalisation as Python); it runs on every panel
+  refresh (Ask, Accept/Skip, Back/Next, darkroom reload, selection change)
+  and on `mouse-over-image-changed` / `pixelpipe-processing-complete`, so
+  the line updates on the next interaction rather than on each keystroke.
+- The buttons are labelled `Accept: <step>` / `Skip: <step>` (tooltips
+  too); with no step they are plain, off, and the tooltip says why.
+- New Lua helpers live in one `request_ui` table (the main chunk is at
+  Lua's 200-local limit). `luac -p ai_editor.lua` passes.
+
+Tests: `tests/test_request_status.py` (9, including a lua5.4 run of the
+real `plan_status` block from `ai_editor.lua` against the Python lines).
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -282,6 +310,7 @@ test runs instead of skipping).
 | After phase 3 | 418 | 1 | 0 | 0 |
 | After bug 1 fix | 426 | 1 | 0 | 0 |
 | After bug 2 fix | 437 | 1 | 0 | 0 |
+| After bug 3 fix | 446 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`

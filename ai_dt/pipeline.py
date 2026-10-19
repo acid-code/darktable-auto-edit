@@ -47,7 +47,7 @@ from ai_dt.steer import (
     stage_intents,
 )
 from ai_dt.schema import Atmosphere as _Atmosphere
-from ai_dt.status_text import panel_status, picture_backend_line, plan_backend_line
+from ai_dt.status_text import accept_skip_lines, panel_status, picture_backend_line, plan_backend_line
 from ai_dt.separate import render_finish
 from ai_dt.simulate import vignette_from_modules
 from ai_dt.tiff16 import write_rgb16
@@ -912,7 +912,9 @@ def analyze(
         elif step_path.is_file():
             step_path.unlink()
     recipe["handoff"] = build_handoff(recipe)
+    recipe["plan_request"] = " ".join(str(steer or "").split())
     recipe["status_text"] = panel_status(recipe)
+    recipe["accept_skip"] = accept_skip_lines(recipe)
     recipe["_plugins"] = plugins
     recipe["_rendered"] = rendered
     if next_rendered is not None:
@@ -1047,6 +1049,7 @@ def write_outputs(recipe: dict, output_dir: Path) -> tuple[Path, Path, Path]:
     recipe["render"] = {"file": str(edited_path), "format": "tiff16"}
     recipe["handoff"] = build_handoff(recipe)
     recipe["status_text"] = panel_status(recipe)
+    recipe["accept_skip"] = accept_skip_lines(recipe)
     record = build_version_record(
         recipe,
         directory,

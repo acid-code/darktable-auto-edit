@@ -977,6 +977,78 @@ local function panel_body(recipe)
   return table.concat(lines, "\n")
 end
 
+-- The request box has no change signal in darktable 5.6 (lua/widget/entry.c
+-- registers only text, placeholder, is_password and editable). The status
+-- is recomputed from it whenever the panel refreshes instead.
+-- One table keeps the main chunk under Lua's 200-local limit.
+local request_ui = { was_changed = nil }
+
+function request_ui.key(text)
+  return tostring(text or ""):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""):lower()
+end
+
+function request_ui.typed()
+  if not steer_entry then
+    return nil
+  end
+  return tostring(steer_entry.text or "")
+end
+
+-- Same rule as status_text.request_changed: a plan without plan_request
+-- (written before plans recorded it) counts as unchanged.
+function request_ui.changed(recipe)
+  if type(recipe) ~= "table" or type(recipe.plan_request) ~= "string" then
+    return false
+  end
+  local typed = request_ui.typed()
+  if typed == nil then
+    return false
+  end
+  return request_ui.key(typed) ~= request_ui.key(recipe.plan_request)
+end
+
+function request_ui.waiting(recipe)
+  if type(recipe) ~= "table" or type(recipe.features_next) ~= "string" or recipe.features_next == "" then
+    return ""
+  end
+  local title = recipe.features_next_title
+  if type(title) == "string" and title ~= "" then
+    return title
+  end
+  return recipe.features_next
+end
+
+-- The plan text, kept as the current plan, with the Accept/Skip line for
+-- the request box as it is now (status_text.accept_skip_lines).
+local function plan_status(recipe)
+  local body = panel_body(recipe)
+  if type(recipe) ~= "table" then
+    return body
+  end
+  local state = recipe.accept_skip
+  local changed = request_ui.changed(recipe)
+  if type(state) == "table" and type(state.line) == "string" and type(state.changed_line) == "string" then
+    local wanted = changed and state.changed_line or state.line
+    local other = changed and state.line or state.changed_line
+    local at, finish = body:find(other, 1, true)
+    if at then
+      return body:sub(1, at - 1) .. wanted .. body:sub(finish + 1)
+    end
+    if body:find(wanted, 1, true) then
+      return body
+    end
+    return body ~= "" and (body .. "\n" .. wanted) or wanted
+  end
+  if changed then
+    local step = request_ui.waiting(recipe)
+    local line = step ~= ""
+      and ("Request changed — press Ask for a new plan; Accept/Skip still apply to: " .. step)
+      or "Request changed — press Ask for a new plan. No step is waiting, so Accept and Skip are off."
+    return body ~= "" and (body .. "\n" .. line) or line
+  end
+  return body
+end
+
 local function failure_text(work, failure)
   local detail = tostring(failure or "unknown error")
   detail = detail:gsub("^%s+", ""):gsub("%s+$", "")
@@ -1359,7 +1431,7 @@ local function apply_image(image, vibe, steer, look)
     end
     close_progress()
     local recipe = read_recipe(work)
-    local body = recipe and panel_body(recipe) or ""
+    local body = recipe and plan_status(recipe) or ""
     return body ~= "" and body or "The plan is updated."
   end
   if not feature_turn and already then
@@ -1674,21 +1746,37 @@ local function refresh_controls(recipe)
   end
 end
 
+function request_ui.short(title)
+  local text = tostring(title or ""):gsub("%s+", " ")
+  if #text > 28 then
+    text = text:sub(1, 27) .. "…"
+  end
+  return text
+end
+
+-- Accept and Skip always say which step they act on. With no step waiting
+-- they are off and say so.
 local function show_feature_pair(title)
   feature_waiting = type(title) == "string" and title ~= ""
-  local accept_tip = ""
-  local skip_tip = ""
+  local accept_tip = "No step is waiting, so Accept is off. Type a change and press Ask."
+  local skip_tip = "No step is waiting, so Skip is off. Type a change and press Ask."
+  local accept_label = "Accept"
+  local skip_label = "Skip"
   if feature_waiting then
-    accept_tip = "Accept " .. title .. ". Paint this onto the edit."
-    skip_tip = "Skip " .. title .. ". Leave it off and show the one after it."
+    accept_tip = "Accept applies to: " .. title .. ". Paint this onto the edit."
+    skip_tip = "Skip applies to: " .. title .. ". Leave it off and show the one after it."
+    accept_label = "Accept: " .. request_ui.short(title)
+    skip_label = "Skip: " .. request_ui.short(title)
   end
   if accept_button then
     pcall(function()
+      accept_button.label = accept_label
       accept_button.tooltip = accept_tip
     end)
   end
   if skip_button then
     pcall(function()
+      skip_button.label = skip_label
       skip_button.tooltip = skip_tip
     end)
   end
@@ -1743,6 +1831,7 @@ local function show_choices(recipe)
       choice_ids[index] = nil
     end
   end
+  request_ui.was_changed = request_ui.changed(shown_recipe)
   refresh_controls(shown_recipe)
 end
 
@@ -1808,7 +1897,7 @@ local function run_analysis()
       shown._continued = continued and true or false
     end
     show_scene(recipe)
-    last = panel_body(recipe)
+    last = plan_status(recipe)
     if last == "" then
       last = summary(recipe, image)
     end
@@ -3286,7 +3375,7 @@ local function move_history(direction)
     return
   end
   local recipe = read_recipe(work)
-  local body = recipe and panel_body(recipe) or ""
+  local body = recipe and plan_status(recipe) or ""
   local lead = direction == "back" and "Back one history step." or "Forward one history step."
   if name ~= "" then
     lead = lead .. " " .. name .. "."
@@ -3780,7 +3869,7 @@ function sync_waiting_step(image)
     return
   end
   show_choices(recipe)
-  local body = panel_body(recipe)
+  local body = plan_status(recipe)
   status_label.text = body ~= "" and body or "No plan on this photo yet."
 end
 
@@ -3868,8 +3957,29 @@ pcall(dt.register_event, script_data, "selection-changed", function()
   end
   maybe_apply_preview_pick()
 end)
+-- No change signal on the request box: refresh its status line on the
+-- frequent events instead (and on every panel refresh).
+function request_ui.refresh()
+  if panel_is_busy or preview_applying or type(shown_recipe) ~= "table" or not status_label then
+    return
+  end
+  local changed = request_ui.changed(shown_recipe)
+  if changed == request_ui.was_changed then
+    return
+  end
+  request_ui.was_changed = changed
+  local body = plan_status(shown_recipe)
+  if body ~= "" then
+    status_label.text = body
+  end
+end
+
 pcall(dt.register_event, script_data, "mouse-over-image-changed", function()
   maybe_apply_preview_pick()
+  request_ui.refresh()
+end)
+pcall(dt.register_event, script_data, "pixelpipe-processing-complete", function()
+  request_ui.refresh()
 end)
 if type(dt.gui.action_images) == "function" then
   local ok, images = pcall(dt.gui.action_images)
