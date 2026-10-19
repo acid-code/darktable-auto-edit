@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import sys
@@ -32,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--align-history",
         action="store_true",
         help="Move the plan with one history step. Use --direction back or next.",
+    )
+    parser.add_argument(
+        "--dt-version",
+        default="",
+        help="darktable version (dt.configuration.version), e.g. 5.4.1. Picks the pipeline order to write; default 5.6.",
     )
     parser.add_argument(
         "--history-xmp",
@@ -183,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     load_project_env()
     args = build_parser().parse_args(argv)
     from ai_dt.text_io import read_text_arg
+
+    if args.dt_version:
+        os.environ["AI_DT_DARKTABLE_VERSION"] = str(args.dt_version)
 
     args.steer = read_text_arg(args.steer, args.steer_file)
     args.scene = read_text_arg(args.scene, args.scene_file)

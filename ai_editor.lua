@@ -358,6 +358,16 @@ end
 
 local run_captured
 
+-- darktable 5.4 and 5.6 read the same params; 5.6 adds modules to the
+-- pipeline order (colorharmonizer). Python writes the order of this version.
+local function dt_version_arg()
+  local version = tostring(dt.configuration.version or ""):match("(%d+%.%d+[%.%d]*)") or ""
+  if version == "" then
+    return ""
+  end
+  return " --dt-version " .. shell_quote(version)
+end
+
 local function run_processor(preview, work_dir, original, vibe, steer, options)
   local processor = join_path(script_directory(), "ai_processor.py")
   if file_size(processor) < 10 then
@@ -368,6 +378,7 @@ local function run_processor(preview, work_dir, original, vibe, steer, options)
     shell_quote(preference("python", "string")),
     " ",
     shell_quote(processor),
+    dt_version_arg(),
     " ",
     shell_quote(preview),
     " --output-dir ",
@@ -1439,6 +1450,7 @@ local function apply_image(image, vibe, steer, look)
       shell_quote(preference("python", "string")),
       " ",
       shell_quote(processor),
+      dt_version_arg(),
       " ",
       flag,
       " --output-dir ",
@@ -3468,6 +3480,7 @@ local function move_history(direction)
       shell_quote(preference("python", "string")),
       " ",
       shell_quote(processor),
+      dt_version_arg(),
       " --align-history --direction ",
       direction,
       " --history-name ",

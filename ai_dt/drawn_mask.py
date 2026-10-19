@@ -758,12 +758,14 @@ def _write_pipeline_list(document: str, operation: str, priority: int) -> str:
 
     if priority <= 0:
         return document
-    from ai_dt.iop_order import ORDERS
+    from ai_dt.iop_order import order_for
 
     version = re.search(r'darktable:iop_order_version="(\d+)"', document)
-    if version is None or int(version.group(1)) not in ORDERS:
+    order = order_for(int(version.group(1))) if version is not None else None
+    if order is None:
         return document
-    slots = [(name, 0) for name in ORDERS[int(version.group(1))]]
+    # darktable 5.4 has no colorharmonizer; its order is otherwise the same.
+    slots = [(name, 0) for name in order]
     extra = sorted(
         {(name, prio) for name, prio in _history_instances(document) if prio > 0} | {(operation, int(priority))},
         key=lambda pair: pair[1],

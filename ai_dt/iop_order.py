@@ -107,3 +107,32 @@ ORDERS: dict[int, tuple[str, ...]] = {
         "borders", "watermark", "gamma",
     ),
 }
+
+
+# Modules a darktable release added to every built-in order. darktable 5.4
+# (src/common/iop_order.c at release-5.4.1) has the same tables without these.
+ADDED_IN: dict[str, tuple[int, int]] = {"colorharmonizer": (5, 6)}
+DEFAULT_VERSION = (5, 6)
+
+
+def darktable_version(text: str | None = None) -> tuple[int, int]:
+    """(major, minor) from e.g. "5.4.1" or "darktable 5.6.2+12~g"; default 5.6."""
+
+    import os
+    import re
+
+    raw = text if text is not None else os.environ.get("AI_DT_DARKTABLE_VERSION", "")
+    match = re.search(r"(\d+)\.(\d+)", str(raw or ""))
+    if match is None:
+        return DEFAULT_VERSION
+    return int(match.group(1)), int(match.group(2))
+
+
+def order_for(version_id: int, darktable: tuple[int, int] | None = None) -> tuple[str, ...] | None:
+    """The built-in order ``version_id`` as the running darktable has it."""
+
+    order = ORDERS.get(int(version_id))
+    if order is None:
+        return None
+    running = darktable or darktable_version()
+    return tuple(name for name in order if ADDED_IN.get(name, (0, 0)) <= running)

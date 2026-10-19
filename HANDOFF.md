@@ -463,337 +463,51 @@ raw+jpeg) are skipped with "rawpy is not installed (optional RAW decoder;
 pip install -r requirements.txt)"; everything else passes. In the venv they
 run.
 
-## TODO (stopped at the budget limit, 2026-10-19 ~17:46)
+## Status and TODO (2026-10-19 ~18:00 Asia/Jerusalem)
 
-Done in this last stretch (tested by the targeted tests; the full suite was not re-run):
-- **Grey status text:** the status box is now a non-focusable `label`. It is
-  word-wrapped in Lua (`request_ui.wrap_status`, 46 columns) and ellipsis is
-  turned off after every set, so it shows normal contrast with no truncation.
-  This replaced `sensitive = false`, which made the text dim. Commit `c442f1b`.
-- **No-op Accept (parrot):**
-  - A step that writes no mask and no style now fails with a plain reason, and
-    `--restore-step` puts it back (`plan.left_off`).
-  - Accept checks that the sidecar's `history_end` grew, both in
-    `apply_masked_step` and in the caller.
-  - The sidecar is synced (`image.rating = image.rating`) before the splice.
-    The 5.4/5.6 Lua API has no `write_sidecar_files`.
-  - Regression fixture: `tests/fixtures/dt56_parrot_fresh_jpg.xmp`, a copy of
-    `/workspace/diag/parrot/P1370754.JPG.xmp`. Splicing mask_animal onto it gives
-    `history_end` 5, and darktable-cli 5.6 renders it with no warnings.
-  - Commit `eb10f0c`.
-- **Done state from the sidecar:**
-  - `applied.applied_steps` ignores the step log and `features_done` when a
-    sidecar is readable.
-  - `plan_chat` drops done marks and log entries that the sidecar doesn't hold.
-  - Tests are in `tests/test_applied.py`.
-- **New plan button** (label "New plan", tooltip "Forget this photo's saved
-  plan and start fresh. Your darktable edits stay as they are."):
-  - It deletes only the listed plan files in
-    `<config dir>/ai-editor-work/<image id>/v<n>`.
-  - It resets the panel and says to type a request (or leave it blank) and
-    press Ask.
-  - On Windows the work folder is `%LOCALAPPDATA%\darktable\ai-editor-work\<id>\v<n>`.
-  - Lua only: not GUI-tested, and there is no Lua-level test.
+Done (each item is a commit on feature/ai-masks; the full suite is 524 OK, 1 skipped):
+- **Parrot no-op Accept** (`eb10f0c`): a step that writes no mask and no style
+  fails with a plain reason, and `--restore-step` puts it back (`plan.left_off`).
+  Accept syncs the sidecar first (`image.rating = image.rating`; the Lua API has
+  no `write_sidecar_files`) and checks that `history_end` grew. The fixture is
+  `tests/fixtures/dt56_parrot_fresh_jpg.xmp`.
+- **Done state only from the sidecar** (`a1e40bb` for plan_chat/applied_steps,
+  `902d1f8` for the first Ask): `analyze()` takes `history_xmp` (the CLI passes
+  `--history-xmp`, or else `<original>.xmp`) and drops saved done marks that are
+  not in the history.
+- **New plan button** (`a1e40bb`, tests and README in `e2b9b29`).
+- **Looks UI removed** (`b1df262`): the Looks button, the "Look:" line, the
+  vibe box and the Preset dropdown are gone. The vibe and preset only chose the
+  frame look, so the panel now always sends a blank (faithful) vibe. The CLI
+  `--vibe` still works. The `open_looks` code is still there but no longer
+  reachable.
+- **Grey status text** (`c442f1b`): a wrapped label with no focus.
+- **darktable 5.4 + 5.6** (see below): the params, blend/mask versions and Lua
+  APIs we use are identical. The only difference is the module
+  `colorharmonizer`, which 5.6 adds to every built-in iop order. Lua passes
+  `--dt-version` (from `dt.configuration.version`) to every processor call, and
+  the CLI sets `AI_DT_DARKTABLE_VERSION`. `iop_order.order_for()` drops modules
+  newer than the running darktable (default 5.6). Tests are in
+  `tests/test_dt_versions.py`.
+  - Verified with the real darktable-cli **5.4.1** (`/workspace/dt54/dtcli54`,
+    the extracted AppImage): a duck sidecar with two colorbalancergb instances
+    (mask_animal + background) rendered with no iop-order warnings, both with
+    the 5.4 list and with the 5.6 list. So 5.4 also ignores the unknown name.
 
 Still TODO:
-1. Parrot: test the full Accept on a freshly opened JPG in the darkroom
-   (Windows 5.6). Confirm that the rating-sync really writes the sidecar there,
-   and that the history-grew check passes. Also filter `features_done` against
-   the sidecar on the *first* Ask (`pipeline.run` carries the stored done list;
-   only `plan_chat` filters it now). Pass `--history-xmp` to it.
-2. New plan: add a test (e.g. parse `request_ui.plan_files` and the label and
-   tooltip from the Lua source), add it to the README, and check it in the GUI.
-3. **Remove the Looks button and the "Look: not named yet" label.** Asaf will
-   use darktable presets instead. Update the status strings that say "press
-   Looks", the README and the tests.
-4. **darktable 5.4 + 5.6 support** (findings, from the darktable source at tags
-   `release-5.4.1` and `release-5.6.0`):
-   - These are identical in both: the module params versions and structs we
-     write (exposure 7 in dt, we write 6; colorbalancergb 5, vignette 4,
-     toneequal 2, colorzones 5, channelmixerrgb 3, crop 3, sigmoid 3, …),
-     `DEVELOP_BLEND_VERSION` 14 (we write 13; it is upgraded),
-     `DEVELOP_MASKS_VERSION` 6, the `dt_develop_blend_params_t` layout, and
-     `DT_XMP_EXIF_VERSION` 5.
-   - The only difference: 5.6 adds the module **colorharmonizer** to every
-     built-in iop order. `ai_dt/iop_order.py` has the 5.6 lists. For 5.4, drop
-     "colorharmonizer" from the written `iop_order_list`. 5.4 probably ignores an
-     unknown name, but that is not verified.
-   - 5.6 masks add `DT_MASKS_OBJECT` (AI object). We don't write it.
-   - The Lua APIs used (`apply_sidecar`, `drop_cache`, label/entry/text_view
-     members) are the same in both. There is no `write_sidecar_files` in
-     either.
-   - Plan: Lua passes `dt.configuration.version` as `--dt-version`. Python sets
-     `AI_DT_DARKTABLE_VERSION`. `iop_order` and `drawn_mask._write_pipeline_list`
-     drop the 5.6-only modules for 5.4.x, and default to 5.6. Then verify with a
-     5.4.1 AppImage and darktable-cli.
-5. Re-run the full suite (venv, `DTCLI` set, system python3), and refresh the
-   GUI copy plus restart darktable after these commits. The order-dependent
-   pair `test_pipeline` + `test_guides` (portrait vignette and face gate) fails
-   when the two run together, even on `f99ce55`.
+1. On Windows 5.6, GUI-test the full Accept on a freshly opened JPG. Confirm
+   that the rating-sync writes the sidecar there and that the history-grew
+   check passes.
+2. GUI-test the New plan button and the panel without Looks on 5.4 and on 5.6
+   (5.4 GUI was not run, only darktable-cli).
+3. Online launcher (`/workspace/dtverify/launch-gui-online.sh`) and the online
+   GUI test. Both were skipped earlier because of the budget.
+4. Optional: delete the now-unreachable `open_looks`/`watch_preview_pick` code
+   and `ai_dt/choices.py` look paths.
+5. The order-dependent pair `test_pipeline` + `test_guides` (portrait vignette
+   and face gate) sometimes fails when the two run together, even on `f99ce55`.
+   It passed in the last full run.
 
-## Offline GUI test findings: fixed (commit `38ffdcb`)
-
-The offline darkroom test (darktable 5.6.2, detector=heuristic,
-advisor=histogram, no keys) found four problems. What changed for each:
-
-1. **Offline now offers steps.** New `ai_dt/offline_plan.py`:
-   - `planner_missing(proposal)`: true when the reasoner skipped, failed, or
-     returned nothing usable.
-   - `offline_operations(...)`: the request steps first (from
-     `mask_grammar.mask_operations`), then the guide steps.
-   - Guide steps for an animal: mask_animal, mask_animal_background,
-     mask_bottom_gradient when the ground is bright, and mask_edge_burn. Other
-     picture types use `lessons.PRESETS`.
-   - The guide steps join on the first Ask, on a blank request, or on an
-     emphasis request. A specific follow-up keeps only its own step.
-   - `apply_offline` runs through the same `apply_operations` and
-     `_install_history_steps` path as a model plan, in both `pipeline.run` and
-     `features.plan_chat`. This is also what Windows users get when Gemini fails.
-   - Offline duck results:
-     - "make the duck the main theme" gives mask_animal, mask_animal_background,
-       mask_bottom_gradient and mask_edge_burn.
-     - "make the water darker" gives mask_water darken first, then the animal
-       steps.
-     - Accept/Skip are enabled in both cases.
-2. **Description:**
-   - With no picture model, the description box gets a factual line
-     (`pipeline._local_description`: "Measured locally: a <type> photo with
-     <labels>, <light> light. Describe the subject here."). Before, it showed
-     the reading's advice line ("Leave the measured color alone.").
-   - A typed description is used for the animal check, the noun, and the
-     water and ground checks.
-   - The header says so: "Plan: offline (no Gemini key), from the guide,
-     request and description".
-3. **Wording:**
-   - The run button is now always **Ask** (it was "Propose" on a first plan).
-   - All status, tooltip and help text in Lua, Python and the README says Ask.
-     "Propose looks" is gone.
-   - Accept/Skip show "Accept: <step>" whenever a step is waiting.
-   - The plan header is "Plan: offline (<why>), from the …", or "Plan: offline
-     (Gemini failed …)" when Gemini failed. "Plan: not used" is gone.
-4. **Keystroke leak (mitigated; Asaf must still test it in the darkroom):**
-   - Cause: in darktable 5.6, `gui/accelerators.c` (`dt_shortcut_dispatcher`)
-     passes every key to the focused widget first, then runs a shortcut for any
-     key the widget did not consume. The panel's status box was a read-only
-     `text_view`. It can take the focus, but it consumes no keys, so after a
-     click on it a capital letter fired a shortcut (map view, tethering, the
-     exposure popup).
-   - Fix: the status `text_view` is now `sensitive = false`, so it cannot take
-     the focus. It still wraps; a Lua label would not. The text is a little dim.
-   - The request entry is a real `GtkEntry` (`lua/widget/entry.c`), so letters
-     typed there are consumed and never reach a shortcut.
-   - Limit: the 5.6 Lua API has no grab-focus or key-filter call. If the focus
-     is outside the entries (for example after clicking the image), typed keys
-     are shortcuts. Workaround: click into the request box before typing.
-
-Tests: `tests/test_offline_plan.py` (10 tests). They cover:
-- the duck plan;
-- water darker;
-- a follow-up;
-- the landscape preset;
-- the headers;
-- the default description;
-- that status strings name only real buttons.
-
-Left:
-- In the darkroom: confirm the shortcut mitigation, and click through Accept
-  on the offline duck plan.
-- The online launcher script was not made. The user deleted the keys from the
-  box.
-- **Order-dependent flake (not caused by this change):** running
-  `tests.test_pipeline` and `tests.test_guides` together, or the full suite
-  while darktable is starting, can fail
-  `AnalysisTests.test_portrait_finds_a_face_and_writes_a_vignette` and
-  `FaceGateTests.test_a_head_with_two_eyes_is_still_a_face`.
-  - It reproduces on `f99ce55` too, before any of this round's code.
-  - Each test passes on its own, and the full suite passed (504 tests, 1 skip)
-    on an idle box.
-  - Likely cause: face-detector state shared between tests. Not investigated.
-- darktable on DISPLAY :3 was restarted offline with the refreshed plugin. The
-  old instance ignored SIGTERM for 30 s and was killed with SIGKILL; its stale
-  `*.db.lock` files were removed. The plugin loaded with no Lua errors.
-
-Online check (one real run, 2026-10-19, keys taken from the environment
-only and never written anywhere):
-- Command: `ai_processor.py /workspace/uploads/duck.jpg --detector auto
-  --advisor auto --steer "make the duck the main theme"`, with
-  `MISTRAL_VISION_MODEL=ministral-14b-2512` and
-  `GEMINI_REASON_MODEL=gemini-3.5-flash-lite`. It succeeded (exit 0) on the
-  first try.
-- The header read "Picture: Mistral ministral-14b-2512 / Plan: Gemini
-  gemini-3.5-flash-lite".
-- Type `animal`. The queue (all Accept-able, Accept/Skip enabled):
-  - mask_animal lift;
-  - mask_animal_background darken;
-  - mask_bottom_gradient darken;
-  - mask_edge_burn darken.
-- The description was written by Mistral (`scene.source = mistral`) and sent to
-  Gemini. No `--scene` was passed. Mistral called the mallard a "male Common
-  Eider"; the step titles use the generic "duck".
-- The online path works; the gap is offline only.
-
-## Halo round the animal (inverse masks short of the edge)
-
-Visual review: a light ring round the duck's belly, tail and feet in the
-3-step animal plan. Causes, all confirmed with darktable-cli 5.6.2 renders:
-
-1. **darktable feathers a path outward** (`border * MIN(wd, ht)`, path.c). With
-   the outline on the segmented edge, the lift spilled onto the water and an
-   inverted mask or a "gradient minus animal" only reached full strength one
-   feather width outside the animal. Fix: `animal_forms` pulls the outline in by
-   the feather width (`inset_mask`, a round erosion that keeps legs thinner than
-   twice the inset); `ANIMAL_BORDER` is 0.005; holes (water between the legs) are
-   not grown, their difference feather already runs into the legs. The pull is
-   capped at a tenth of the animal's size so a distant bird a few pixels across
-   is kept.
-2. **Catmull-Rom handles at sharp turns** swing the curve out past the long side
-   next to it (2-3 px gap on a blocky outline). Traced animal forms carry
-   `sharp_turns: True`; `smooth_path(..., sharp_turns=True)` gives turns over 60
-   degrees sharp handles. Default paths are unchanged.
-3. **`_subtract` dropped the cutter's holes**, so the bottom gradient and edge burn
-   skipped the water between the legs. A single base form is now
-   `((base - outer) | holes) & base`; with several base forms each hole is added
-   back at the base mask's mean strength inside it.
-4. **Point limit:** `_form_record` cut paths at `MAX_PATH_POINTS` (64) and closed
-   them with a chord, which cut off half the duck at 86 corners. It now thins
-   evenly; `mask_to_outlines` clamps `max_points` to 64; the animal outline uses 64
-   on a 512 working size (finer at legs and feet).
-5. **verify harness bug:** darktable-cli does not overwrite. It wrote `name_01.png`
-   and the old file was measured. `render()` now deletes the destination first.
-
-Halo metric (`tools/verify_dt.py`): the mean change, in percent of base luma, in
-a ring 1-8 px outside the segmented outline against a band 16-40 px out, weighed
-row by row. `spill` (lift cases) fails above +1%. `match` fails when
-|ring - far| > max(1%, 12% of far). `mask_bottom_gradient` is checked in rows
-75-100%.
-
-| case (duck, 768 px) | before ring / far | after ring / far |
-| --- | --- | --- |
-| mask_animal (spill) | +2.9% / 0 (halo) | +0.0% / 0 |
-| mask_animal_background | -8.6% / -10.9% (halo) | -12.8% / -12.8% |
-| mask_bottom_gradient | -5.2% / -10.8% (halo) | -11.0% / -11.0% |
-| animal_stack | -0.1% / -5.8% (halo, old stack had the glow) | -22.3% / -23.4% |
-
-All 28 verify cases are OK, with 0 warnings. The stack is now the default
-animal plan (lift, background, bottom gradient, edge burn, split tone). The glow
-was dropped from the stack because it lifts a ring behind the subject by
-design. Images: `/workspace/diag/duck_fixed_before_after.jpg` and
-`/workspace/diag/duck_fixed_feet_crop.jpg` (crop x 50-80%, y 60-98%, 2000 px
-renders). The old renders are in `/workspace/diag/verify_dt_before`.
-
-**Water grade** (`mask_animal_background` darken). Old setting: brilliance -0.1,
-saturation -0.1, contrast -0.08. It squeezed the water flat: the far-background
-L p5-p95 range went from 38.7 to 31.2. Blacks were not lifted (p5 41.9 to 38.6),
-and chroma fell 11.3 to 9.1. New setting: brilliance -0.12, shadows brilliance
--0.05, saturation -0.03, contrast +0.04. Mean L is 55.4 (old 55.7), p5 36.0,
-range 35.9, chroma 9.4. In the full stack: L 50.4, p5 31.0, range 36.8, C/L 0.179
-(base 0.180), so the water is darker without being greyer.
-
-## Bird-eye fix (wildlife guide)
-
-Cause: `dd888ef` made `animal_eye_boxes` pairs-only and added a colour-iris
-search. On the synthetic red/yellow bird the colour path found a row of
-evenly spaced saturation peaks along the red-meets-yellow plumage edge
-(peak clearing turns an edge into a dotted line) and took two of them as a
-level "pair" on the breast. Those boxes measured hotter than the face, so the
-eyes stage rolled back (`separation.eyes = 0`). The real eye (dark pupil
-with a catchlight, side-on, so only one) was never a candidate.
-
-Fix (`ai_dt/detectors/heuristic.py`):
-- `_drop_bands`: four or more colour peaks in an unbroken chain on one row
-  or column are an edge, not irises (two irises side by side still pass).
-- `_single_eye` (+ `_filled`): when no usable pair is found (no pair, or a
-  "pair" of specks too small to box), one eye counts if it is a compact,
-  round, solid dark spot, clearly darker than its surround, with a bright
-  catchlight *enclosed* in the pupil, and it is the only such spot.
-- Duck check: real YOLO on `uploads/duck.jpg` still gives no eye on the
-  feet or the dark neck (a looser version put one on the neck beside bright
-  water; the enclosed-catchlight rule removed it). The head-only search for
-  tall bird boxes is unchanged; the duck mask overlays are unchanged.
-
-Tests: `tests/test_animal_eyes.py::ProfileEyeTests` (3; two fail on the
-previous code).
-
-## Known risks / unverified against real darktable 5.6
-
-- No darktable on the box. Layouts were read from the 5.6.0 sources, not
-  from a sidecar written by 5.6. The existing README notes a 5.6.2 import
-  kept an ellipse (mask version 6) and a 420-byte blend v14; paths,
-  gradients and groups written by `splice_shapes` have **not** been loaded
-  in darktable yet.
-- Path border (feather) is stored in `border[0..1]`, which darktable
-  scales by `MIN(width, height)`; 0.01 is a guess at a pleasant feather.
-- Gradient `compression` default 0.25 (fraction of the image diagonal);
-  check the fall-off visually.
-- Coordinates are taken from `preview.jpg`, which is the *rendered* image.
-  Drawn masks live in pre-distortion input space, so a crop, rotation or
-  lens correction already in history will shift the shapes. Same caveat
-  as the existing eye/hue/object steps.
-
-- Phase 2: the color balance rgb hue angles used for warm/green/blue
-  (65°, 140°, 225°) are chosen by eye from the module's hue slider, not
-  measured. The heuristic segmenter is a fallback: it is coarse on real
-  photos (tuned on synthetic scenes). The ADE20K / rembg / SAM paths were
-  tested with fakes only; the real models were not downloaded on the box.
-- Accept writes the shapes in preview coordinates (see above).
-
-- Phase 3: color zones curves for keep-red / warm-only were built from
-  the 5.x param layout (select-by-hue, chroma channel, 0.5 = neutral)
-  but not rendered in darktable; check that "keep only the red" really
-  grays every other hue and that the curve does not ring between nodes.
-  Split-tone hue angles share the unverified 65° / 225° constants.
-  Gradient `compression` 0.12–0.3 and the glow ellipse feather (0.2) are
-  eyeballed against the reference renderer, not darktable.
-- The crop suggestion is reported only. It does not account for a crop
-  already in history.
-
-## Manual checklist in darkroom (5.6)
-
-(Expanded as phases land.)
-
-1. Pick a test photo with an XMP. Run
-   `python ai_dt/drawn_mask.py --xmp PHOTO.xmp --xmp-out out.xmp --mask-json spec.json`
-   with a `"kind": "shapes"` spec (see `tests/test_dt_shapes.py`), copy
-   `out.xmp` over the sidecar with darktable closed, start darktable and
-   open the photo.
-2. History shows the new module with its name; the mask manager shows one
-   group with the path(s) and the gradient; the group's combine icons say
-   union / intersection as written.
-3. Toggle "display mask" on the module: the sky path ∩ top gradient matches
-   what `render_forms` predicts. Edit a path node — it must drag smoothly.
-4. For an inverted (background) spec, the module's drawn-mask polarity
-   toggle is on, and the effect lands outside the subject.
-
-5. Phase 2: on a landscape with an XMP, type `do the landscape masks`,
-   press Ask, Accept each step. Each lands as its own history item
-   ("Grade the sky", …) with a group mask that follows the region; Back
-   removes the item and its forms; Revert removes them all. Try with
-   `pip install -r requirements-masks.txt` too and compare the source the
-   status line names.
-6. `darken the background` on a portrait: the effect is outside the
-   person, polarity toggle on.
-
-7. Phase 2b/3, animals: on a photo with two or more animals type
-   `lift the animals`, Ask, Accept → "Lift the animals" with one path
-   per animal in one group. `darken around the dog` → "Quiet around the
-   animals", polarity on. Try a bird in flight and a partly hidden animal.
-8. Phase 3: `darken the sky with a gradient` → exposure −0.5 EV, group =
-   sky path(s) then a gradient with the *intersection* icon; the fade
-   runs top → down. `burn the edges` → four gradients (union) and the
-   subject as a *difference*. `add a glow behind him` on a portrait.
-   `keep only the red`, `warm-only look`, `split tone` → one color zones /
-   color balance rgb item each; check the hue curves in the module UI.
-9. Confirm Back and Revert remove each of these items and their forms.
-
-## How to run
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python3 -m unittest discover -s tests -t . -v
-```
-
-## Not mine, left as found
-
-`Usersasaf2AppDataLocalTempdt562-mask-check/` and `dt-launch.log` at the
-repo root look like accidental commits from Windows; left untouched.
+Resume: `cd /workspace/darktable-auto-edit && .venv/bin/python -m unittest discover -s tests`
+(with GEMINI/MISTRAL keys unset for offline). GUI: `/workspace/dtverify/launch-gui.sh`.
+The plugin copy is in `/workspace/dtverify/guiconfig/lua/ai_editor`.
