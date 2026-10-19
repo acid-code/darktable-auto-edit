@@ -44,6 +44,18 @@ class AskAfterNewPlanTests(unittest.TestCase):
     def test_ask_without_saved_reading_plans_from_scratch(self):
         source = (Path(__file__).resolve().parent.parent / "ai_editor.lua").read_text(encoding="utf-8")
         body = source.split("local function propose_image", 1)[1].split("\nend\n", 1)[0]
-        self.assertIn('file_size(join_path(work, "output.json")) < 2', body)
+        self.assertIn('type(existing.plan) ~= "table"', body)
         self.assertIn("asking = false", body)
 
+    def test_new_plan_keeps_the_description(self):
+        source = (Path(__file__).resolve().parent.parent / "ai_editor.lua").read_text(encoding="utf-8")
+        body = source.split("function request_ui.new_plan()", 1)[1].split("\nend\n", 1)[0]
+        self.assertIn("scene_text()", body)
+        self.assertIn('{"scene": {"summary": "', body)
+
+
+
+class FailedAcceptRefreshTests(unittest.TestCase):
+    def test_a_failed_accept_shows_the_saved_plan(self):
+        source = (Path(__file__).resolve().parent.parent / "ai_editor.lua").read_text(encoding="utf-8")
+        self.assertEqual(source.count("pcall(show_choices, current)"), 2)

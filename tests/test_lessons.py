@@ -280,8 +280,12 @@ class AcceptTests(unittest.TestCase):
             directory = Path(tmp)
             _work(directory, "mask_animal")
             recipe = commit_waiting_step(directory)
-            self.assertNotIn("step_mask", recipe)
-            self.assertIn("No animal was found", recipe["feature_note"])
+            # A missed animal falls back to the main subject; with no subject
+            # either, the step is left off with a plain reason.
+            if "step_mask" in recipe:
+                self.assertIn("no animal detected", recipe["step_mask"]["source"])
+            else:
+                self.assertIn("No animal was found", recipe["feature_note"])
 
     def test_a_global_look_is_a_style_step(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, _ENV):

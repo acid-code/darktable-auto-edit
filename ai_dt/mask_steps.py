@@ -436,7 +436,21 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
         found = segment_animals(image, subject_boxes(recipe), backend=chosen_backend)
         forms = animal_forms(found, which="main" if step.builder == "animal_main" else "all")
         kinds = sorted({animal.source for animal in found.animals})
-        return (forms or None), ", ".join(kinds)
+        if forms:
+            return forms, ", ".join(kinds)
+        # The plan says there is an animal (from the picture model, the typed
+        # description or the request) but the detector missed it, e.g. a
+        # parrot ornament. Use the main subject instead of failing.
+        from ai_dt.segment import segment
+
+        subject = segment(image, ["subject"], boxes=subject_boxes(recipe), backend=chosen_backend)
+        mask = subject.get("subject")
+        if mask is None:
+            return None, ""
+        fallback = mask_to_forms(mask, border=0.015, max_paths=6, max_points=48, min_area=0.004)
+        if not fallback:
+            return None, ""
+        return fallback, "subject (no animal detected): " + str(subject.sources.get("subject", ""))
     region_forms: list[dict] = []
     source = ""
     box = _main_box(recipe) if step.region == "subject" else None

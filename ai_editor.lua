@@ -1360,7 +1360,7 @@ local function propose_image(image, index, total, vibe, steer)
   local asking = run_button ~= nil and run_button.label == "Ask"
   -- A follow-up needs the saved reading. With none (a new photo, or after
   -- New plan) Ask reads the photo and plans from scratch.
-  if asking and file_size(join_path(work, "output.json")) < 2 then
+  if asking and (type(existing) ~= "table" or type(existing.plan) ~= "table") then
     asking = false
   end
   -- An edited description is a new plan even with the request box empty.
@@ -2045,6 +2045,12 @@ local function apply_choice(index, forced_look)
     local text, failure = apply_image(image, vibe, steer, look)
     if not text then
       local shown = string.format("%s failed.\n%s", image.filename or "Image", failure or "unknown error")
+      -- Show the saved plan as it is now. A failed Accept put its step back,
+      -- so the buttons must not still name the next one.
+      local current = read_recipe(edit_work_dir(image))
+      if current then
+        pcall(show_choices, current)
+      end
       status_label.text = shown
       dt.print("AI edit failed")
       return false, shown
@@ -2443,6 +2449,11 @@ local function maybe_apply_preview_pick()
   else
     -- Leave the pick applied. Clearing it made the next mouse move
     -- duplicate the photo again.
+    -- A failed Accept put its step back: show the saved plan, not the next step.
+    local current = read_recipe(work)
+    if current then
+      pcall(show_choices, current)
+    end
     status_label.text = string.format(
       "%s failed.\n%s",
       preview_image.filename or "Image",
@@ -3793,11 +3804,17 @@ function request_ui.new_plan()
     return
   end
   local work = edit_work_dir(image)
+  -- The photo description belongs to the photo, not the plan, so it stays.
+  local description = type(scene_text) == "function" and scene_text() or ""
   local removed = 0
   for _, name in ipairs(request_ui.plan_files) do
     if os.remove(join_path(work, name)) then
       removed = removed + 1
     end
+  end
+  if description ~= "" then
+    write_file(join_path(work, "output.json"), '{"scene": {"summary": "'
+      .. json_string(description):gsub("\t", "\\t") .. '"}}')
   end
   shown_recipe = nil
   pcall(show_choices, nil)
@@ -3805,7 +3822,7 @@ function request_ui.new_plan()
   -- The request box keeps its text so the next Ask can reuse it.
   refresh_controls(nil)
   status_label.text = "This photo's saved plan is cleared (" .. tostring(removed)
-    .. " file(s)). Your darktable edits and your request stay, so press Ask for a fresh plan."
+    .. " file(s)). Your darktable edits, request and description stay, so press Ask for a fresh plan."
 end
 
 request_ui.new_plan_button = dt.new_widget("button") {
