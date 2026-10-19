@@ -559,6 +559,25 @@ Also still to do (from the parent):
   `/workspace/dtverify/launch-gui.sh`). darktable was **not** restarted this
   round; it is still the offline instance with the `bcc4e51` plugin.
 
+Online check (one real run, 2026-10-19, keys taken from the environment
+only and never written anywhere):
+- Command: `ai_processor.py /workspace/uploads/duck.jpg --detector auto
+  --advisor auto --steer "make the duck the main theme"`, with
+  `MISTRAL_VISION_MODEL=ministral-14b-2512` and
+  `GEMINI_REASON_MODEL=gemini-3.5-flash-lite`. It succeeded (exit 0) on the
+  first try.
+- The header read "Picture: Mistral ministral-14b-2512 / Plan: Gemini
+  gemini-3.5-flash-lite".
+- Type `animal`. The queue (all Accept-able, Accept/Skip enabled):
+  - mask_animal lift;
+  - mask_animal_background darken;
+  - mask_bottom_gradient darken;
+  - mask_edge_burn darken.
+- The description was written by Mistral (`scene.source = mistral`) and sent to
+  Gemini. No `--scene` was passed. Mistral called the mallard a "male Common
+  Eider"; the step titles use the generic "duck".
+- The online path works; the gap is offline only.
+
 ## Halo round the animal (inverse masks short of the edge)
 
 Visual review: a light ring round the duck's belly, tail and feet in the
