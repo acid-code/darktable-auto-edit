@@ -611,6 +611,26 @@ def restore_waiting_step(output_dir) -> dict:
 
     _directory, path, recipe, plan = _load_recipe(output_dir)
     log = [item for item in (plan.get("step_log") or []) if isinstance(item, dict)]
+    left = plan.pop("left_off", None)
+    if (not log or not log[-1].get("active")) and isinstance(left, dict) and left.get("id"):
+        # The step made no mask (no animal outline, an empty region). It was
+        # left off; put it back as the waiting step so the plan does not advance.
+        ident = str(left["id"])
+        plan["features_skipped"] = [name for name in (plan.get("features_skipped") or []) if name != ident]
+        queue = [item for item in (plan.get("step_queue") or []) if isinstance(item, dict) and item.get("id") != ident]
+        item = {"id": ident, "action": str(left.get("action") or "lift"), "title": str(left.get("title") or ident)}
+        queue.insert(0, item)
+        plan["step_queue"] = queue
+        plan["features_path"] = [str(entry.get("id") or "") for entry in queue]
+        plan["features_next"] = ident
+        recipe["features_next"] = ident
+        recipe["features_next_title"] = item["title"]
+        recipe["features_next_action"] = item["action"]
+        recipe["feature_note"] = f"This step was not added: {left.get('reason') or 'it made no mask'} Skip moves past it."
+        recipe["plan"] = plan
+        _refresh_handoff(recipe)
+        _save_recipe(path, recipe)
+        return recipe
     if not log or not log[-1].get("active"):
         return recipe
     last = log.pop()
@@ -654,6 +674,14 @@ def _leave_off(directory, path, recipe, plan, nxt: str, reason: str) -> dict:
     if nxt and nxt not in skipped:
         skipped.append(nxt)
     plan["features_skipped"] = skipped
+    # Kept so --restore-step can put it back: Lua reports a step that wrote
+    # nothing as failed, and the plan must not move past it.
+    plan["left_off"] = {
+        "id": nxt,
+        "title": str(recipe.get("features_next_title") or nxt),
+        "action": str(recipe.get("features_next_action") or ""),
+        "reason": reason,
+    }
     if nxt:
         _promote(plan, recipe, nxt)
     recipe["feature_note"] = reason

@@ -27,7 +27,8 @@ class StatusLabelTests(unittest.TestCase):
         lua = (ROOT / "ai_editor.lua").read_text(encoding="utf-8")
         self.assertIn('request_ui.status_widget = dt.new_widget("label")', lua)
         self.assertNotIn('status_label = dt.new_widget("text_view")', lua)
-        self.assertNotIn("sensitive = false", lua)
+        block = lua[lua.index('request_ui.status_widget = dt.new_widget("label")'):]
+        self.assertNotIn("sensitive", block[: block.index("}")])
 
     @unittest.skipUnless(LUA, "no lua interpreter")
     def test_wrap_keeps_every_word_and_the_width(self) -> None:

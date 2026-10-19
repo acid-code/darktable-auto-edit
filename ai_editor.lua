@@ -1449,8 +1449,27 @@ local function apply_image(image, vibe, steer, look)
       return nil, output or "The step could not be updated."
     end
     if look == "accept-feature" then
+      local before = request_ui.history_count(image)
       local stepped, step_error = apply_step(image, work)
-      if not stepped and step_error then
+      if stepped then
+        -- Success means a new history row. Check it rather than trust the write.
+        local after = request_ui.history_count(image)
+        if before and after and after <= before then
+          stepped = nil
+          step_error = string.format(
+            "Accept wrote nothing: the history still has %d item(s). The plan did not move on. Press Accept again, or reopen the photo and try once more.",
+            after
+          )
+        end
+      elseif not step_error then
+        -- The commit made no mask and no style (no animal outline found, an
+        -- empty region). That is a failed step, not a silent success.
+        local done = read_recipe(work)
+        local why = type(done) == "table" and type(done.feature_note) == "string" and done.feature_note ~= "" and done.feature_note
+          or "no mask or module was made for this step"
+        step_error = "This step was not added: " .. why .. " The plan did not move on."
+      end
+      if not stepped then
         local restore = table.concat({
           shell_quote(preference("python", "string")),
           " ",
@@ -1778,6 +1797,32 @@ local function refresh_controls(recipe)
   if skip_button then
     skip_button.sensitive = (not panel_is_busy) and feature_waiting
   end
+end
+
+-- Ask darktable to write this photo's sidecar from its library now. A photo
+-- just opened in the darkroom has only its automatic rows in memory and a
+-- sidecar darktable has not written yet (change_timestamp -1); splicing that
+-- file and reading the count from it went wrong without a word.
+-- The 5.4 and 5.6 Lua APIs have no "write sidecar" call. Writing any image
+-- field goes through dt_image_cache_write_release(…, DT_IMAGE_CACHE_SAFE)
+-- (src/lua/image.c), which writes the XMP from the library, history included.
+-- Setting the rating to itself is that write with no visible change.
+function request_ui.sync_sidecar(image)
+  pcall(function()
+    local rating = image.rating
+    image.rating = rating
+  end)
+end
+
+-- darktable:history_end of the photo's sidecar after a sync, or nil.
+function request_ui.history_count(image)
+  request_ui.sync_sidecar(image)
+  local path = sidecar_file(image)
+  local body = path and read_file(path) or nil
+  if type(body) ~= "string" then
+    return nil
+  end
+  return tonumber(body:match('darktable:history_end="(%d+)"'))
 end
 
 function request_ui.short(title)
@@ -2786,6 +2831,7 @@ apply_masked_step = function(image, work_dir, mask)
       yield_view()
     end
   end
+  request_ui.sync_sidecar(image)
   mkdir_p(work_dir)
   local cleaned = join_path(work_dir, "masked.xmp")
   local backup = join_path(work_dir, "history-before-mask.xmp")
@@ -2836,6 +2882,7 @@ apply_masked_step = function(image, work_dir, mask)
   if source_body and source_body ~= "" then
     write_file(backup, source_body)
   end
+  local rows_before = tonumber(tostring(source_body or ""):match('darktable:history_end="(%d+)"'))
   park_develop(image)
   local failure = nil
   if current_view_name() == "darkroom" then
@@ -2867,6 +2914,16 @@ apply_masked_step = function(image, work_dir, mask)
           end
         end
       end
+    end
+  end
+  if not failure and rows_before then
+    local rows_after = request_ui.history_count(image)
+    if rows_after and rows_after <= rows_before then
+      failure = string.format(
+        "The %s was written, but darktable still shows %d history item(s), so nothing was added.",
+        what,
+        rows_after
+      )
     end
   end
   if stepped_aside then
