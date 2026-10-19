@@ -1358,6 +1358,11 @@ local function propose_image(image, index, total, vibe, steer)
   -- Ask is a follow-up. It keeps the saved subjects and does not grade again.
   -- Ask reads the photo even when this folder already has a plan.
   local asking = run_button ~= nil and run_button.label == "Ask"
+  -- A follow-up needs the saved reading. With none (a new photo, or after
+  -- New plan) Ask reads the photo and plans from scratch.
+  if asking and file_size(join_path(work, "output.json")) < 2 then
+    asking = false
+  end
   -- An edited description is a new plan even with the request box empty.
   local described = false
   if type(existing) == "table" and type(scene_text) == "function" then

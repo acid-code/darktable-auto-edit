@@ -38,3 +38,12 @@ class NewPlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AskAfterNewPlanTests(unittest.TestCase):
+    def test_ask_without_saved_reading_plans_from_scratch(self):
+        source = (Path(__file__).resolve().parent.parent / "ai_editor.lua").read_text(encoding="utf-8")
+        body = source.split("local function propose_image", 1)[1].split("\nend\n", 1)[0]
+        self.assertIn('file_size(join_path(work, "output.json")) < 2', body)
+        self.assertIn("asking = false", body)
+
