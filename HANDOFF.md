@@ -14,6 +14,35 @@ Python 3.13, no darktable, no API keys).
 | 3 | Smarter editing from the photoserge video lessons (ordering, caps, landscape class grades, sky-intersected gradients/glow, split tone, selective color, edge burn, crop suggestion, few-shot prompt data), plus animal Accept steps | **done** |
 | 4 | Tests for everything new, full suite green | rolling, per phase |
 
+## Commits (local only, on `feature/ai-masks`)
+
+| Commit | Phase |
+| --- | --- |
+| `44700c9` | 1 — shape writer |
+| `061adf5` | 2 — segmentation + drawn-mask Accept steps |
+| `9e76cfb` | 2b — animal instance masks |
+| `0ee8388` | 3 — lessons, animal steps, looks, ordering, prompts, crop |
+| (this commit) | HANDOFF update |
+
+Patches: `/workspace/dt_patches/*.patch`; bundle:
+`/workspace/dt_patches/ai-masks.bundle`
+(`git fetch ai-masks.bundle feature/ai-masks:feature/ai-masks` or
+`git am /path/*.patch` on top of `feature/gui-improvement` @ `dd888ef`).
+
+## What is left
+
+- Verify everything in darktable 5.6 (checklist below). Nothing here has
+  been loaded by a real darktable.
+- No panel buttons for the new steps; they come from **Ask** (grammar or
+  model plan). A Lua button row would need the feature-timing rule
+  (enabled only when the state is ready) and a darkroom test.
+- Rectangle and brush shapes are still not written.
+- Real model backends (rembg, ADE20K, darktable SAM, Gemini) are only
+  tested with fakes. darktable SAM is skipped on animal crops < 256 px.
+- Coordinates are preview space (a crop/rotation/lens correction already
+  in history shifts the shapes) — same as the pre-existing mask steps.
+- Pre-existing failing test (bird eye heuristic, from `dd888ef`).
+
 ## Done
 
 ### Phase 1 — shape writer
