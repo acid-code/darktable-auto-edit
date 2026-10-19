@@ -497,6 +497,7 @@ def analyze(
     scene_text: str = "",
     rewrite_scene: bool = False,
     describe_only: bool = False,
+    history_xmp: str | Path | None = None,
 ) -> dict:
     """Analyze one image and return the recipe written to ``output.json``.
 
@@ -618,6 +619,18 @@ def analyze(
             ]
             plan["features_skipped"] = [str(item) for item in (previous.get("features_skipped") or [])]
             plan["features_done"] = [str(item) for item in (previous.get("features_done") or [])]
+            # Done means "in the sidecar history": a failed Accept left its
+            # mark in the saved plan (parrot on a freshly opened JPG).
+            if history_xmp:
+                from ai_dt.applied import applied_steps, history_names_from_xmp
+
+                names = history_names_from_xmp(history_xmp)
+                if names is not None:
+                    landed = {
+                        str(item.get("id") or "")
+                        for item in applied_steps({"step_log": previous.get("step_log") or []}, names)
+                    }
+                    plan["features_done"] = [name for name in plan["features_done"] if name in landed]
             # An edited description is a new plan: the waiting steps came from
             # the old one. Done and skipped steps still hold.
             edited = bool(user_scene) and " ".join(user_scene.lower().split()) != " ".join(

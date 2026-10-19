@@ -80,3 +80,29 @@ class LuaChecksTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FirstAskDoneStateTests(unittest.TestCase):
+    def test_first_ask_drops_a_done_mark_the_sidecar_does_not_hold(self) -> None:
+        import shutil
+
+        from ai_dt.pipeline import analyze
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            image = out / "parrot.jpg"
+            Image.new("RGB", (64, 48), (90, 140, 60)).save(image)
+            stored = {"reading": {"sentence": ""}, "plan": {"features_done": ["subject"], "step_log": [
+                {"id": "subject", "name": "Subject lift", "title": "Lift the parrot", "active": True}]}}
+            (out / "output.json").write_text(json.dumps(stored), encoding="utf-8")
+            xmp = out / "parrot.jpg.xmp"
+            shutil.copy(PARROT, xmp)
+            recipe = analyze(image, detector="heuristic", advisor="histogram", output_dir=out,
+                             steer="warmer please", history_xmp=str(xmp))
+            self.assertNotIn("subject", recipe["plan"].get("features_done") or [])
+            # Control: without a sidecar the saved mark is kept.
+            (out / "output.json").write_text(json.dumps(stored), encoding="utf-8")
+            kept = analyze(image, detector="heuristic", advisor="histogram", output_dir=out,
+                           steer="warmer please")
+            self.assertIn("subject", kept["plan"].get("features_done") or [])

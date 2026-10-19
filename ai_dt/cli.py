@@ -175,6 +175,7 @@ def _analyze_kwargs(args) -> dict:
         "library_path": args.library,
         "source_path": args.original,
         "full_res": args.full_res,
+        "history_xmp": args.history_xmp or (f"{args.original}.xmp" if args.original else None),
     }
 
 
