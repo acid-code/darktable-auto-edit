@@ -145,9 +145,14 @@ def applied_steps(plan: dict, history_names: list[str] | None = None) -> list[di
             if not ident and name.startswith("AI "):
                 ident = name[3:].strip().lower().replace(" ", "_")
             add(ident, name, name)
-    for item in log:
-        add(str(item.get("id") or ""), str(item.get("name") or ""), str(item.get("title") or ""))
-    if history_names is None or not found:
+    # With a readable sidecar, the sidecar is the truth: a logged step whose
+    # row is not in the history did not land (a failed or no-op Accept on a
+    # freshly opened JPG) and is not done. The log only fills in when there
+    # is no sidecar to read.
+    if history_names is None:
+        for item in log:
+            add(str(item.get("id") or ""), str(item.get("name") or ""), str(item.get("title") or ""))
+    if history_names is None:
         logged_ids = {item["id"] for item in found}
         for ident in plan.get("features_done") or []:
             ident = str(ident or "").strip()

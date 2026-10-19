@@ -959,7 +959,17 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
     if animal_subject:
         brief = f"{brief}\n" + subject_line(animal_noun(steer, scene_for_model), ground_bright, water_seen)
     recipe["technical_brief"] = brief
-    applied = applied_steps(plan, history_names_from_xmp(history_xmp))
+    history_names = history_names_from_xmp(history_xmp)
+    applied = applied_steps(plan, history_names)
+    if history_names is not None:
+        # Done means "in the sidecar history". Drop saved done marks and
+        # log entries the sidecar does not hold.
+        landed = {str(item.get("id") or "") for item in applied}
+        plan["features_done"] = [name for name in (plan.get("features_done") or []) if str(name) in landed]
+        plan["step_log"] = [
+            item for item in (plan.get("step_log") or [])
+            if isinstance(item, dict) and (not item.get("active") or str(item.get("name") or "") in set(history_names))
+        ]
     skipped_before = skipped_steps(plan)
     edit_state = applied_prompt_text(applied, skipped_before)
     recipe["applied_steps"] = applied

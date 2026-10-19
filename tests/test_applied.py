@@ -86,9 +86,22 @@ class AppliedStepTests(unittest.TestCase):
     def test_applied_steps_come_from_history_and_log(self) -> None:
         plan = {"step_log": [{"id": "eyes", "name": "Brighten the eyes", "title": "Brighten the eyes", "active": True}]}
         found = applied_steps(plan, ["", "Subject lift", "Quiet the background", "My own exposure"])
-        self.assertEqual([item["id"] for item in found], ["subject", "mask_background", "eyes"])
+        # The sidecar is the truth: the logged eye step is not in the history,
+        # so it did not land (a failed Accept) and is not done.
+        self.assertEqual([item["id"] for item in found], ["subject", "mask_background"])
+        found = applied_steps(plan, ["Subject lift", "Brighten the eyes"])
+        self.assertEqual([item["id"] for item in found], ["subject", "eyes"])
         # Without a sidecar, the plan's own record is used.
         self.assertEqual([item["id"] for item in applied_steps({"features_done": ["foreground"]})], ["foreground"])
+
+    def test_a_failed_accept_on_a_fresh_jpg_is_not_done(self) -> None:
+        # Parrot regression: the log and features_done said the lift was on,
+        # the sidecar had only the four automatic rows.
+        plan = {
+            "features_done": ["mask_animal"],
+            "step_log": [{"id": "mask_animal", "name": "Lift the animal", "title": "Lift the parrot", "active": True}],
+        }
+        self.assertEqual(applied_steps(plan, ["colorin", "colorout", "gamma", "flip"]), [])
 
     def test_repeated_step_is_dropped_unless_the_request_asks_to_redo_it(self) -> None:
         applied = [{"id": "subject", "name": "Subject lift", "title": "Lift the duck"}]

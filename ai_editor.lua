@@ -3846,6 +3846,50 @@ remove_button = dt.new_widget("button") {
   end,
 }
 
+-- Plan files in this photo's work folder (<config dir>/ai-editor-work/<id>/v<n>).
+-- New plan removes only these. The darktable history, the sidecar, the
+-- camera file and an opened edited.tif stay.
+request_ui.plan_files = {
+  "output.json", "proposal.json", "stage.json", "step.dtstyle", "edit.dtstyle", "mask.json",
+  "masked.xmp", "version.json", "steer.txt", "status.txt", "arg-request.txt",
+  "arg-description.txt", "arg-vibe.txt", "history-before-mask.xmp", "masks.xmp", "look.jpg",
+}
+
+function request_ui.new_plan()
+  local image = target_images()[1]
+  if image == nil then
+    status_label.text = "Open a photo, then press New plan."
+    return
+  end
+  local work = edit_work_dir(image)
+  local removed = 0
+  for _, name in ipairs(request_ui.plan_files) do
+    if os.remove(join_path(work, name)) then
+      removed = removed + 1
+    end
+  end
+  shown_recipe = nil
+  pcall(show_choices, nil)
+  pcall(show_feature_pair, nil)
+  if steer_entry then
+    steer_entry.text = ""
+  end
+  refresh_controls(nil)
+  status_label.text = "This photo's saved plan is cleared (" .. tostring(removed)
+    .. " file(s)). Your darktable edits stay as they are. Type a request, or leave it blank, and press Ask."
+end
+
+request_ui.new_plan_button = dt.new_widget("button") {
+  label = "New plan",
+  tooltip = "Forget this photo's saved plan and start fresh. Your darktable edits stay as they are.",
+  clicked_callback = function()
+    local ok, failure = pcall(request_ui.new_plan)
+    if not ok then
+      status_label.text = "New plan failed: " .. tostring(failure)
+    end
+  end,
+}
+
 local action_row = dt.new_widget("box") {
   orientation = "horizontal",
   run_button,
@@ -3853,6 +3897,7 @@ local action_row = dt.new_widget("box") {
   cancel_button,
   copy_button,
   remove_button,
+  request_ui.new_plan_button,
 }
 
 back_button = dt.new_widget("button") {

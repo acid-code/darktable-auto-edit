@@ -463,6 +463,74 @@ raw+jpeg) are skipped with "rawpy is not installed (optional RAW decoder;
 pip install -r requirements.txt)"; everything else passes. In the venv they
 run.
 
+## TODO (stopped at the budget limit, 2026-10-19 ~17:46)
+
+Done in this last stretch (tested by the targeted tests; the full suite was not re-run):
+- **Grey status text:** the status box is now a non-focusable `label`. It is
+  word-wrapped in Lua (`request_ui.wrap_status`, 46 columns) and ellipsis is
+  turned off after every set, so it shows normal contrast with no truncation.
+  This replaced `sensitive = false`, which made the text dim. Commit `c442f1b`.
+- **No-op Accept (parrot):**
+  - A step that writes no mask and no style now fails with a plain reason, and
+    `--restore-step` puts it back (`plan.left_off`).
+  - Accept checks that the sidecar's `history_end` grew, both in
+    `apply_masked_step` and in the caller.
+  - The sidecar is synced (`image.rating = image.rating`) before the splice.
+    The 5.4/5.6 Lua API has no `write_sidecar_files`.
+  - Regression fixture: `tests/fixtures/dt56_parrot_fresh_jpg.xmp`, a copy of
+    `/workspace/diag/parrot/P1370754.JPG.xmp`. Splicing mask_animal onto it gives
+    `history_end` 5, and darktable-cli 5.6 renders it with no warnings.
+  - Commit `eb10f0c`.
+- **Done state from the sidecar:**
+  - `applied.applied_steps` ignores the step log and `features_done` when a
+    sidecar is readable.
+  - `plan_chat` drops done marks and log entries that the sidecar doesn't hold.
+  - Tests are in `tests/test_applied.py`.
+- **New plan button** (label "New plan", tooltip "Forget this photo's saved
+  plan and start fresh. Your darktable edits stay as they are."):
+  - It deletes only the listed plan files in
+    `<config dir>/ai-editor-work/<image id>/v<n>`.
+  - It resets the panel and says to type a request (or leave it blank) and
+    press Ask.
+  - On Windows the work folder is `%LOCALAPPDATA%\darktable\ai-editor-work\<id>\v<n>`.
+  - Lua only: not GUI-tested, and there is no Lua-level test.
+
+Still TODO:
+1. Parrot: test the full Accept on a freshly opened JPG in the darkroom
+   (Windows 5.6). Confirm that the rating-sync really writes the sidecar there,
+   and that the history-grew check passes. Also filter `features_done` against
+   the sidecar on the *first* Ask (`pipeline.run` carries the stored done list;
+   only `plan_chat` filters it now). Pass `--history-xmp` to it.
+2. New plan: add a test (e.g. parse `request_ui.plan_files` and the label and
+   tooltip from the Lua source), add it to the README, and check it in the GUI.
+3. **Remove the Looks button and the "Look: not named yet" label.** Asaf will
+   use darktable presets instead. Update the status strings that say "press
+   Looks", the README and the tests.
+4. **darktable 5.4 + 5.6 support** (findings, from the darktable source at tags
+   `release-5.4.1` and `release-5.6.0`):
+   - These are identical in both: the module params versions and structs we
+     write (exposure 7 in dt, we write 6; colorbalancergb 5, vignette 4,
+     toneequal 2, colorzones 5, channelmixerrgb 3, crop 3, sigmoid 3, …),
+     `DEVELOP_BLEND_VERSION` 14 (we write 13; it is upgraded),
+     `DEVELOP_MASKS_VERSION` 6, the `dt_develop_blend_params_t` layout, and
+     `DT_XMP_EXIF_VERSION` 5.
+   - The only difference: 5.6 adds the module **colorharmonizer** to every
+     built-in iop order. `ai_dt/iop_order.py` has the 5.6 lists. For 5.4, drop
+     "colorharmonizer" from the written `iop_order_list`. 5.4 probably ignores an
+     unknown name, but that is not verified.
+   - 5.6 masks add `DT_MASKS_OBJECT` (AI object). We don't write it.
+   - The Lua APIs used (`apply_sidecar`, `drop_cache`, label/entry/text_view
+     members) are the same in both. There is no `write_sidecar_files` in
+     either.
+   - Plan: Lua passes `dt.configuration.version` as `--dt-version`. Python sets
+     `AI_DT_DARKTABLE_VERSION`. `iop_order` and `drawn_mask._write_pipeline_list`
+     drop the 5.6-only modules for 5.4.x, and default to 5.6. Then verify with a
+     5.4.1 AppImage and darktable-cli.
+5. Re-run the full suite (venv, `DTCLI` set, system python3), and refresh the
+   GUI copy plus restart darktable after these commits. The order-dependent
+   pair `test_pipeline` + `test_guides` (portrait vignette and face gate) fails
+   when the two run together, even on `f99ce55`.
+
 ## Offline GUI test findings: fixed (commit `38ffdcb`)
 
 The offline darkroom test (darktable 5.6.2, detector=heuristic,
