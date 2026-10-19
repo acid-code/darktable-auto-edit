@@ -1242,7 +1242,7 @@ local function original_of(image)
   return nil
 end
 
--- A duplicate starts with an empty folder, so a later Propose would read the
+-- A duplicate starts with an empty folder, so a later Ask would read the
 -- photo as new and paint the whole look again. The cache remembers which
 -- copy already has the grade.
 local function restore_picture_context(image, work)
@@ -1344,7 +1344,7 @@ local function propose_image(image, index, total, vibe, steer)
   local already = (not is_original(image)) and restore_picture_context(image, work)
   local existing = read_recipe(work)
   -- Ask is a follow-up. It keeps the saved subjects and does not grade again.
-  -- Propose reads the photo even when this folder already has a plan.
+  -- Ask reads the photo even when this folder already has a plan.
   local asking = run_button ~= nil and run_button.label == "Ask"
   -- An edited description is a new plan even with the request box empty.
   local described = false
@@ -1429,7 +1429,7 @@ local function apply_image(image, vibe, steer, look)
     local waiting_name = type(recipe_before) == "table" and recipe_before.features_next or ""
     if type(waiting_name) ~= "string" or waiting_name == "" then
       close_progress()
-      return "Propose a plan first. Nothing is added until there is a step."
+      return "Ask for a plan first. Nothing is added until there is a step."
     end
     local flag = look == "accept-feature" and "--commit-step" or "--skip-step"
     show_progress(look == "accept-feature" and "Applying this step…" or "Skipping this step…", 0.7)
@@ -1479,7 +1479,7 @@ local function apply_image(image, vibe, steer, look)
     end
     return "This photo already has its look. Type what should change, then press Ask.\n" .. body
   end
-  -- Propose already read the picture and wrote the plan. Applying a look
+  -- Ask already read the picture and wrote the plan. Applying a look
   -- only rebuilds the grade. Another Mistral and Gemini round, and another
   -- preview export, were the long wait after the button.
   local preview = join_path(work, "preview.jpg")
@@ -1826,11 +1826,11 @@ local function show_choices(recipe)
   local next_id = type(recipe) == "table" and recipe.features_next or ""
   local next_title = type(recipe) == "table" and recipe.features_next_title or next_id
   if run_button then
-    run_button.label = follow_up and "Ask" or "Propose"
+    run_button.label = "Ask"
   end
   if steer_entry then
     pcall(function()
-      steer_entry.placeholder = follow_up and "what should change on this photo?" or "rewrite the plan, then press Propose"
+      steer_entry.placeholder = "what should change on this photo?"
     end)
   end
   if type(choices) == "table" then
@@ -1910,9 +1910,9 @@ local function run_analysis()
   local images, truncated = target_images()
   if #images == 0 then
     if in_darkroom() then
-      status_label.text = "Open a photo in the darkroom, then propose looks again."
+      status_label.text = "Open a photo in the darkroom, then press Ask again."
     else
-      status_label.text = "Select an image on the lighttable, then propose looks again."
+      status_label.text = "Select an image on the lighttable, then press Ask again."
     end
     dt.print("Select an image first")
     return
@@ -1959,7 +1959,7 @@ end
 local function apply_choice(index, forced_look)
   local look = forced_look or choice_ids[index]
   if type(look) ~= "string" or look == "" then
-    status_label.text = "Propose looks first."
+    status_label.text = "Press Ask first."
     return
   end
   local vibe = vibe_to_send()
@@ -2391,7 +2391,7 @@ end
 
 -- The looks page writes the choice and closes. Nothing in Darktable
 -- moves until the filmstrip is hovered, so the click used to sit there.
--- This wait runs after Propose looks and starts the edit when the file appears.
+-- This wait runs after Ask and starts the edit when the file appears.
 local function watch_preview_pick()
   if preview_image == nil then
     return
@@ -2990,7 +2990,7 @@ local function open_looks()
   local work = edit_work_dir(image)
   local recipe = read_recipe(work)
   if not looks_ready(recipe) then
-    status_label.text = "Propose first. Looks stays closed until that plan has choices."
+    status_label.text = "Press Ask first. Looks stays closed until that plan has choices."
     return false
   end
   preview_image = image
@@ -3633,15 +3633,26 @@ steer_entry = dt.new_widget("entry") {
   text = stored_string("steer"),
   placeholder = "what should change on this photo?",
   editable = true,
-  tooltip = "Propose reads this photo and writes a plan, even when a plan is already stored. It does not open the looks window. Accept and Skip stay on this photo.",
+  tooltip = "Ask reads this photo and writes a plan, even when a plan is already stored. It does not open the looks window. Accept and Skip stay on this photo.",
 }
 
 -- text_view wraps at word and character breaks. A vertical box gives each
 -- status line its own height. A horizontal row stayed one line tall, and
 -- the status is not ellipsized.
+-- The status box must never hold the keyboard focus. darktable 5.6 gives
+-- the focused widget the first look at a key and runs a shortcut for any key
+-- it does not consume (gui/accelerators.c, dt_shortcut_dispatcher). A
+-- read-only text view consumes nothing, so after a click on the status box
+-- a capital letter became a view switch, a tethering toast or the exposure
+-- popup. An insensitive widget cannot take the focus. It stays a text view
+-- (a Lua label does not wrap) and the text is still readable, a little dim.
+-- The request entry is a real GtkEntry, so letters typed there are consumed
+-- and never reach a shortcut. Lua has no grab or key filter beyond that.
+-- Asaf still has to confirm this in the darkroom.
 status_label = dt.new_widget("text_view") {
-  text = "Open a photo. The description is written when that box is empty. Propose writes a plan. Looks opens the choices.",
+  text = "Open a photo. The description is written when that box is empty. Ask writes a plan. Looks opens the choices.",
   editable = false,
+  sensitive = false,
 }
 look_name_label = dt.new_widget("label") {
   label = "Look: —",
@@ -3653,7 +3664,7 @@ local status_row = dt.new_widget("box") {
 }
 
 run_button = dt.new_widget("button") {
-  label = "Propose",
+  label = "Ask",
   sensitive = false,
   tooltip = "Read the open photo and write a plan. This does not open the looks window.",
   clicked_callback = on_click,
@@ -3662,7 +3673,7 @@ run_button = dt.new_widget("button") {
 looks_button = dt.new_widget("button") {
   label = "Looks",
   sensitive = false,
-  tooltip = "Open the looks window after Propose has written choices. It does not start a new plan.",
+  tooltip = "Open the looks window after Ask has written choices. It does not start a new plan.",
   clicked_callback = function()
     set_panel_busy(true)
     local opened

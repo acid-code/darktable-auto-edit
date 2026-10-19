@@ -371,11 +371,31 @@ def _write_description(
         "analysis": analysis,
         "status_text": (
             (picture_line + "\n" if picture_line else "")
-            + "Description is ready. Edit it if the read is wrong, then press Propose looks."
+            + "Description is ready. Edit it if the read is wrong, then press Ask."
         ),
     }
     path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8")
     return recipe
+
+
+def _local_description(picture: object, detections: list) -> str:
+    """What the local measurements can say about the photo, for the
+    description box when no picture model wrote one. Facts only; the reading
+    sentence is advice ("Leave the measured color alone.") and was shown
+    there before."""
+
+    kind = str(getattr(picture, "type", "") or "general")
+    names = []
+    for item in detections or []:
+        name = str(getattr(item, "label", "") or getattr(item, "category", "") or "")
+        if name and name not in {"subject", "face", "eye"} and name not in names:
+            names.append(name)
+    brightness = float(getattr(picture, "brightness", 0.5) or 0.5)
+    light = "bright" if brightness >= 0.55 else ("dim" if brightness < 0.3 else "even")
+    warmth = float(getattr(picture, "warmth", 0.0) or 0.0)
+    tone = "warm" if warmth > 0.04 else ("cool" if warmth < -0.04 else "near-neutral")
+    found = f" with {', '.join(names[:3])}" if names else ""
+    return f"Measured locally: a {kind} photo{found}, {light} {tone} light. Describe the subject here."
 
 
 def _scene_record(
@@ -632,7 +652,7 @@ def analyze(
         }
     scene = _scene_record(
         suggestion,
-        reading.sentence,
+        _local_description(picture, detections),
         scene_text,
         stored_scene,
         rewrite=rewrite_scene,
@@ -704,6 +724,15 @@ def analyze(
         detections=detections,
         scene=scene_for_model,
     )
+    from ai_dt.offline_plan import apply_offline, offline_operations, planner_missing
+
+    if planner_missing(chosen) and not feature_look:
+        # No planner answered (no key, offline, or Gemini failed): the guide
+        # steps and the request words still make Accept-able steps.
+        plan = apply_offline(
+            plan,
+            offline_operations(steer, picture_type=picture.type, animal=animal_subject, ground=ground_bright, first=True),
+        )
     if animal_subject:
         from ai_dt.animal_plan import animal_plan
 
@@ -944,7 +973,10 @@ def analyze(
     if not recipe["offer_looks"]:
         recipe["choices"] = []
     recipe["picture_backend"] = picture_backend_line(str(adjusted.source or ""), advisor_notes)
-    recipe["plan_backend"] = plan_backend_line((plan.get("reasoning") if isinstance(plan, dict) else {}) or {})
+    recipe["plan_backend"] = plan_backend_line(
+        (plan.get("reasoning") if isinstance(plan, dict) else {}) or {},
+        description=str((recipe.get("scene") or {}).get("source") or "") == "user",
+    )
     if output_dir is not None:
         recipe["render"] = {"file": str(Path(output_dir) / "edited.tif"), "format": "tiff16"}
     accepted_step = waiting_step if feature_look == "accept-feature" and waiting_step else ""

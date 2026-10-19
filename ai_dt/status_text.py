@@ -68,8 +68,11 @@ def _gemini_failed_text(reason: str) -> str:
     return "Gemini failed"
 
 
-def plan_backend_line(reasoning: dict | None) -> str:
-    """One line: Gemini, Ollama, or that the text plan was not used."""
+def plan_backend_line(reasoning: dict | None, *, description: bool = False) -> str:
+    """One line: Gemini, Ollama, or the offline plan and why it is offline.
+
+    ``description`` says the typed photo description fed the offline plan.
+    """
 
     info = reasoning if isinstance(reasoning, dict) else {}
     status = str(info.get("status") or "")
@@ -89,9 +92,9 @@ def plan_backend_line(reasoning: dict | None) -> str:
         parts.append(_gemini_failed_text(reason))
     if ollama_failed:
         parts.append("Ollama failed")
-    if parts:
-        return "Plan: " + ", ".join(parts) + ". Plan: not used"
-    return "Plan: not used"
+    why = ", ".join(parts) if parts else "no Gemini key"
+    source = "guide, request and description" if description else "guide and request"
+    return f"Plan: offline ({why}), from the {source}"
 
 
 def request_key(text: str | None) -> str:
@@ -206,7 +209,7 @@ def _plan_sheet(recipe: dict) -> str:
         for item in path:
             if item != nxt and item not in done:
                 rows.append(f"later — {feature_title(item)}")
-    ask = "Ask" if recipe.get("chat") else "Propose looks"
+    ask = "Ask"
     if nxt:
         rows.append(
             "Accept applies this step. Skip leaves it out. "
@@ -273,7 +276,7 @@ def panel_status(recipe: dict) -> str:
     elif nxt:
         lines.append(
             f"I would try {nxt} next. Accept applies it to this photo. "
-            "Type a change in the steer box and press Propose looks to rewrite the plan."
+            "Type a change in the request box and press Ask to rewrite the plan."
         )
     elif not paragraph:
         sentence = version_sentence(recipe)
@@ -285,7 +288,7 @@ def panel_status(recipe: dict) -> str:
         lines.append(handoff_sentence)
     elif not nxt:
         lines.append(
-            "Type a change in the steer box, then press Propose looks. "
+            "Type a change in the request box, then press Ask. "
             "Gemini rewrites the plan from that sentence."
         )
     for key in ("warmth_note", "shadow_note", "gradient_note"):

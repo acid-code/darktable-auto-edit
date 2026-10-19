@@ -91,7 +91,7 @@ The lighting prompt is `ai_dt/prompts/llava_lighting.txt`. Mistral vision and LL
 
 On each run the editor tries Ollama at `127.0.0.1:11434` by itself. It sends the picture description, the vibe words, and the preset name, and asks for a short stage plan. The photo is not uploaded.
 
-If nothing is listening and `GEMINI_API_KEY` is unset, reasoning is skipped. The steer line is still applied, and the rest of the edit continues. The note is `Reasoning was skipped. No local model and no Gemini key.`
+If nothing is listening and `GEMINI_API_KEY` is unset, reasoning is skipped. The request line is still applied, and the rest of the edit continues. The note is `Reasoning was skipped. No local model and no Gemini key.`
 
 On Windows, install Ollama with winget. Approve the Windows prompt if it appears:
 
@@ -220,7 +220,7 @@ From Darktable, set **AI editor: vibe** in the Lua options. From the command lin
 
 ## Preview without Darktable
 
-The preview page is a sketch of the global grade on synthetic pictures. It is not the RAW render and it is not `edited.tif`. After Propose, Darktable also opens http://127.0.0.1:8741/options with a picture of every look for that photo. A choice on that page and a choice on the panel write the same pick. Use the command in "Run it on RAW files" for a picture outside Darktable.
+The preview page is a sketch of the global grade on synthetic pictures. It is not the RAW render and it is not `edited.tif`. After Ask, Darktable also opens http://127.0.0.1:8741/options with a picture of every look for that photo. A choice on that page and a choice on the panel write the same pick. Use the command in "Run it on RAW files" for a picture outside Darktable.
 
 ```bash
 python3 preview_server.py
@@ -447,7 +447,7 @@ Segmenters (`ai_dt/segment/`) are tried in order and each one is optional: darkt
 
 | Path | What it changes | When it runs |
 | --- | --- | --- |
-| Painted TIFF | `edited.tif` pixels | Propose builds the guide's local grades (subject, background, and the rest). `masks_can_attach()` in `ai_dt/masks_xmp.py` stays false so that run does not replace history. |
+| Painted TIFF | `edited.tif` pixels | Ask builds the guide's local grades (subject, background, and the rest). `masks_can_attach()` in `ai_dt/masks_xmp.py` stays false so that run does not replace history. |
 | Sidecar splice | One new history module plus its shapes | Accept, and only for the step that is waiting. |
 
 `local_edits` in `output.json` is the measurement. An ellipse there is not on the photo until Accept splices it. Coordinates are 0 to 1, origin at the top left. `cx`, `cy` are the center. `rx`, `ry` are the radii.

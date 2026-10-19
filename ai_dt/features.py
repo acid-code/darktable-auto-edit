@@ -991,6 +991,19 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
         merged["features"] = [item for item in (merged.get("features") or []) if isinstance(item, dict)] + extra
     plan = select_mask_features(plan, merged, [], steer, grounded, "")
     plan = _install_history_steps(plan, operations)
+    from ai_dt.offline_plan import apply_offline, offline_operations, planner_missing
+
+    if planner_missing(proposal):
+        plan = apply_offline(
+            plan,
+            offline_operations(
+                steer,
+                picture_type=str(picture_record.get("type") or ""),
+                animal=animal_subject,
+                ground=ground_bright,
+                first=False,
+            ),
+        )
     plan = _drop_applied_steps(plan, applied, skipped_before, steer)
     if animal_subject:
         from ai_dt.animal_plan import animal_plan
@@ -1017,7 +1030,7 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
     recipe["features_next_action"] = str(plan.get("features_next_action") or "")
     recipe["feature_note"] = str(plan.get("feature_note") or "")
     reasoning = plan.get("reasoning") if isinstance(plan.get("reasoning"), dict) else {}
-    recipe["plan_backend"] = plan_backend_line(reasoning)
+    recipe["plan_backend"] = plan_backend_line(reasoning, description=str(scene.get("source") or "") == "user")
     if nxt:
         follow = "Nothing is added until you press Accept."
     else:

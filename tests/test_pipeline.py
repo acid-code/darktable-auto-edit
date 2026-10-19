@@ -446,7 +446,7 @@ class NightTrainTests(unittest.TestCase):
         self.assertIn("train", recipe["reading"]["sentence"].lower())
         status = recipe["status_text"]
         self.assertIn("Picture: measured locally", status)
-        self.assertIn("Plan: not used", status)
+        self.assertIn("Plan: offline (no Gemini key)", status)
         self.assertNotIn("Kept animal", status)
         self.assertNotIn("Expert tools: gr", status)
         choices = {item["id"]: item["why"] for item in recipe["choices"]}
