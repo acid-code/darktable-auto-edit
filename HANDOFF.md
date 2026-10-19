@@ -489,17 +489,16 @@ Done (each item is a commit on feature/ai-masks; the full suite is 524 OK, 1 ski
   the CLI sets `AI_DT_DARKTABLE_VERSION`. `iop_order.order_for()` drops modules
   newer than the running darktable (default 5.6). Tests are in
   `tests/test_dt_versions.py`.
-  - Verified with the real darktable-cli **5.4.1** (`/workspace/dt54/dtcli54`,
-    the extracted AppImage): a duck sidecar with two colorbalancergb instances
-    (mask_animal + background) rendered with no iop-order warnings, both with
-    the 5.4 list and with the 5.6 list. So 5.4 also ignores the unknown name.
+  - **5.4 is not verified in real darktable yet** (Asaf is on 5.6). Only one
+    quick darktable-cli 5.4.1 render was tried: no iop-order warnings. There
+    has been no GUI test on 5.4.
 
 Still TODO:
 1. On Windows 5.6, GUI-test the full Accept on a freshly opened JPG. Confirm
    that the rating-sync writes the sidecar there and that the history-grew
    check passes.
-2. GUI-test the New plan button and the panel without Looks on 5.4 and on 5.6
-   (5.4 GUI was not run, only darktable-cli).
+2. GUI-test the New plan button and the panel without Looks on 5.6, and
+   later verify 5.4 in real darktable.
 3. Online launcher (`/workspace/dtverify/launch-gui-online.sh`) and the online
    GUI test. Both were skipped earlier because of the budget.
 4. Optional: delete the now-unreachable `open_looks`/`watch_preview_pick` code
