@@ -375,6 +375,235 @@ def splice_path_exposure(
     return _insert_masks(spliced, mask_li)
 
 
+# Operations a shape step may carry, and the parameter blob length each one has.
+SHAPE_OPERATIONS = {
+    "exposure": 24,
+    "colorbalancergb": 132,
+    "colorzones": 520,
+}
+_OFFSET_MASK_COMBINE = 20
+_COMBINE_MASKS_POS = 0x04  # DEVELOP_COMBINE_MASKS_POS: drawn mask polarity, inverted
+
+
+def _fresh_ids(document: str, count: int) -> list[int]:
+    taken = document
+    ids = []
+    for _ in range(count):
+        mask_id = _MASK_ID_BASE
+        while f'darktable:mask_id="{mask_id}"' in taken:
+            mask_id += 1
+        ids.append(mask_id)
+        taken += f'darktable:mask_id="{mask_id}"'
+    return ids
+
+
+def _form_record(form: dict) -> tuple[int, bytes, int]:
+    """Mask type, packed points, and point count for one shape spec."""
+
+    from ai_dt import dt_shapes
+
+    kind = str(form.get("type") or "")
+    if kind == "path":
+        raw = form.get("points") or []
+        corners = []
+        for point in raw[: dt_shapes.MAX_PATH_POINTS]:
+            try:
+                if isinstance(point, dict):
+                    x, y = float(point["x"]), float(point["y"])
+                else:
+                    x, y = float(point[0]), float(point[1])
+            except (KeyError, TypeError, ValueError, IndexError) as exc:
+                raise MaskSpliceError("a path point is missing its place") from exc
+            corners.append((_check_unit("x", x), _check_unit("y", y)))
+        if len(corners) < 3:
+            raise MaskSpliceError("a path needs at least three corners")
+        points = dt_shapes.smooth_path(
+            corners,
+            border=float(form.get("border", 0.01)),
+            smooth=bool(form.get("smooth", True)),
+        )
+        return dt_shapes.PATH, dt_shapes.encode_path(points), len(points)
+    if kind == "gradient":
+        anchor = form.get("anchor") or (0.5, 0.5)
+        try:
+            ax, ay = float(anchor[0]), float(anchor[1])
+        except (TypeError, ValueError, IndexError) as exc:
+            raise MaskSpliceError("a gradient needs an anchor") from exc
+        _check_unit("anchor_x", ax)
+        _check_unit("anchor_y", ay)
+        blob = dt_shapes.encode_gradient(
+            ax,
+            ay,
+            float(form.get("rotation", 0.0)) % 360.0,
+            compression=min(max(float(form.get("compression", 0.25)), 0.001), 1.0),
+            steepness=float(form.get("steepness", 0.0)),
+            curvature=min(max(float(form.get("curvature", 0.0)), -2.0), 2.0),
+            state=int(form.get("state", dt_shapes.GRADIENT_SIGMOIDAL)),
+        )
+        return dt_shapes.GRADIENT, blob, 1
+    if kind == "ellipse":
+        cx = _check_unit("center_x", form["cx"])
+        cy = _check_unit("center_y", form["cy"])
+        rx = _check_unit("radius_x", form["rx"])
+        ry = _check_unit("radius_y", form["ry"])
+        if rx <= 0.0 or ry <= 0.0:
+            raise MaskSpliceError("the ellipse radius must be greater than zero")
+        blob = dt_shapes.encode_ellipse(
+            cx, cy, rx, ry,
+            rotation=float(form.get("rotation", 0.0)),
+            border=float(form.get("border", 0.05)),
+        )
+        return dt_shapes.ELLIPSE, blob, 1
+    raise MaskSpliceError(f"unknown shape type {kind!r}")
+
+
+def splice_shapes(
+    document: str,
+    *,
+    forms: list[dict],
+    operation: str,
+    params: bytes,
+    modversion: int,
+    name: str,
+    invert: bool = False,
+    opacity: float = 100.0,
+) -> str:
+    """Insert one module whose drawn mask is a group of paths, gradients, and ellipses.
+
+    ``forms`` are combined in order, the way darktable's group does it:
+    the first form is copied, then each later form joins with its
+    ``mode`` (``union``, ``intersect``, ``difference``, ``exclusion``).
+    A form with ``invert`` is inverted before it joins. ``invert`` on the
+    whole call flips the drawn-mask polarity in the blend blob, which is
+    how a background is the inverse of a subject. The blend points at the
+    group, as darktable 5.6's AI object tool does. The usual insert rules
+    apply: insert at ``history_end``, priority 0 for a first instance.
+    """
+
+    if operation not in SHAPE_OPERATIONS:
+        raise MaskSpliceError(f"a shape step cannot carry {operation}")
+    if len(params) != SHAPE_OPERATIONS[operation]:
+        raise MaskSpliceError(f"the {operation} blob is the wrong length")
+    if not (name.startswith("AI ") or is_ai_editor_history_name(name)):
+        raise MaskSpliceError("the added module name is not an editor step")
+    cleaned = [form for form in forms if isinstance(form, dict)][:16]
+    if not cleaned:
+        raise MaskSpliceError("there is no shape to write")
+    records = [_form_record(form) for form in cleaned]
+
+    document, history, history_end, next_num = _prepare_insert(document)
+    priorities = [
+        int(_attr(tag, "darktable:multi_priority") or "0")
+        for tag in history
+        if _attr(tag, "darktable:operation") == operation
+    ]
+    priority = (max(priorities) + 1) if priorities else 0
+    versions = [
+        int(value)
+        for value in (_attr(tag, "darktable:blendop_version") for tag in history)
+        if value
+    ]
+    blend_version = max(versions) if versions else BLENDOP_VERSION
+    ids = _fresh_ids(document, len(records) + 1)
+    form_ids, group_id = ids[:-1], ids[-1]
+    blend = bytearray(_default_blend())
+    struct.pack_into("<I", blend, _OFFSET_MASK_MODE, _MASK_MODE_DRAWN)
+    struct.pack_into("<f", blend, _OFFSET_OPACITY, min(max(float(opacity), 0.0), 100.0))
+    struct.pack_into("<I", blend, _OFFSET_MASK_ID, group_id & 0xFFFFFFFF)
+    if invert:
+        combine = struct.unpack_from("<I", blend, _OFFSET_MASK_COMBINE)[0]
+        struct.pack_into("<I", blend, _OFFSET_MASK_COMBINE, combine | _COMBINE_MASKS_POS)
+    safe_name = escape(name, quote=True)
+    item = (
+        f'<rdf:li darktable:num="{next_num}" darktable:operation="{operation}" '
+        f'darktable:enabled="1" darktable:modversion="{int(modversion)}" '
+        f'darktable:params="{params.hex()}" '
+        f'darktable:blendop_params="{_encode_gz(bytes(blend))}" '
+        f'darktable:blendop_version="{blend_version}" '
+        f'darktable:multi_name="{safe_name}" darktable:multi_priority="{priority}" '
+        f'darktable:multi_name_hand_edited="1"/>'
+    )
+    spliced = _place_history_item(document, item, next_num)
+    spliced = re.sub(
+        r'darktable:history_end="\d+"',
+        f'darktable:history_end="{history_end + 1}"',
+        spliced,
+        count=1,
+    )
+    spliced = _pipeline_slot(spliced, operation, priority)
+
+    from ai_dt import dt_shapes
+
+    entries = []
+    members = []
+    for index, (form, form_id, (mask_type, points, count)) in enumerate(zip(cleaned, form_ids, records)):
+        entries.append(_mask_record(next_num, form_id, mask_type, safe_name, points, count))
+        state = dt_shapes.member_state(
+            str(form.get("mode") or "union"),
+            first=index == 0,
+            invert=bool(form.get("invert")),
+        )
+        members.append((form_id, state, min(max(float(form.get("opacity", 1.0)), 0.0), 1.0)))
+    group_points = dt_shapes.encode_group(group_id, members)
+    entries.append(_mask_record(next_num, group_id, _GROUP_TYPE, safe_name, group_points, len(members)))
+    return _insert_masks(spliced, "".join(entries))
+
+
+def read_mask_records(document: str) -> list[dict]:
+    """Every shape in ``masks_history``, with its points decoded where the type is known."""
+
+    from ai_dt import dt_shapes
+
+    found = []
+    for match in _HISTORY_ITEM.finditer(document):
+        tag = match.group(0)
+        if _attr(tag, "darktable:operation") or not _attr(tag, "darktable:mask_id"):
+            continue
+        raw = _attr(tag, "darktable:mask_points") or ""
+        try:
+            blob = _decode_gz(raw) if raw.startswith("gz") else bytes.fromhex(raw)
+        except (ValueError, MaskSpliceError, zlib.error):
+            blob = b""
+        mask_type = int(_attr(tag, "darktable:mask_type") or "0")
+        record = {
+            "num": int(_attr(tag, "darktable:mask_num") or "0"),
+            "id": int(_attr(tag, "darktable:mask_id") or "0"),
+            "type": mask_type,
+            "name": _attr(tag, "darktable:mask_name") or "",
+            "version": int(_attr(tag, "darktable:mask_version") or "0"),
+            "nb": int(_attr(tag, "darktable:mask_nb") or "0"),
+            "blob": blob,
+        }
+        try:
+            if mask_type == dt_shapes.PATH:
+                record["points"] = dt_shapes.decode_path(blob)
+            elif mask_type == dt_shapes.GRADIENT:
+                record["points"] = dt_shapes.decode_gradient(blob)
+            elif mask_type == dt_shapes.ELLIPSE:
+                record["points"] = dt_shapes.decode_ellipse(blob)
+            elif mask_type & dt_shapes.GROUP:
+                record["points"] = dt_shapes.decode_group(blob)
+        except dt_shapes.ShapeError:
+            record["points"] = None
+        found.append(record)
+    return found
+
+
+def decode_blend(encoded: str) -> dict:
+    """The fields of a blend blob this editor writes."""
+
+    raw = _decode_gz(encoded) if encoded.startswith("gz") else bytes.fromhex(encoded)
+    mode, _cst, _blend_mode, _parameter, opacity, combine, mask_id = struct.unpack_from("<IiIffII", raw, 0)
+    return {
+        "length": len(raw),
+        "mask_mode": mode,
+        "opacity": opacity,
+        "mask_combine": combine,
+        "mask_id": mask_id,
+        "inverted": bool(combine & _COMBINE_MASKS_POS),
+    }
+
+
 def _pipeline_slot(document: str, operation: str, priority: int) -> str:
     """Keep the new instance in the pipeline list the darkroom reloads."""
 
@@ -584,7 +813,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mask_json:
             spec = json.loads(Path(args.mask_json).read_text(encoding="utf-8"))
-            if spec.get("kind") == "path":
+            if spec.get("kind") == "shapes":
+                spliced = splice_shapes(
+                    document,
+                    forms=list(spec["forms"]),
+                    operation=str(spec["operation"]),
+                    params=bytes.fromhex(str(spec["params"])),
+                    modversion=int(spec["modversion"]),
+                    name=str(spec["name"]),
+                    invert=bool(spec.get("invert")),
+                    opacity=float(spec.get("opacity", 100.0)),
+                )
+            elif spec.get("kind") == "path":
                 spliced = splice_path_exposure(
                     document,
                     points=list(spec["points"]),
@@ -612,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
                 exposure_ev=args.ev,
                 name=args.name,
             )
-    except MaskSpliceError as exc:
+    except (MaskSpliceError, KeyError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -45,6 +45,9 @@ class EnsureTests(unittest.TestCase):
             patch.object(preview_server, "_listening_pids", return_value=[42, 99, os_pid()]),
             patch.object(preview_server, "_command_line", side_effect=command_line),
             patch.object(preview_server.subprocess, "run") as run,
+            # taskkill is the Windows branch. Pin the platform so the test
+            # checks the same branch on Linux and macOS.
+            patch.object(preview_server.sys, "platform", "win32"),
         ):
             preview_server._stop_stuck_preview()
         killed = [call.args[0] for call in run.call_args_list]

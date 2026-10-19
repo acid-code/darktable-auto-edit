@@ -2558,9 +2558,11 @@ apply_masked_step = function(image, work_dir, mask)
   -- The shapes live in the sidecar, not in a style. Read the history
   -- after the darkroom has written it, append one module, then load
   -- that file back. A failed splice does not call apply_sidecar.
-  local regions = type(mask) == "table" and (mask.kind == "regions" or mask.kind == "path")
+  local regions = type(mask) == "table" and (mask.kind == "regions" or mask.kind == "path" or mask.kind == "shapes")
   local what = "eye mask"
-  if type(mask) == "table" and mask.kind == "path" then
+  if type(mask) == "table" and mask.kind == "shapes" then
+    what = (type(mask.what) == "string" and mask.what ~= "") and mask.what or "drawn mask"
+  elseif type(mask) == "table" and mask.kind == "path" then
     what = "object mask"
   elseif type(mask) == "table" and mask.kind == "regions" then
     what = "color mask"
