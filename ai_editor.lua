@@ -2113,6 +2113,11 @@ local function ensure_worker()
   if worker_ready then
     return true
   end
+  -- The worker is a Windows script host; elsewhere there is none to wait
+  -- for (this used to sleep about 2.5 s on Linux before giving up).
+  if not on_windows() then
+    return false
+  end
   if worker_is_ready() and worker_is_alive() then
     worker_ready = true
     return true
@@ -2172,6 +2177,11 @@ end
 -- Windows io.popen keeps a cmd window on screen for the whole run.
 -- The worker is already running, so this only writes the command file.
 local function run_hidden(command, work_dir)
+  -- Only Windows opens a console window for io.popen. Elsewhere a plain
+  -- popen is the hidden run; stdin is /dev/null (NUL is a file name there).
+  if not on_windows() then
+    return run_popen(command .. " < /dev/null 2>&1")
+  end
   local folder = work_dir
   if type(folder) ~= "string" or folder == "" then
     folder = join_path(script_directory(), "ai-editor-work")
@@ -2211,7 +2221,7 @@ function run_captured(command, work_dir)
   if on_windows() then
     return run_hidden(command, work_dir)
   end
-  return run_popen(command .. " 2>&1")
+  return run_popen(command .. " < /dev/null 2>&1")
 end
 
 local function browser_app()

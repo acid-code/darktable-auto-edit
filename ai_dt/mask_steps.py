@@ -385,9 +385,23 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
     from ai_dt.dt_shapes import mask_to_forms
 
     step = STEPS[step_id]
-    if step.builder == "bottom_gradient":
-        return bottom_gradient_forms(), "gradient"
     chosen_backend = backend or str(recipe.get("segmenter") or "") or "auto"
+    if step.builder == "bottom_gradient":
+        forms = bottom_gradient_forms()
+        # An animal standing on the bright ledge: darken the ledge, not its
+        # feet and belly (darktable showed the gradient undoing the lift).
+        animals = [
+            item for item in ((recipe.get("analysis") or {}).get("subjects") or [])
+            if isinstance(item, dict) and item.get("category") == "animal"
+        ]
+        if animals and image is not None:
+            from ai_dt.segment.animals import animal_forms, segment_animals
+
+            found = segment_animals(image, subject_boxes(recipe), backend=chosen_backend)
+            outline = animal_forms(found, which="all")
+            if outline:
+                return _subtract(forms, outline), "gradient minus " + ", ".join(sorted({a.source for a in found.animals}))
+        return forms, "gradient"
     if step.builder in ("animal_main", "animal_all"):
         from ai_dt.segment.animals import animal_forms, segment_animals
 

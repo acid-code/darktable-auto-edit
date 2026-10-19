@@ -702,7 +702,7 @@ def _pipeline_slot(document: str, operation: str, priority: int) -> str:
 
     match = re.search(r'darktable:iop_order_list="([^"]*)"', document)
     if match is None:
-        return document
+        return _write_pipeline_list(document, operation, priority)
     parts = match.group(1).split(",")
     if len(parts) % 2:
         return document
@@ -717,6 +717,64 @@ def _pipeline_slot(document: str, operation: str, priority: int) -> str:
     slots.insert(insert_at, pair)
     rebuilt = ",".join(f"{name},{instance}" for name, instance in slots)
     return document[: match.start(1)] + rebuilt + document[match.end(1) :]
+
+
+def _history_instances(document: str) -> list[tuple[str, int]]:
+    """``(operation, multi_priority)`` of every history row, in order."""
+
+    found: list[tuple[str, int]] = []
+    history = re.search(r"<darktable:history>(.*?)</darktable:history>", document, re.DOTALL)
+    if history is None:
+        return found
+    for row in re.finditer(r"<rdf:li\b([^>]*)>", history.group(1)):
+        attrs = row.group(1)
+        op = re.search(r'darktable:operation="([^"]+)"', attrs)
+        if op is None:
+            continue
+        prio = re.search(r'darktable:multi_priority="(-?\d+)"', attrs)
+        found.append((op.group(1), int(prio.group(1)) if prio else 0))
+    return found
+
+
+def _write_pipeline_list(document: str, operation: str, priority: int) -> str:
+    """Write the full ``iop_order_list`` darktable needs for a second instance.
+
+    A stock sidecar has only ``iop_order_version`` (5 for a JPEG in 5.x) and
+    no list: darktable rebuilds instance 0 of every module from its built-in
+    table. A second instance is not in that table, so darktable 5.6.2 logs
+    "cannot get iop-order for colorbalancergb instance 1" and "can't find
+    history entry N while adding mask" and drops the row and its masks.
+    darktable itself writes the list as soon as a module has two instances
+    (``dt_ioppr_write_iop_order``), with the version unchanged, so this does
+    the same: the built-in table, each extra instance right after the
+    instances of its module, in priority order.
+    """
+
+    if priority <= 0:
+        return document
+    from ai_dt.iop_order import ORDERS
+
+    version = re.search(r'darktable:iop_order_version="(\d+)"', document)
+    if version is None or int(version.group(1)) not in ORDERS:
+        return document
+    slots = [(name, 0) for name in ORDERS[int(version.group(1))]]
+    extra = sorted(
+        {(name, prio) for name, prio in _history_instances(document) if prio > 0} | {(operation, int(priority))},
+        key=lambda pair: pair[1],
+    )
+    for name, prio in extra:
+        if (name, prio) in slots:
+            continue
+        at = None
+        for index, (slot_name, _instance) in enumerate(slots):
+            if slot_name == name:
+                at = index + 1
+        if at is None:
+            # Not a built-in module: darktable could not place it either.
+            return document
+        slots.insert(at, (name, prio))
+    listed = ",".join(f"{name},{prio}" for name, prio in slots)
+    return document[: version.end()] + f'\n   darktable:iop_order_list="{listed}"' + document[version.end() :]
 
 
 def splice_region_module(

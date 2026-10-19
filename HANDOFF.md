@@ -365,6 +365,66 @@ Tests: `tests/test_animal_routing.py` (19). Updated expectations in
 `test_applied.py`, `test_features.py`, `test_request_status.py`: animal
 photos now get animal step ids, and the header names request/description.
 
+## Real darktable 5.6.2: second instances, tools/verify_dt.py, Linux Lua
+
+Found with darktable 5.6.2 (AppImage, `darktable-cli`, `/workspace/dtverify`).
+
+**Second instance dropped.** Splicing two steps on one module (duck:
+`mask_animal` + `mask_animal_background`, both colour balance rgb) gave the
+second `multi_priority=1`. A stock sidecar has `iop_order_version="5"` and
+no `iop_order_list`, and `_pipeline_slot` only edited an existing list, so
+darktable logged `cannot get iop-order for colorbalancergb instance 1` and
+`[_dev_read_masks_history] can't find history entry 5 while adding mask …`
+and silently dropped the row and its masks.
+Fix: `drawn_mask._write_pipeline_list` writes the full list, as darktable
+does itself (`dt_ioppr_write_iop_order` writes a list once a module has two
+instances; the version stays). `ai_dt/iop_order.py` holds darktable's
+built-in tables (legacy, v3.0, v3.0 JPEG, v5.0, v5.0 JPEG, 93 modules each)
+copied from `src/common/iop_order.c` at release-5.6.2. Every extra instance in
+the history goes right after its module. A first instance still writes no
+list; a sidecar without a version is left alone.
+
+Harness (`verify.py`, base = the real 5.6.2 sidecar, region = duck outline):
+
+| render | warnings | inside duck (signed) | outside (signed) |
+| --- | --- | --- | --- |
+| background only (before) | 0 | -0.35 | -17.55 |
+| 3 steps, before the fix | 7 | -0.81 | -6.76 (background dropped) |
+| 2 steps (lift + background), fixed | 0 | +7.81 | -17.39 |
+| 3 steps (+ bottom gradient), fixed | 0 | +7.78 | -22.62 |
+
+The bottom gradient also darkened the duck's feet and belly (inside -1.1
+with the fix alone), so for an animal subject `mask_bottom_gradient` is now
+the gradient minus the animal outline.
+
+**`tools/verify_dt.py`** (optional): splices every step kind into a copy of
+a darktable-written sidecar, renders base and test with `darktable-cli`, and
+fails on new warning lines or a render that does not change. On the duck,
+all 28 cases pass with 0 new warnings (2 report "not in photo": sky,
+people): paths, inverted background, gradients, gradient-minus-path groups,
+ellipse glow, a gradient intersected with a path, a colour-zones ellipse
+group, every history step style (exposure, colour balance, channel mixer,
+colour zones, split tone, Palander, keep colour), and the full animal stack
+with split tone. Styles are written as history rows the way
+`dt.styles.apply` adds a module (darktable-cli cannot import a .dtstyle
+without a library); the GUI style path itself is not covered.
+`python tools/verify_dt.py IMAGE --base SIDECAR.xmp [--darktable-cli PATH]`.
+`tests/test_verify_dt.py` builds every case without darktable and runs one
+real render only when `$DTCLI` / `darktable-cli` exists (skipped otherwise).
+
+**Lua off Windows.** `run_hidden` always went through the Windows worker:
+on Linux `ensure_worker` slept ~2.4 s waiting for a script host that never
+starts, then ran `"<command>" < NUL 2>&1` (quoted whole, and `NUL` is a file
+name there), so the preview-server probe and start failed. Now
+`run_hidden` and `run_captured` use a plain `io.popen(command .. " < /dev/null
+2>&1")` off Windows and `ensure_worker` returns at once; the Windows path is
+unchanged. `tests/test_lua_portability.py` runs that block with lua5.4
+(Linux: no sleep, real output; the old code slept 2400 ms and exited 2).
+
+Tests: `tests/test_iop_order.py` (5, real 5.6.2 sidecar fixture
+`tests/fixtures/dt562_jpeg.xmp`), `tests/test_verify_dt.py` (3, one skipped
+without darktable-cli), `tests/test_lua_portability.py` (2).
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -385,6 +445,9 @@ test runs instead of skipping).
 | After duck test 2 (animal routing) | 465 | 1 | 0 | 0 |
 | After bird-eye fix (venv) | 468 | 0 | 0 | 0 |
 | After bird-eye fix (system python3, no rawpy) | 468 | 0 | 0 | 4 |
+| After iop-order fix (venv) | 478 | 0 | 0 | 1 (darktable-cli) |
+| After iop-order fix (venv, `DTCLI` set) | 478 | 0 | 0 | 0 |
+| After iop-order fix (system python3) | 478 | 0 | 0 | 5 (4 rawpy, 1 darktable-cli) |
 
 The last pre-existing failure (`test_guides…red_yellow_bird…`, broken
 since `dd888ef`) is fixed in code — see "Bird-eye fix" below. The test
