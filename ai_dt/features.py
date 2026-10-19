@@ -23,6 +23,11 @@ FEATURE_TITLES = {
     "eyes": "Eyes",
     "recolor": "Recolor",
 }
+# Drawn-mask steps (ai_dt/mask_steps.py) carry their own titles.
+from ai_dt.mask_steps import EXPANDS as _MASK_EXPANDS, STEPS as _MASK_STEPS  # noqa: E402
+
+FEATURE_TITLES.update({ident: step.title for ident, step in _MASK_STEPS.items()})
+FEATURE_TITLES["mask_landscape"] = "Grade each part of the landscape"
 _STEP_FROM_STAGE = {
     "subject": "subject",
     "eyes": "eyes",
@@ -662,6 +667,36 @@ def commit_waiting_step(output_dir) -> dict:
             nxt,
             "No box was found for that subject, so this step was left off.",
         )
+    if nxt in _MASK_STEPS:
+        from ai_dt.mask_steps import missing_sentence, write_step_mask
+
+        action = str(recipe.get("features_next_action") or "")
+        drawn = write_step_mask(recipe, directory, nxt, action=action)
+        if drawn is None:
+            return _leave_off(directory, path, recipe, plan, nxt, missing_sentence(nxt))
+        if step_path.is_file():
+            step_path.unlink()
+        recipe.pop("step_style", None)
+        recipe["step_mask"] = drawn
+        _drop_undone_steps(plan)
+        _remember_applied_step(plan, recipe, nxt, str(drawn["name"]))
+        done = [str(item) for item in (plan.get("features_done") or []) if str(item).strip()]
+        if nxt not in done:
+            done.append(nxt)
+        plan["features_done"] = done
+        _promote(plan, recipe, nxt)
+        source = str(drawn.get("source") or "")
+        found_by = f" The region came from the {source} segmenter." if source else ""
+        if recipe["features_next"]:
+            recipe["feature_note"] = "This step is on this photo." + found_by
+        else:
+            recipe["feature_note"] = (
+                "This step is on this photo." + found_by + " The plan is finished. "
+                "Type another change and press Ask."
+            )
+        _refresh_handoff(recipe)
+        _save_recipe(path, recipe)
+        return recipe
     mask = eye_ellipse(list(recipe.get("local_edits") or [])) if nxt == "eyes" else None
     if nxt == "eyes" and mask is None:
         return _leave_off(
@@ -876,6 +911,17 @@ def plan_chat(output_dir, steer: str, scene_text: str = "") -> dict:
     if hue is not None and not any(str(item.get("id") or "") == "colorzones" for item in operations):
         operations = [*operations, hue]
     operations = cast_operations(operations, steer)
+    from ai_dt.mask_grammar import mask_operations
+
+    claimed = " ".join(
+        str(item.get("reason") or "")
+        for key in ("features", "stages")
+        for item in ((proposal or {}).get(key) or [])
+        if isinstance(item, dict)
+    )
+    for extra_operation in mask_operations(steer, claimed):
+        if not any(str(item.get("id") or "") == extra_operation["id"] for item in operations):
+            operations = [*operations, extra_operation]
     plan = apply_operations(plan, operations, list((proposal or {}).get("dropped") or []))
     merged = dict(proposal) if isinstance(proposal, dict) else {}
     extra = operation_features(operations)
@@ -1010,6 +1056,8 @@ _HISTORY_STEP = {
     "highlights": "highlights",
     "colorzones": "colorzones",
     "recolor": "recolor",
+    **{ident: ident for ident in _MASK_STEPS},
+    **{ident: ident for ident in _MASK_EXPANDS},
 }
 _NOT_HISTORY = frozenset({"reflection", "background", "skin", "sky"})
 
@@ -1038,6 +1086,21 @@ def history_steps(operations: list[dict] | None) -> tuple[list[dict], list[str]]
             if name in _NOT_HISTORY and name not in held:
                 held.append(name)
             continue
+        if step in _MASK_EXPANDS or step in _MASK_STEPS:
+            reason = " ".join(str(item.get("reason") or "").split())
+            verb = action if action in {"lift", "darken", "hold"} else ""
+            for part in _MASK_EXPANDS.get(step, (step,)):
+                if part in seen:
+                    continue
+                seen.add(part)
+                found.append(
+                    {
+                        "id": part,
+                        "action": verb or _mask_default_action(part),
+                        "title": reason if step == part and reason else feature_title(part),
+                    }
+                )
+            continue
         if step in seen or step_style(step) is None:
             if name in _NOT_HISTORY and name not in held:
                 held.append(name)
@@ -1049,6 +1112,12 @@ def history_steps(operations: list[dict] | None) -> tuple[list[dict], list[str]]
             verb = "darken"
         found.append({"id": step, "action": verb, "title": reason or feature_title(step)})
     return found, held
+
+
+def _mask_default_action(step_id: str) -> str:
+    from ai_dt.mask_steps import DEFAULT_ACTION
+
+    return DEFAULT_ACTION.get(step_id, "lift")
 
 
 def _install_history_steps(plan: dict, operations: list[dict]) -> dict:

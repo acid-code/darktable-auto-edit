@@ -1549,6 +1549,15 @@ local editor_history_names = {
   "Recolor",
   "Eyes",
   "Vignette the subject",
+  -- Drawn-mask steps (ai_dt/mask_steps.py). Keep in sync with
+  -- _ACCEPTED_STEP_NAMES in ai_dt/revert.py.
+  "Grade the sky",
+  "Grade the buildings",
+  "Grade the vegetation",
+  "Grade the water",
+  "Grade the ground",
+  "Lift the people",
+  "Quiet the background",
 }
 
 local function sidecar_has_editor_history(body, recipe)

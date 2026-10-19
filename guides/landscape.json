@@ -29,6 +29,8 @@
   "stages": [
     "grade",
     "sky",
+    "vegetation",
+    "water",
     "horizon",
     "foreground",
     "reflection"
@@ -113,6 +115,26 @@
       "clarity": 0.48,
       "defocus": 0.0,
       "mute": 0.0
+    },
+    "vegetation": {
+      "exposure": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.1,
+      "clarity": 0.1,
+      "defocus": 0.0,
+      "mute": 0.0,
+      "build": "vegetation",
+      "skip": "Skip the vegetation. No green trees or grass were found."
+    },
+    "water": {
+      "exposure": -0.08,
+      "contrast": 0.0,
+      "saturation": 0.05,
+      "clarity": -0.1,
+      "defocus": 0.0,
+      "mute": 0.0,
+      "build": "water",
+      "skip": "Skip the water. No smooth water was found under the horizon."
     }
   }
 }

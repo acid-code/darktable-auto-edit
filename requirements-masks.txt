@@ -1,0 +1,14 @@
+# Optional segmentation backends for the drawn-mask steps (ai_dt/segment).
+# None is required: without them the heuristic backend runs (NumPy only).
+# All run CPU-only on Windows. Install only what you want:
+#
+#   pip install -r requirements-masks.txt
+#
+# Subject / background (downloads ~170 MB isnet model to ~/.u2net on first use)
+rembg[cpu]>=2.0.60
+# Sky, buildings, vegetation, water, ground, people (ADE20K SegFormer, ~100 MB)
+transformers>=4.44
+torch>=2.3
+# darktable's own SAM 2.1 files (subject/people from a detector box) need these,
+# onnxruntime (in requirements-ai.txt) and OpenCV (pulled in by ultralytics there,
+# or `pip install opencv-python-headless`).

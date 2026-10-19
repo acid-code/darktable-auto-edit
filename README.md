@@ -403,9 +403,27 @@ Darktable 5.6.2 keeps two copies of a photo's history. The history panel shows t
 
 There is no Lua call that deletes one history row or attaches one shape. `image:reset()` replaces the whole stack. A style import appends module parameters and cannot store `masks_history`. The editor therefore edits the sidecar text and loads that file.
 
-This is the same idea as [Chemigram](https://github.com/chipi/chemigram): keep the existing sidecar, write the shape into `masks_history`, and point the module's blend blob at that shape. Chemigram checked ellipses, gradients, and rectangles against real 5.4.1 files. This repo implements the ellipse and the ellipse group. A gradient, a rectangle, a path, and a brush are not written yet.
+This is the same idea as [Chemigram](https://github.com/chipi/chemigram): keep the existing sidecar, write the shape into `masks_history`, and point the module's blend blob at that shape. Chemigram checked ellipses, gradients, and rectangles against real 5.4.1 files. This repo implements the ellipse, the ellipse group, closed paths, linear gradients, and groups that combine them with union, intersection, difference and inversion (`ai_dt/dt_shapes.py`). A rectangle and a brush are not written yet.
 
 Darktable 5.6 adds an AI object mask in the mask manager. That tool is a click on the photo (SAM2.1 or SegNext). It stores a different shape, `DT_MASKS_OBJECT`, and Lua still cannot create it. Accept still writes the detected ellipse for eyes and for a hue. A subject step on a real preview uses the downloaded SAM 2.1 model the same way the mask tool does: the detector box is the prompt, and the silhouette is written as a closed path (type 2) on a Subject lift exposure. If that model is missing, the subject stays the vignette. A 5.6.2 import of a spliced sidecar kept the ellipse (mask version 6, type 32) and upgraded the exposure module from version 6 to version 7. The blend blob is still version 14 and 420 bytes.
+
+### Drawn-mask steps: sky, landscape classes, people, background
+
+Typing a request such as `darken the sky`, `make the trees greener, brighten the buildings`, `make the water bluer`, `lift the people`, `darken the background` or `do the landscape masks` and pressing **Ask** queues one Accept step per region (`ai_dt/mask_grammar.py`; a model plan can name the same `mask_*` operations from the catalog). Accept segments `preview.jpg`, turns the region into darktable path shapes, and splices one module into the sidecar whose drawn mask is a **group** of those paths (`ai_dt/mask_steps.py`, `ai_dt/dt_shapes.py`, `splice_shapes` in `ai_dt/drawn_mask.py`). Holes are `difference` members, the way darktable 5.6's own AI object tool stores them. A background is the inverted subject group (drawn-mask polarity in the blend blob).
+
+| Step | History name | Module | Default grade (photoserge example 7) |
+| --- | --- | --- | --- |
+| `mask_sky` | Grade the sky | color balance rgb | darker, a little warmer |
+| `mask_architecture` | Grade the buildings | color balance rgb | brighter, more contrast |
+| `mask_vegetation` | Grade the vegetation | color balance rgb | greener (saturation, vibrance) |
+| `mask_water` | Grade the water | color balance rgb | darker, bluer, softer |
+| `mask_ground` | Grade the ground | color balance rgb | darker |
+| `mask_people` | Lift the people | exposure | +0.25 EV (local edits stay within ±0.5 EV) |
+| `mask_background` | Quiet the background | color balance rgb | darker, muted |
+
+`mask_landscape` queues the five landscape steps in that order. A region that is not in the photo leaves its step off with a sentence.
+
+Segmenters (`ai_dt/segment/`) are tried in order and each one is optional: darktable's own SAM 2.1 files (subject/people from a detector box), `rembg` (subject), an ADE20K SegFormer/OneFormer through `transformers` (sky, buildings, vegetation, water, ground, people), then a NumPy heuristic that always runs. `pip install -r requirements-masks.txt` adds the model backends; all run on CPU. Gemini segmentation uploads the preview, so it is off unless `AI_DT_SEGMENT_GEMINI=1` and `GEMINI_API_KEY` are set. `AI_DT_SEGMENTER=heuristic|rembg|ade20k|gemini|darktable-sam` forces one backend (plus the heuristic fallback). A guide can also paint these classes into `edited.tif` with `build` values `people`, `architecture`, `vegetation`, `water` and `ground`.
 
 ### Two mask paths
 
@@ -484,7 +502,7 @@ Do not write `library.db` or the open photo's sidecar while `darktable.exe` is r
 
 Already done, and safe to call: ellipse points, the group wrapper, blend mode and mask id, history insert, priority 0 for the first instance, the Accept leave-and-apply sequence, and revert by history name.
 
-Still open: any module other than exposure (one ellipse) and colorzones (up to four ellipses), a gradient, a rectangle, a path, a brush, and a mask that follows an outline instead of an ellipse. A new shape should go through `drawn_mask.py` and the same Accept sequence. A style file still cannot carry it.
+Done on `feature/ai-masks`: path outlines, gradients and groups on exposure, color balance rgb and colorzones (see Drawn-mask steps above). Still open: a rectangle and a brush. A new shape should go through `drawn_mask.py` and the same Accept sequence. A style file still cannot carry it.
 
 ## Limits
 

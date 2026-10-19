@@ -45,6 +45,15 @@ _ACCEPTED_STEP_NAMES = frozenset(
         "Recolor",
         "Eyes",
         "Vignette the subject",
+        # Drawn-mask steps (ai_dt/mask_steps.py). Keep in sync with
+        # editor_history_names in ai_editor.lua.
+        "Grade the sky",
+        "Grade the buildings",
+        "Grade the vegetation",
+        "Grade the water",
+        "Grade the ground",
+        "Lift the people",
+        "Quiet the background",
     }
 )
 

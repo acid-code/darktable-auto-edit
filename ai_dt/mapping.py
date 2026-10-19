@@ -653,6 +653,11 @@ def step_history_name(
     """The history instance name Darktable stores for one accepted step."""
 
     name = str(feature_id or "").strip()
+    if name.startswith("mask_"):
+        from ai_dt.mask_steps import STEPS
+
+        if name in STEPS:
+            return STEPS[name].name
     if name == "subject":
         return "Shine the subject" if again else "Subject lift"
     if name == "foreground":

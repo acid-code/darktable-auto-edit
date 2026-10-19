@@ -305,6 +305,13 @@ def render_finish(
                 continue
             proposed = _grade_region(current, foreground, plan)
             applied_stage = True
+        elif stage in _REGION_STAGES:
+            region = _region_mask(pixels, stage, detections)
+            if region is None:
+                skipped.append(stage)
+                continue
+            proposed = _grade_region(current, region, plan)
+            applied_stage = True
         elif stage == "highlights":
             protected, used = _grade_highlights(current, plan)
             if not used:
@@ -814,6 +821,34 @@ def _skin_mask(pixels: np.ndarray, subject: np.ndarray) -> np.ndarray | None:
     if float(mask.max()) <= 0.05:
         return None
     return mask
+
+
+_REGION_STAGES = frozenset({"people", "architecture", "vegetation", "water", "ground"})
+
+
+def _region_mask(pixels: np.ndarray, stage: str, detections: list[Detection]) -> np.ndarray | None:
+    """A painted-TIFF mask for one segmenter class (ai_dt/segment).
+
+    The painted preview uses the heuristic backend unless
+    ``AI_DT_SEGMENTER`` names another, so a Propose stays fast.
+    """
+
+    import os
+
+    from PIL import Image
+
+    from ai_dt.segment import segment
+
+    height, width = pixels.shape[:2]
+    if height < 16 or width < 16:
+        return None
+    image = Image.fromarray(np.rint(np.clip(pixels, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB")
+    backend = os.environ.get("AI_DT_SEGMENTER", "").strip() or "heuristic"
+    found = segment(image, [stage], boxes=list(detections or []), backend=backend)
+    mask = found.get(stage)
+    if mask is None:
+        return None
+    return _blur(mask.astype(np.float32), 1.5)
 
 
 def _sky_mask(pixels: np.ndarray) -> np.ndarray | None:

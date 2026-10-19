@@ -9,7 +9,7 @@ Python 3.13, no darktable, no API keys).
 | Phase | What | State |
 | --- | --- | --- |
 | 1 | Path / gradient / group shape writer for `masks_history` (+ reader, reference renderer, tests) | **done** |
-| 2 | Segmentation backends (Subject, Sky, Background, People, Landscape classes), wired into Accept steps, guide `build` values, Lua names | pending |
+| 2 | Segmentation backends (Subject, Sky, Background, People, Landscape classes), wired into Accept steps, guide `build` values, Lua names | **done** |
 | 3 | Smarter editing from the photoserge video lessons (ordering, caps, landscape class grades, sky-intersected gradients/glow, split tone, selective color, edge burn, crop suggestion, few-shot prompt data) | pending |
 | 4 | Tests for everything new, full suite green | rolling, per phase |
 
@@ -52,6 +52,50 @@ Python 3.13, no darktable, no API keys).
   `sys.platform = "win32"` (it was a Windows-only assertion that failed on
   Linux; behaviour unchanged).
 
+### Phase 2 — segmentation and mask steps
+
+- `ai_dt/segment/` (new package). `segment(image, classes, boxes=…,
+  backend="auto")` returns one soft mask per class plus which backend made
+  it. Backends, tried in order and each optional/lazy:
+  `darktable-sam` (darktable 5.6's own SAM 2.1 ONNX files via
+  `object_segment._segment`; subject/people from a detector box),
+  `rembg` (subject; `AI_DT_REMBG_MODEL`, default `isnet-general-use`,
+  `u2net_human_seg` for people), `ade20k` (`transformers` SegFormer
+  `nvidia/segformer-b2-finetuned-ade-512-512` by default, OneFormer ids
+  also work; `AI_DT_ADE20K_MODEL`), `gemini` (cloud; **opt-in** with
+  `AI_DT_SEGMENT_GEMINI=1` + `GEMINI_API_KEY`, key sent as the
+  `x-goog-api-key` header, `AI_DT_GEMINI_SEGMENT_MODEL`), and `heuristic`
+  (NumPy only, always last). `AI_DT_SEGMENTER=<name>` forces one backend
+  plus the heuristic fallback. Background = 1 − subject. Classes: subject,
+  people, background, sky, architecture, vegetation, water, ground.
+- `ai_dt/mask_steps.py` (new): seven Accept steps (`mask_sky`,
+  `mask_architecture`, `mask_vegetation`, `mask_water`, `mask_ground`,
+  `mask_people`, `mask_background`) plus the group id `mask_landscape`.
+  Each segments `preview.jpg`, vectorises with `dt_shapes.mask_to_forms`,
+  writes a `kind: "shapes"` `mask.json`, and Lua's existing
+  `apply_masked_step` splices it. Grades follow photoserge example 7 and
+  are capped (`LOCAL_EV_CAP = 0.5`, brilliance ±0.25). A class that is
+  not in the photo leaves the step off with a sentence.
+- `ai_dt/mask_grammar.py` (new): "darken the sky", "make the trees
+  greener", "brighten the buildings", "lift the people", "darken the
+  background", "do the landscape masks" → mask operations in `plan_chat`.
+  Words the model plan already claimed are skipped (keeps "quiet the
+  path" a model step).
+- Wiring: `features.history_steps`/`commit_waiting_step`, `mapping.step_history_name`,
+  `catalog` MASKS section, `revert._ACCEPTED_STEP_NAMES` ↔ Lua
+  `editor_history_names` (7 new names, in sync, tested), guide library
+  stages/`build` values `people`, `architecture`, `vegetation`, `water`,
+  `ground` (painted into `edited.tif` by `separate._region_mask`), and
+  `guides/landscape.json` / `guides/architecture.json` gained matching
+  optional stages.
+- `requirements-masks.txt` (new, optional): `rembg[cpu]`, `transformers`,
+  `torch`. Kept out of `requirements-ai.txt` so `install-windows.ps1
+  -WithAi` does not suddenly pull torch.
+- README: "Drawn-mask steps" section.
+- Tests: `tests/test_segment.py` (21), `tests/test_mask_steps.py` (15),
+  `tests/synthetic_scenes.py` (helpers). Optional backends are tested
+  with fakes; no network.
+
 ## Test counts
 
 `python3 -m unittest discover -s tests -t . -v` (inside `.venv` with
@@ -63,6 +107,7 @@ test runs instead of skipping).
 | Baseline `dd888ef`, system Python, no rawpy | 318 | 4 | 2 | 1 |
 | Baseline `dd888ef`, venv with requirements | 318 | 2 | 0 | 1 |
 | After phase 1 | 343 | 1 | 0 | 0 |
+| After phase 2 | 379 | 1 | 0 | 0 |
 
 The one remaining failure is **pre-existing** and not touched here:
 `tests.test_guides.PictureTypeTests.test_a_red_yellow_bird_uses_the_wildlife_guide_and_defocuses`
@@ -88,6 +133,13 @@ detector.
   lens correction already in history will shift the shapes. Same caveat
   as the existing eye/hue/object steps.
 
+- Phase 2: the color balance rgb hue angles used for warm/green/blue
+  (65°, 140°, 225°) are chosen by eye from the module's hue slider, not
+  measured. The heuristic segmenter is a fallback: it is coarse on real
+  photos (tuned on synthetic scenes). The ADE20K / rembg / SAM paths were
+  tested with fakes only; the real models were not downloaded on the box.
+- Accept writes the shapes in preview coordinates (see above).
+
 ## Manual checklist in darkroom (5.6)
 
 (Expanded as phases land.)
@@ -104,6 +156,15 @@ detector.
    what `render_forms` predicts. Edit a path node — it must drag smoothly.
 4. For an inverted (background) spec, the module's drawn-mask polarity
    toggle is on, and the effect lands outside the subject.
+
+5. Phase 2: on a landscape with an XMP, type `do the landscape masks`,
+   press Ask, Accept each step. Each lands as its own history item
+   ("Grade the sky", …) with a group mask that follows the region; Back
+   removes the item and its forms; Revert removes them all. Try with
+   `pip install -r requirements-masks.txt` too and compare the source the
+   status line names.
+6. `darken the background` on a portrait: the effect is outside the
+   person, polarity toggle on.
 
 ## How to run
 

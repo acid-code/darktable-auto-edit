@@ -44,6 +44,12 @@ STAGES = (
     "background",
     "foreground",
     "highlights",
+    # Segmenter classes (ai_dt/segment). Optional in a guide.
+    "people",
+    "architecture",
+    "vegetation",
+    "water",
+    "ground",
 )
 
 MASKS = (
@@ -55,7 +61,16 @@ MASKS = (
     "foreground",
 )
 
-OPTIONAL_MASKS = ("highlights", "horizon", "reflection")
+OPTIONAL_MASKS = (
+    "highlights",
+    "horizon",
+    "reflection",
+    "people",
+    "architecture",
+    "vegetation",
+    "water",
+    "ground",
+)
 
 BUILDS = (
     "never",
@@ -71,6 +86,11 @@ BUILDS = (
     "highlights",
     "horizon",
     "reflection",
+    "people",
+    "architecture",
+    "vegetation",
+    "water",
+    "ground",
 )
 
 GRADE_KEYS = (

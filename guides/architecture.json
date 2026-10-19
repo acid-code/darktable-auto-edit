@@ -29,6 +29,7 @@
   },
   "stages": [
     "grade",
+    "architecture",
     "foreground",
     "reflection"
   ],
@@ -102,6 +103,16 @@
       "clarity": 0.48,
       "defocus": 0.0,
       "mute": 0.0
+    },
+    "architecture": {
+      "exposure": 0.06,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "clarity": 0.2,
+      "defocus": 0.0,
+      "mute": 0.0,
+      "build": "architecture",
+      "skip": "Skip the building grade. No line-filled facade was found."
     }
   }
 }

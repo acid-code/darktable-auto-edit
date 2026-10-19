@@ -35,13 +35,27 @@ LOCAL = (
     ("highlights", "Warm the bright range. An accepted step is a global color-balance change, not a brushed mask."),
 )
 
+# Drawn-mask steps. Accept writes each one into the sidecar as one module
+# with a group of path / gradient shapes (ai_dt/mask_steps.py).
+MASKS = (
+    ("mask_sky", "Grade the sky through a sky mask. darken = darker and a little warmer."),
+    ("mask_architecture", "Grade the buildings through a building mask. lift = brighter and crisper."),
+    ("mask_vegetation", "Grade trees and grass through a vegetation mask. lift = greener."),
+    ("mask_water", "Grade the water through a water mask. darken = darker, bluer, softer."),
+    ("mask_ground", "Grade the ground through a ground mask. darken = darker."),
+    ("mask_people", "Lift the people through a people mask, within half a stop."),
+    ("mask_background", "Darken and mute everything except the subject (inverse subject mask)."),
+    ("mask_landscape", "All five landscape masks in order: sky, buildings, vegetation, water, ground."),
+)
+
 _HISTORY_IDS = frozenset(item[0] for item in HISTORY)
+_MASK_IDS = frozenset(item[0] for item in MASKS)
 _LOCAL_IDS = frozenset(item[0] for item in LOCAL)
 _FEATURE_IDS = frozenset({"separate", "foreground", "opening", "shafts", "highlights", "eyes"})
 _STAGE_IDS = frozenset({"subject", "skin", "eyes", "background", "sky", "reflection"})
 _ASK_TARGETS = frozenset({"subject", "foreground", "sky", "reflection", "eyes"})
 _ACTIONS = frozenset({"lift", "darken", "hold", "skip", "include"})
-KNOWN_IDS = _HISTORY_IDS | _LOCAL_IDS
+KNOWN_IDS = _HISTORY_IDS | _LOCAL_IDS | _MASK_IDS
 
 
 def catalog_text() -> str:
@@ -55,13 +69,15 @@ def catalog_text() -> str:
     lines.extend(f"- {name}: {note}" for name, note in HISTORY)
     lines.append("Local steps painted into edited.tif, because a style cannot store a drawn mask:")
     lines.extend(f"- {name}: {note}" for name, note in LOCAL)
+    lines.append("Drawn-mask steps written into the photo's history on Accept (one module each, its own mask):")
+    lines.extend(f"- {name}: {note}" for name, note in MASKS)
     lines.append(
         "Leave these out: diffuse, blurs, and retouch, while a drawn mask cannot attach; "
         "a custom white-balance illuminant; opening caps unless the user wrote strong or epic."
     )
     lines.append(
         "Accepted feature steps that land in history are global modules with a fixed amount, "
-        "not a brushed mask."
+        "not a brushed mask, except the mask_ steps above, which carry their own drawn mask."
     )
     return "\n".join(lines)
 
