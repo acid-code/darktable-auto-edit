@@ -544,3 +544,5 @@ and 5.6.2). Names are known to Revert (`revert.py`) and Lua
 (`editor_history_names`).
 Left: no GUI test of the default steps yet. `analyze` (Propose) does not add
 them; only Ask plans do. Thresholds are tuned on synthetic images only.
+
+Next exact step: GUI-test Ask, then Accept on the three default steps in 5.6 (`/workspace/dtverify/launch-gui.sh`, after re-copying the plugin), then on 5.4.
