@@ -532,5 +532,15 @@ Checklist:
 - [x] Wire into plan builder (first, dedup/merge with AI steps)
 - [x] Unit tests (tests/test_default_steps.py)
 - [ ] Full suite run
-- [ ] darktable-cli 5.6 render check; 5.4 params by inspection
-- [ ] README
+- [x] darktable-cli 5.6.2 render check (and 5.4.1 cli): toneequal v2, hazeremoval v3, masked sharpen v1 all 'params ok'
+- [x] README
+
+Done notes: the steps are injected in `features.plan_chat` (`_with_default_steps`)
+before `_keep_current_plan`. Applied or skipped defaults are not re-added.
+Accept writes the global ones through `default_steps.style_for`, and the
+sharpen through the mask-step path (`SHAPE_OPERATIONS` now allows sharpen,
+12 bytes). The hazeremoval v3 blob is 16 bytes (from introspection on 5.4.1
+and 5.6.2). Names are known to Revert (`revert.py`) and Lua
+(`editor_history_names`).
+Left: no GUI test of the default steps yet. `analyze` (Propose) does not add
+them; only Ask plans do. Thresholds are tuned on synthetic images only.

@@ -550,3 +550,20 @@ the plan files in the photo's work folder
 `%LOCALAPPDATA%\darktable\ai-editor-work\<id>\v0`). The darktable history,
 the XMP sidecar and the camera file stay as they are. Then type a request, or
 leave it blank, and press **Ask**.
+
+## Default editor steps
+
+Every plan from Ask starts with the standard editor steps that the photo needs.
+Each one is measured from the preview and shows up as a normal step you can
+Accept, Skip or go Back on (`ai_dt/default_steps.py`):
+
+- **Recover clipping** (tone equalizer): runs when at least 0.5 % of pixels
+  are clipped (any channel at 250 or more) or at least 1 % are crushed (luma
+  at 5 or less). A preview estimate searches for the shadow lift and highlight
+  pull that shrink both, and it keeps at least 85 % of the p5–p95 contrast.
+- **Remove haze** (haze removal): runs only when the dark-channel haze score
+  is 0.2 or more. Strength is 0.1–0.4, scaled to the score.
+- **Sharpen the subject** (sharpen, through the subject mask): radius 1.5,
+  amount 0.6, threshold 0.9. On noisy photos (noise σ ≥ 2.5, or ISO ≥ 3200)
+  it drops to amount 0.35 and threshold 1.5. On very noisy ones (σ ≥ 5, or
+  ISO ≥ 12800) it is skipped.
