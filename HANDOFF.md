@@ -531,7 +531,7 @@ Checklist:
 - [x] Metrics + default-step module (ai_dt/default_steps.py)
 - [x] Wire into plan builder (first, dedup/merge with AI steps)
 - [x] Unit tests (tests/test_default_steps.py)
-- [ ] Full suite run
+- [x] Full suite run: 541 tests OK (1 skipped) on 5f89027
 - [x] darktable-cli 5.6.2 render check (and 5.4.1 cli): toneequal v2, hazeremoval v3, masked sharpen v1 all 'params ok'
 - [x] README
 
