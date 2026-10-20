@@ -527,9 +527,9 @@ Plan:
    reduced/skipped when estimated noise is high.
 
 Checklist:
-- [ ] Find plan builder + step format
-- [ ] Metrics + default-step module (ai_dt/default_steps.py)
-- [ ] Wire into plan builder (first, dedup/merge with AI steps)
+- [x] Find plan builder + step format (features.plan_chat -> step_queue; accept in commit_waiting_step)
+- [x] Metrics + default-step module (ai_dt/default_steps.py)
+- [x] Wire into plan builder (first, dedup/merge with AI steps)
 - [ ] Unit tests
 - [ ] Full suite run
 - [ ] darktable-cli 5.6 render check; 5.4 params by inspection

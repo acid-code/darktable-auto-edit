@@ -658,6 +658,10 @@ def step_history_name(
 
         if name in STEPS:
             return STEPS[name].name
+    from ai_dt.default_steps import NAMES as _DEFAULT_NAMES
+
+    if name in _DEFAULT_NAMES:
+        return _DEFAULT_NAMES[name]
     if name == "subject":
         return "Shine the subject" if again else "Subject lift"
     if name == "foreground":

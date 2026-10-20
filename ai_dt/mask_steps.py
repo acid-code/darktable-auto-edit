@@ -202,6 +202,18 @@ STEPS.update(
     }
 )
 
+# Default editor step: sharpen only the subject (see ai_dt/default_steps.py).
+# "lift" is the normal amount, "hold" the reduced one for noisy photos. The
+# threshold keeps flat (noisy) areas out.
+STEPS["mask_sharpen_subject"] = MaskStep(
+    "mask_sharpen_subject", "Sharpen the subject", "Sharpen the main subject", "subject", "sharpen",
+    {
+        "lift": {"radius": 1.5, "amount": 0.6, "threshold": 0.9},
+        "hold": {"radius": 1.2, "amount": 0.35, "threshold": 1.5},
+    },
+    what="subject mask",
+)
+
 LESSON_STEP_IDS = ("mask_sky_gradient", "mask_bottom_gradient", "mask_edge_burn", "mask_glow")
 
 DEFAULT_ACTION = {
@@ -219,6 +231,7 @@ DEFAULT_ACTION = {
     "mask_animal": "lift",
     "mask_animals": "lift",
     "mask_animal_background": "darken",
+    "mask_sharpen_subject": "lift",
 }
 
 EXPANDS = {"mask_landscape": tuple(f"mask_{name}" for name in LANDSCAPE_ORDER)}
@@ -260,6 +273,13 @@ def capped_grade(step: MaskStep, action: str) -> dict:
 
 
 def module_blob(step: MaskStep, grade: dict) -> tuple[bytes, int]:
+    if step.operation == "sharpen":
+        from ai_dt.default_steps import SHARPEN_VERSION, sharpen_blob
+
+        return (
+            sharpen_blob(float(grade.get("radius", 1.5)), float(grade.get("amount", 0.5)), float(grade.get("threshold", 0.9))),
+            SHARPEN_VERSION,
+        )
     if step.operation == "exposure":
         return exposure_params(float(grade.get("exposure", 0.0))), EXPOSURE_VERSION
     return colorbalance_params(grade), COLORBALANCE_VERSION

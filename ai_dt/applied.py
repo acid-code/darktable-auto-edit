@@ -80,6 +80,10 @@ def _name_to_step() -> dict[str, str]:
         name = step_history_name(ident)
         if name:
             names[name] = ident
+    from ai_dt.default_steps import NAMES as _DEFAULT_NAMES
+
+    for ident, name in _DEFAULT_NAMES.items():
+        names[name] = ident
     names["Shine the subject"] = "subject"
     names["Vignette the subject"] = "subject"
     names["Eyes"] = "eyes"

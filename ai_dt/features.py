@@ -14,6 +14,9 @@ import re
 FEATURE_IDS = ("separate", "foreground", "opening", "shafts", "highlights", "eyes")
 OPTIONAL_IDS = ("foreground", "opening", "shafts", "highlights", "eyes")
 FEATURE_TITLES = {
+    "default_clipping": "Pull clipped highlights and lift crushed shadows",
+    "default_dehaze": "Remove the haze",
+    "mask_sharpen_subject": "Sharpen the main subject",
     "separate": "Separate the subject",
     "foreground": "Darken the foreground",
     "opening": "Darken the bright gap",
@@ -829,8 +832,12 @@ def commit_waiting_step(output_dir) -> dict:
         hue_center = None
         if nxt == "colorzones":
             hue_center = (_hue_on_preview(recipe, directory) or {}).get("center")
+        from ai_dt.default_steps import GLOBAL_IDS, style_for
+
         xml = (
-            step_style(
+            style_for(nxt, ((recipe.get("plan") or {}).get("default_steps") or {}).get(nxt))
+            if nxt in GLOBAL_IDS
+            else step_style(
                 style_id,
                 again=again,
                 title=title,
@@ -1081,6 +1088,7 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
             applied=[str(item.get("id") or "") for item in applied if isinstance(item, dict)] + list(skipped_before or []),
         )
         plan["subject_water"] = water_seen
+    plan = _with_default_steps(plan, directory, recipe, applied, skipped_before)
     plan = _keep_current_plan(plan, previous, applied)
     recipe["plan"] = plan
     nxt = str(plan.get("features_next") or "")
@@ -1107,6 +1115,26 @@ def plan_chat(output_dir, steer: str, scene_text: str = "", history_xmp=None) ->
     recipe["status_text"] = panel_status(recipe)
     _save_recipe(path, recipe)
     return recipe
+
+
+def _with_default_steps(plan: dict, directory, recipe: dict, applied: list, skipped: list | None) -> dict:
+    """Measure the viewed photo and put the standard editor steps first."""
+
+    from ai_dt.default_steps import add_defaults, measure
+
+    preview = directory / "preview.jpg"
+    if not preview.is_file():
+        return plan
+    try:
+        from PIL import Image
+
+        with Image.open(preview) as opened:
+            iso = (recipe.get("exif") or {}).get("iso") if isinstance(recipe.get("exif"), dict) else None
+            found = measure(opened, iso=float(iso) if iso else None)
+    except (OSError, ValueError):
+        return plan
+    done = [str(item.get("id") or "") for item in applied if isinstance(item, dict)] + list(skipped or [])
+    return add_defaults(plan, found, done)
 
 
 def _keep_current_plan(plan: dict, previous: dict, applied: list[dict]) -> dict:
