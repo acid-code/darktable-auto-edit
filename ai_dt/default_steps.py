@@ -90,13 +90,19 @@ def _spread(luma: np.ndarray) -> float:
     return float(high - low)
 
 
-def solve_clipping(luma: np.ndarray) -> dict | None:
+def solve_clipping(luma: np.ndarray, peak: np.ndarray | None = None) -> dict | None:
     """Search shadow lift and highlight pull that shrink clipping most.
 
     None when the photo is not clipped (below both triggers).
     """
 
-    hi, lo = clipped_fractions(luma)
+    # Highlights clip per channel (the brightest one), shadows on luma.
+    peak = luma if peak is None else peak
+
+    def fractions(lum, pk):
+        return clipped_fractions(pk)[0], clipped_fractions(lum)[1]
+
+    hi, lo = fractions(luma, peak)
     if hi < CLIP_HI_TRIGGER and lo < CLIP_LO_TRIGGER:
         return None
     base_spread = max(_spread(luma), 1e-3)
@@ -108,7 +114,7 @@ def solve_clipping(luma: np.ndarray) -> dict | None:
             out = simulate(luma, float(shadows), float(highlights))
             if _spread(out) < CONTRAST_FLOOR * base_spread:
                 continue
-            new_hi, new_lo = clipped_fractions(out)
+            new_hi, new_lo = fractions(out, simulate(peak, float(shadows), float(highlights)))
             # Smallest move wins among near-equal results.
             score = new_hi + new_lo + 0.002 * (abs(shadows) + abs(highlights))
             if score < best[0] - 1e-6:
@@ -171,7 +177,7 @@ def measure(image, *, iso: float | None = None) -> dict:
     rgb = _small(image)
     luma = _luma(rgb)
     found: dict = {}
-    clip = solve_clipping(luma)
+    clip = solve_clipping(luma, rgb.max(axis=2))
     if clip:
         found[CLIPPING_ID] = clip
     haze = haze_score(rgb)

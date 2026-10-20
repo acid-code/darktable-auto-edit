@@ -530,7 +530,7 @@ Checklist:
 - [x] Find plan builder + step format (features.plan_chat -> step_queue; accept in commit_waiting_step)
 - [x] Metrics + default-step module (ai_dt/default_steps.py)
 - [x] Wire into plan builder (first, dedup/merge with AI steps)
-- [ ] Unit tests
+- [x] Unit tests (tests/test_default_steps.py)
 - [ ] Full suite run
 - [ ] darktable-cli 5.6 render check; 5.4 params by inspection
 - [ ] README
