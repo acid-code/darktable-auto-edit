@@ -1703,6 +1703,9 @@ end
 
 -- Names from step_history_name. Accept writes these instead of an "AI " prefix.
 local editor_history_names = {
+  "Recover clipping",
+  "Remove haze",
+  "Sharpen the subject",
   "Subject lift",
   "Shine the subject",
   "Darken the foreground",

@@ -96,7 +96,7 @@ class GradeTests(unittest.TestCase):
                 self.assertLessEqual(abs(grade.get("exposure", 0.0)), mask_steps.LOCAL_EV_CAP)
                 self.assertLessEqual(abs(grade.get("brilliance_global", 0.0)), mask_steps.LOCAL_BRILLIANCE_CAP)
                 params, version = mask_steps.module_blob(step, grade)
-                self.assertEqual(len(params), 24 if step.operation == "exposure" else 132)
+                self.assertEqual(len(params), {"exposure": 24, "sharpen": 12}.get(step.operation, 132))
                 self.assertGreater(version, 0)
 
     def test_example_seven_directions(self) -> None:

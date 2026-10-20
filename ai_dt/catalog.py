@@ -49,6 +49,7 @@ MASKS = (
     ("mask_animal", "Lift the main animal through its outline: a little brilliance and local contrast for fur and eyes."),
     ("mask_animals", "Lift every animal (one outline per animal, joined)."),
     ("mask_animal_background", "Darken, mute and soften everything around the animals (inverse animal mask)."),
+    ("mask_sharpen_subject", "Sharpen only the main subject through the subject mask, with a noise threshold. hold = gentler. Usually added by default."),
     ("mask_sky_gradient", "Exposure through a top gradient intersected with the sky outline. darken = moodier sky."),
     ("mask_bottom_gradient", "Exposure through a gradient from the bottom. darken = leads the eye up."),
     ("mask_edge_burn", "Burn the frame edges with four gradients, minus the subject."),

@@ -472,6 +472,7 @@ SHAPE_OPERATIONS = {
     "exposure": 24,
     "colorbalancergb": 132,
     "colorzones": 520,
+    "sharpen": 12,
 }
 _OFFSET_MASK_COMBINE = 20
 _COMBINE_MASKS_POS = 0x04  # DEVELOP_COMBINE_MASKS_POS: drawn mask polarity, inverted

@@ -204,8 +204,9 @@ def tone_blob(shadows: float, highlights: float) -> bytes:
 
 
 def haze_blob(strength: float, distance: float) -> bytes:
-    # dt_iop_hazeremoval_params_t v3: strength, distance, compatibility_mode.
-    return struct.pack("<ffi", max(-1.0, min(1.0, strength)), max(0.0, min(1.0, distance)), 0)
+    # dt_iop_hazeremoval_params_t v3 (5.4 and 5.6 introspection): strength @0,
+    # distance @4, compatibility_mode @8, 16 bytes in all (darktable checks size).
+    return struct.pack("<ffii", max(-1.0, min(1.0, strength)), max(0.0, min(1.0, distance)), 0, 0)
 
 
 def sharpen_blob(radius: float, amount: float, threshold: float) -> bytes:

@@ -85,7 +85,7 @@ class DefaultStepsTests(unittest.TestCase):
         haze = d.style_for(d.DEHAZE_ID, {"strength": 0.3, "distance": 0.2})
         self.assertIn("<operation>hazeremoval</operation>", haze)
         self.assertIn("<module>3</module>", haze)
-        self.assertEqual(struct.unpack("<ffi", d.haze_blob(0.3, 0.2))[2], 0)
+        self.assertEqual(len(d.haze_blob(0.3, 0.2)), 16)
         step = STEPS[d.SHARPEN_ID]
         blob, version = module_blob(step, capped_grade(step, "hold"))
         self.assertEqual(version, 1)

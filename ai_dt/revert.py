@@ -30,6 +30,9 @@ from pathlib import Path
 # These are the history names step_history_name writes.
 _ACCEPTED_STEP_NAMES = frozenset(
     {
+        "Recover clipping",
+        "Remove haze",
+        "Sharpen the subject",
         "Subject lift",
         "Shine the subject",
         "Darken the foreground",
