@@ -510,3 +510,27 @@ Still TODO:
 Resume: `cd /workspace/darktable-auto-edit && .venv/bin/python -m unittest discover -s tests`
 (with GEMINI/MISTRAL keys unset for offline). GUI: `/workspace/dtverify/launch-gui.sh`.
 The plugin copy is in `/workspace/dtverify/guiconfig/lua/ai_editor`.
+
+## Default editor steps (started 2026-10-20)
+
+Every plan automatically gets standard editor steps, measured from the image,
+placed first in the plan as normal steps (accept / Back works), never duplicating
+AI steps of the same module.
+
+Plan:
+1. Clipping: measure clipped (>=250) and crushed (<=5) fractions; iterate a cheap
+   preview estimate of exposure + shadows/highlights to shrink them without
+   flattening (contrast floor).
+2. Dehaze (hazeremoval) only when a dark-channel haze metric says so; strength
+   scaled to the metric.
+3. Subject sharpening (sharpen + subject mask), moderate amount with threshold;
+   reduced/skipped when estimated noise is high.
+
+Checklist:
+- [ ] Find plan builder + step format
+- [ ] Metrics + default-step module (ai_dt/default_steps.py)
+- [ ] Wire into plan builder (first, dedup/merge with AI steps)
+- [ ] Unit tests
+- [ ] Full suite run
+- [ ] darktable-cli 5.6 render check; 5.4 params by inspection
+- [ ] README
