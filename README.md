@@ -551,6 +551,17 @@ the plan files in the photo's work folder
 the XMP sidecar and the camera file stay as they are. Then type a request, or
 leave it blank, and press **Ask**.
 
+### Complete plan
+
+**Complete plan** (next to Accept and Skip) accepts every remaining step in
+order. Before and after each step it reads `darktable:history_end` from the
+synced sidecar; a step that reports success but leaves the history unchanged
+is a failure and stops the run. A step Accept leaves off with a note (no mask
+found) is listed as left off and the run goes on; a worker error stops it. The
+status text lists each step (✓ applied with history counts, – left off, ✗
+failed) and can be selected and copied. Animal masks drop loose outlines over
+water or scenery before joining the group, so a tight animal is not diluted.
+
 ## Default editor steps
 
 Every plan from Ask starts with the standard editor steps that the photo needs.
