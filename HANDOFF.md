@@ -1,7 +1,10 @@
 ## CURRENT TASK (2026-10-25, round 2)
 - [x] A. Rename "Run plan" -> "Run plan"
 - [x] B. Run plan disabled while Ask/plan building; same readiness as Accept
-- [ ] C. History rewind + Ask: plan progress from current history_end
+- [x] C. History rewind + Ask: plan progress from current history_end
+- Done B: Run plan button was never in `refresh_controls` and had no `sensitive = false`, so it was always on (even mid-Ask). Now `request_ui.run_plan_ready()` = not busy, not `request_ui.plan_building` (set around Ask), and `feature_waiting` (Accept's rule); click also re-checks.
+- Done C: Python already computes done from the sidecar rows up to `history_end` (regression `test_rewound_history_undoes_later_steps`). Root cause: Ask passed `--history-xmp` without writing the sidecar first, so after clicking an earlier history row the XMP on disk still had the old `history_end`. `propose_image` now calls `request_ui.sync_sidecar(image)` before the planner runs.
+- Left for Asaf: GUI retest: rewind history, Ask with text; check plan resumes from highlighted row. Ask with an EMPTY box and unchanged description still reuses the saved plan without re-reading history (not changed). If darktable has not flushed the history click to its library yet, the sync can still read old state — then report it.
 
 ## Previous task (2026-10-25)
 - [x] 1. Animals form water bleed: reject/crop scenery-heavy animals/animal_all forms; no second form diluting good subject; regression test

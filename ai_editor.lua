@@ -1379,6 +1379,12 @@ local function propose_image(image, index, total, vibe, steer)
       return existing, nil, true
     end
   end
+  -- Write the sidecar from the library before the planner reads it. After
+  -- the user clicks an earlier row in darktable's history, the file on disk
+  -- can still carry the old history_end (darktable writes it on its own
+  -- schedule), and the planner then counted steps past the clicked row as
+  -- done. The plan must resume from the highlighted history point.
+  request_ui.sync_sidecar(image)
   local options = processor_options(image, nil)
   options.scene = scene_text()
   if rewrite_scene_once then

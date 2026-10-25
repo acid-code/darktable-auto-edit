@@ -165,6 +165,30 @@ class PlanChatRepeatTests(unittest.TestCase):
             saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["plan"]["features_path"], ["mask_bottom_gradient"])
 
+    def test_rewound_history_undoes_later_steps(self) -> None:
+        # Asaf: history clicked back to the lift, then Ask. The later
+        # background step (still active in the log and features_done) is
+        # past history_end, so it is not done and can come back.
+        log = SUBJECT_LOG + [
+            {"id": "mask_background", "name": "Quiet the background", "title": "Quiet the background", "active": True},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            xmp = directory / "duck.NEF.xmp"
+            xmp.write_text(SIDECAR.replace('history_end="3"', 'history_end="2"'), encoding="utf-8")
+            (directory / "output.json").write_text(json.dumps(_duck_recipe(log)), encoding="utf-8")
+            with patch("ai_dt.reasoner.propose_gemini", return_value=_reply("subject", "mask_background")) as ask:
+                plan_chat(directory, "finish the edit", history_xmp=str(xmp))
+            self.assertNotIn("mask_background", ask.call_args.kwargs["applied"])
+            saved = json.loads((directory / "output.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["plan"]["features_done"], ["subject"])
+            queue = [saved["plan"]["features_next"], *saved["plan"]["features_path"]]
+            self.assertTrue(any("background" in str(item) for item in queue), queue)
+
+    def test_ask_syncs_the_sidecar_before_planning(self) -> None:
+        source = (ROOT / "ai_editor.lua").read_text(encoding="utf-8")
+        self.assertRegex(source, r"request_ui\.sync_sidecar\(image\)\s*local options = processor_options\(image, nil\)\s*options\.scene = scene_text\(\)")
+
     def test_skipped_steps_reach_the_prompt_and_stay_out(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
