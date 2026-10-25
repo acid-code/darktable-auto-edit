@@ -454,6 +454,7 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
         if image is None:
             return None, ""
         found = segment_animals(image, subject_boxes(recipe), backend=chosen_backend)
+        found.animals = _drop_scenery_animals(found.animals)
         forms = animal_forms(found, which="main" if step.builder == "animal_main" else "all")
         kinds = sorted({animal.source for animal in found.animals})
         union = found.union(image.size) if found.animals else None
@@ -510,6 +511,41 @@ def step_forms(recipe: dict, step_id: str, image, backend: str = "") -> tuple[li
     if step.builder == "glow":
         return glow_forms(box, region_forms), source or "subject box"
     return None, ""
+
+
+def _drop_scenery_animals(animals: list) -> list:
+    """Drop scenery-heavy animal outlines before they join the union.
+
+    A loose outline over water (large, or running along the frame edge) or
+    one that swallows a tight animal outline would dilute the good subject.
+    When at least one tight outline exists only tight ones are kept; when
+    none is tight the list is returned unchanged (a close-up that fills the
+    frame stays, and the caller's checks decide).
+    """
+
+    import numpy as np
+
+    if len(animals) < 2:
+        return list(animals)
+    tight = [animal for animal in animals if _plausible_subject(animal.mask)]
+    if not tight:
+        return list(animals)
+    kept = []
+    for animal in tight:
+        own = np.asarray(animal.mask) >= 0.5
+        area = float(own.sum())
+        swallows = False
+        for other in tight:
+            if other is animal:
+                continue
+            theirs = np.asarray(other.mask) >= 0.5
+            small = float(theirs.sum())
+            if small and area > 2.5 * small and float((own & theirs).sum()) / small > 0.8:
+                swallows = True
+                break
+        if not swallows:
+            kept.append(animal)
+    return kept or tight
 
 
 def _plausible_subject(mask) -> bool:

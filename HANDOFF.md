@@ -1,5 +1,5 @@
 ## CURRENT TASK (2026-10-25)
-- [ ] 1. Animals form water bleed: reject/crop scenery-heavy animals/animal_all forms; no second form diluting good subject; regression test
+- [x] 1. Animals form water bleed: reject/crop scenery-heavy animals/animal_all forms; no second form diluting good subject; regression test
 - [ ] 2. "Complete plan" button: run remaining stages, verify history changed per step, per-step error handling, status text; unit tests
 - [ ] 3. Full suite, README note, HANDOFF done/left
 - Left for Asaf: GUI test of Complete plan + parrot animals form
