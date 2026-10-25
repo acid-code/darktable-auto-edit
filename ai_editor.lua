@@ -1798,6 +1798,10 @@ local function history_flags(image, recipe)
   can_revert = sidecar_has_editor_history(body, recipe)
 end
 
+function request_ui.run_plan_ready()
+  return (not panel_is_busy) and (not request_ui.plan_building) and feature_waiting
+end
+
 local function refresh_controls(recipe)
   if run_button then
     run_button.sensitive = (not panel_is_busy) and has_photo
@@ -1828,6 +1832,10 @@ local function refresh_controls(recipe)
   end
   if skip_button then
     skip_button.sensitive = (not panel_is_busy) and feature_waiting
+  end
+  -- Run plan: same rule as Accept, and never while Ask is building a plan.
+  if request_ui.run_plan_button then
+    request_ui.run_plan_button.sensitive = request_ui.run_plan_ready()
   end
 end
 
@@ -3536,8 +3544,10 @@ local function move_history(direction)
 end
 
 local function on_click()
+  request_ui.plan_building = true
   set_panel_busy(true)
   local ok, failure = pcall(run_analysis)
+  request_ui.plan_building = false
   close_progress()
   set_panel_busy(false)
   if not ok then
@@ -3834,14 +3844,14 @@ function request_ui.new_plan()
     .. " file(s)). Your darktable edits, request and description stay, so press Ask for a fresh plan."
 end
 
--- BEGIN complete_plan_run
--- Complete plan: accept every waiting step in order. deps.next_step()
+-- BEGIN run_plan_run
+-- Run plan: accept every waiting step in order. deps.next_step()
 -- returns the waiting step id and title (nil when the plan is done),
 -- deps.history() the darktable history count, deps.accept() runs one
 -- Accept like the button (nil/true = applied, false + detail = left off
 -- with a note, an error = hard failure). Each applied step must grow the
 -- history; no change is a failure, never a silent success.
-function request_ui.complete_plan_run(deps)
+function request_ui.run_plan_run(deps)
   local results, seen = {}, {}
   local limit = deps.max or 40
   local stopped = nil
@@ -3852,7 +3862,7 @@ function request_ui.complete_plan_run(deps)
     end
     title = (type(title) == "string" and title ~= "") and title or id
     if seen[id] then
-      stopped = string.format("%s is still waiting after it was accepted, so Complete plan stopped.", title)
+      stopped = string.format("%s is still waiting after it was accepted, so Run plan stopped.", title)
       results[#results + 1] = { id = id, title = title, state = "failed", why = stopped }
       break
     end
@@ -3913,7 +3923,7 @@ function request_ui.complete_plan_run(deps)
   end
   local head
   if stopped then
-    head = string.format("Complete plan stopped after %d applied, %d left off. %s", applied_n, skipped_n, stopped)
+    head = string.format("Run plan stopped after %d applied, %d left off. %s", applied_n, skipped_n, stopped)
   elseif #results == 0 then
     head = "No step is waiting, so there was nothing to complete."
   else
@@ -3921,19 +3931,24 @@ function request_ui.complete_plan_run(deps)
   end
   return stopped == nil, head .. (#lines > 0 and ("\n" .. table.concat(lines, "\n")) or ""), results
 end
--- END complete_plan_run
+-- END run_plan_run
 
-request_ui.complete_plan_button = dt.new_widget("button") {
-  label = "Complete plan",
+request_ui.run_plan_button = dt.new_widget("button") {
+  label = "Run plan",
+  sensitive = false,
   tooltip = "Accept every remaining step in order. Each step must add to the darktable history; it stops at the first step that fails or changes nothing.",
   clicked_callback = function()
     local image = darkroom_image and darkroom_image() or target_images()[1]
     if image == nil then
-      status_label.text = "Open a photo, then press Complete plan."
+      status_label.text = "Open a photo, then press Run plan."
+      return
+    end
+    if not request_ui.run_plan_ready() then
+      status_label.text = "No finished plan with a waiting step yet. Wait for Ask to finish."
       return
     end
     set_panel_busy(true)
-    local ok, done, text = pcall(request_ui.complete_plan_run, {
+    local ok, done, text = pcall(request_ui.run_plan_run, {
       next_step = function()
         local recipe = read_recipe(edit_work_dir(image))
         if type(recipe) ~= "table" or type(recipe.features_next) ~= "string" then
@@ -3952,7 +3967,7 @@ request_ui.complete_plan_button = dt.new_widget("button") {
         return apply_choice(nil, "accept-feature")
       end,
       progress = function(title, n)
-        show_progress(string.format("Complete plan: step %d, %s…", n, title), 0.5)
+        show_progress(string.format("Run plan: step %d, %s…", n, title), 0.5)
       end,
     })
     close_progress()
@@ -3961,12 +3976,12 @@ request_ui.complete_plan_button = dt.new_widget("button") {
       pcall(sync_waiting_step, image)
     end
     if not ok then
-      status_label.text = "Complete plan failed: " .. tostring(done)
-      dt.print("Complete plan failed")
+      status_label.text = "Run plan failed: " .. tostring(done)
+      dt.print("Run plan failed")
       return
     end
     status_label.text = text
-    dt.print(done and "Plan complete" or "Complete plan stopped")
+    dt.print(done and "Plan run complete" or "Run plan stopped")
   end,
 }
 
@@ -4073,7 +4088,7 @@ local feature_row = dt.new_widget("box") {
   orientation = "horizontal",
   accept_button,
   skip_button,
-  request_ui.complete_plan_button,
+  request_ui.run_plan_button,
 }
 
 local panel = dt.new_widget("box") {

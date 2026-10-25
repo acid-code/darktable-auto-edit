@@ -1,4 +1,4 @@
-"""Complete plan orchestration (ai_editor.lua ``complete_plan_run``) with mocked darktable."""
+"""Run plan orchestration (ai_editor.lua ``run_plan_run``) with mocked darktable."""
 
 from __future__ import annotations
 
@@ -41,13 +41,13 @@ end
 
 
 @unittest.skipIf(lupa is None, "lupa not installed")
-class CompletePlanTest(unittest.TestCase):
+class RunPlanTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         source = (ROOT / "ai_editor.lua").read_text(encoding="utf-8")
-        block = re.search(r"-- BEGIN complete_plan_run\n(.*?)-- END complete_plan_run", source, re.S).group(1)
+        block = re.search(r"-- BEGIN run_plan_run\n(.*?)-- END run_plan_run", source, re.S).group(1)
         lua = lupa.LuaRuntime()
-        run = lua.execute("local request_ui = {}\n" + block + "\nreturn request_ui.complete_plan_run")
+        run = lua.execute("local request_ui = {}\n" + block + "\nreturn request_ui.run_plan_run")
         cls.drive = lua.execute(DRIVER, run)
         cls.lua = lua
 
@@ -104,7 +104,15 @@ class CompletePlanTest(unittest.TestCase):
 
     def test_button_sits_with_accept(self):
         source = (ROOT / "ai_editor.lua").read_text(encoding="utf-8")
-        self.assertRegex(source, r"accept_button,\s*skip_button,\s*request_ui\.complete_plan_button,")
+        self.assertRegex(source, r"accept_button,\s*skip_button,\s*request_ui\.run_plan_button,")
+
+    def test_button_off_until_plan_ready(self):
+        source = (ROOT / "ai_editor.lua").read_text(encoding="utf-8")
+        self.assertRegex(source, r'label = "Run plan",\s*sensitive = false,')
+        self.assertRegex(source, r"run_plan_button\.sensitive = request_ui\.run_plan_ready\(\)")
+        self.assertRegex(source, r"not panel_is_busy\) and \(not request_ui\.plan_building\) and feature_waiting")
+        self.assertRegex(source, r"request_ui\.plan_building = true\s*set_panel_busy\(true\)\s*local ok, failure = pcall\(run_analysis\)")
+        self.assertNotIn("Complete plan", source)
 
 
 if __name__ == "__main__":

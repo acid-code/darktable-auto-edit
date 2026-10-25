@@ -551,9 +551,9 @@ the plan files in the photo's work folder
 the XMP sidecar and the camera file stay as they are. Then type a request, or
 leave it blank, and press **Ask**.
 
-### Complete plan
+### Run plan
 
-**Complete plan** (next to Accept and Skip) accepts every remaining step in
+**Run plan** (next to Accept and Skip) accepts every remaining step in
 order. Before and after each step it reads `darktable:history_end` from the
 synced sidecar; a step that reports success but leaves the history unchanged
 is a failure and stops the run. A step Accept leaves off with a note (no mask

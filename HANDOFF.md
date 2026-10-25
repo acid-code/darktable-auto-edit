@@ -1,16 +1,16 @@
 ## CURRENT TASK (2026-10-25, round 2)
-- [ ] A. Rename "Complete plan" -> "Run plan"
-- [ ] B. Run plan disabled while Ask/plan building; same readiness as Accept
+- [x] A. Rename "Run plan" -> "Run plan"
+- [x] B. Run plan disabled while Ask/plan building; same readiness as Accept
 - [ ] C. History rewind + Ask: plan progress from current history_end
 
 ## Previous task (2026-10-25)
 - [x] 1. Animals form water bleed: reject/crop scenery-heavy animals/animal_all forms; no second form diluting good subject; regression test
-- [x] 2. "Complete plan" button: run remaining stages, verify history changed per step, per-step error handling, status text; unit tests
+- [x] 2. "Run plan" button: run remaining stages, verify history changed per step, per-step error handling, status text; unit tests
 - [x] 3. Full suite, README note, HANDOFF done/left
 - Done: `22104b5` animals: `_drop_scenery_animals` (mask_steps.py) drops outlines that are scenery-like (>35% frame or >8% frame-edge) or swallow a tight one (>2.5x area, >80% overlap) before `animal_forms` unions them; a lone close-up is kept. Test `tests/test_animals_water_bleed.py`.
-- Done: `3cd7ed1` Complete plan button (Accept row); `request_ui.complete_plan_run` checks `history_end` before/after each step; unchanged = failure (stop), left off with note = soft, error = stop. Tests `tests/test_complete_plan.py` (need `lupa`; skipped without).
+- Done: `3cd7ed1` Run plan button (Accept row); `request_ui.complete_plan_run` checks `history_end` before/after each step; unchanged = failure (stop), left off with note = soft, error = stop. Tests `tests/test_complete_plan.py` (need `lupa`; skipped without).
 - Full suite: 554 tests, 3 order-dependent failures (test_guides portrait, test_recipes moody, test_versions filmic) that pass alone — known flaky.
-- Left for Asaf: GUI test of Complete plan + parrot animals form
+- Left for Asaf: GUI test of Run plan + parrot animals form
 
 # HANDOFF — `feature/ai-masks`
 
