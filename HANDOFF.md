@@ -1,4 +1,9 @@
-## CURRENT TASK (2026-10-25)
+## CURRENT TASK (2026-10-25, round 2)
+- [ ] A. Rename "Complete plan" -> "Run plan"
+- [ ] B. Run plan disabled while Ask/plan building; same readiness as Accept
+- [ ] C. History rewind + Ask: plan progress from current history_end
+
+## Previous task (2026-10-25)
 - [x] 1. Animals form water bleed: reject/crop scenery-heavy animals/animal_all forms; no second form diluting good subject; regression test
 - [x] 2. "Complete plan" button: run remaining stages, verify history changed per step, per-step error handling, status text; unit tests
 - [x] 3. Full suite, README note, HANDOFF done/left
