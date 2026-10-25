@@ -3834,6 +3834,142 @@ function request_ui.new_plan()
     .. " file(s)). Your darktable edits, request and description stay, so press Ask for a fresh plan."
 end
 
+-- BEGIN complete_plan_run
+-- Complete plan: accept every waiting step in order. deps.next_step()
+-- returns the waiting step id and title (nil when the plan is done),
+-- deps.history() the darktable history count, deps.accept() runs one
+-- Accept like the button (nil/true = applied, false + detail = left off
+-- with a note, an error = hard failure). Each applied step must grow the
+-- history; no change is a failure, never a silent success.
+function request_ui.complete_plan_run(deps)
+  local results, seen = {}, {}
+  local limit = deps.max or 40
+  local stopped = nil
+  for _ = 1, limit do
+    local id, title = deps.next_step()
+    if type(id) ~= "string" or id == "" then
+      break
+    end
+    title = (type(title) == "string" and title ~= "") and title or id
+    if seen[id] then
+      stopped = string.format("%s is still waiting after it was accepted, so Complete plan stopped.", title)
+      results[#results + 1] = { id = id, title = title, state = "failed", why = stopped }
+      break
+    end
+    seen[id] = true
+    if deps.progress then
+      pcall(deps.progress, title, #results + 1)
+    end
+    local before = deps.history()
+    local ok, applied, detail = pcall(deps.accept, id)
+    if not ok then
+      stopped = string.format("%s failed: %s", title, tostring(applied))
+      results[#results + 1] = { id = id, title = title, state = "failed", why = tostring(applied) }
+      break
+    end
+    if applied == false then
+      local why = tostring(detail or "left off")
+      local next_id = deps.next_step()
+      if next_id == id then
+        stopped = string.format("%s failed: %s", title, why)
+        results[#results + 1] = { id = id, title = title, state = "failed", why = why }
+        break
+      end
+      results[#results + 1] = { id = id, title = title, state = "skipped", why = why }
+    else
+      local after = deps.history()
+      if before == nil or after == nil then
+        stopped = string.format("%s: darktable history could not be read, so the step is not confirmed.", title)
+        results[#results + 1] = { id = id, title = title, state = "failed", why = stopped }
+        break
+      elseif after <= before then
+        -- Accept may leave a step off with a note (no mask found) and
+        -- move on: that is a soft no-op, not a silent success.
+        local note = deps.note and deps.note(id) or nil
+        local next_id = deps.next_step()
+        if type(note) == "string" and note ~= "" and next_id ~= id then
+          results[#results + 1] = { id = id, title = title, state = "skipped", why = note }
+          goto continue
+        end
+        stopped = string.format("%s: darktable history did not change (%d item(s) before and after).", title, after)
+        results[#results + 1] = { id = id, title = title, state = "failed", why = stopped }
+        break
+      end
+      results[#results + 1] = { id = id, title = title, state = "applied", why = string.format("history %d → %d", before, after) }
+    end
+    ::continue::
+  end
+  local lines, applied_n, skipped_n = {}, 0, 0
+  for _, row in ipairs(results) do
+    if row.state == "applied" then
+      applied_n = applied_n + 1
+      lines[#lines + 1] = "✓ " .. row.title .. " (" .. row.why .. ")"
+    elseif row.state == "skipped" then
+      skipped_n = skipped_n + 1
+      lines[#lines + 1] = "– " .. row.title .. ": " .. row.why
+    else
+      lines[#lines + 1] = "✗ " .. row.title .. ": " .. row.why
+    end
+  end
+  local head
+  if stopped then
+    head = string.format("Complete plan stopped after %d applied, %d left off. %s", applied_n, skipped_n, stopped)
+  elseif #results == 0 then
+    head = "No step is waiting, so there was nothing to complete."
+  else
+    head = string.format("Plan complete: %d applied, %d left off.", applied_n, skipped_n)
+  end
+  return stopped == nil, head .. (#lines > 0 and ("\n" .. table.concat(lines, "\n")) or ""), results
+end
+-- END complete_plan_run
+
+request_ui.complete_plan_button = dt.new_widget("button") {
+  label = "Complete plan",
+  tooltip = "Accept every remaining step in order. Each step must add to the darktable history; it stops at the first step that fails or changes nothing.",
+  clicked_callback = function()
+    local image = darkroom_image and darkroom_image() or target_images()[1]
+    if image == nil then
+      status_label.text = "Open a photo, then press Complete plan."
+      return
+    end
+    set_panel_busy(true)
+    local ok, done, text = pcall(request_ui.complete_plan_run, {
+      next_step = function()
+        local recipe = read_recipe(edit_work_dir(image))
+        if type(recipe) ~= "table" or type(recipe.features_next) ~= "string" then
+          return nil
+        end
+        return recipe.features_next, recipe.features_next_title
+      end,
+      history = function()
+        return request_ui.history_count(image)
+      end,
+      note = function()
+        local recipe = read_recipe(edit_work_dir(image))
+        return type(recipe) == "table" and recipe.feature_note or nil
+      end,
+      accept = function()
+        return apply_choice(nil, "accept-feature")
+      end,
+      progress = function(title, n)
+        show_progress(string.format("Complete plan: step %d, %s…", n, title), 0.5)
+      end,
+    })
+    close_progress()
+    set_panel_busy(false)
+    if sync_waiting_step then
+      pcall(sync_waiting_step, image)
+    end
+    if not ok then
+      status_label.text = "Complete plan failed: " .. tostring(done)
+      dt.print("Complete plan failed")
+      return
+    end
+    status_label.text = text
+    dt.print(done and "Plan complete" or "Complete plan stopped")
+  end,
+}
+
 request_ui.new_plan_button = dt.new_widget("button") {
   label = "Clear plan",
   tooltip = "Forget this photo's saved plan and start fresh. Your darktable edits stay as they are.",
@@ -3937,6 +4073,7 @@ local feature_row = dt.new_widget("box") {
   orientation = "horizontal",
   accept_button,
   skip_button,
+  request_ui.complete_plan_button,
 }
 
 local panel = dt.new_widget("box") {
